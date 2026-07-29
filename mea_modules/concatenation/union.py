@@ -155,7 +155,14 @@ def _scaling_property(recording, name, getter, default):
     if values is None:
         values = recording.get_property(name)
     if values is None:
-        logger.debug("parent recording carries no %s; padded channels stay unscaled", name)
+        # Loud, not debug. A missing gain does not fail — SpikeInterface
+        # downgrades `return_in_uV` to False and hands back ADC units — so the
+        # only signal anyone gets that their amplitudes are off by the gain
+        # factor is this line.
+        logger.warning(
+            "parent recording declares no %s, so the union cannot be scaled to uV "
+            "and every template built from it will be in ADC units", name,
+        )
         return None
     values = np.asarray(values, dtype="float32")
     if values.size != int(recording.get_num_channels()):
@@ -309,6 +316,46 @@ def _padder(recording, n_global, mapping, channel_ids):
     return padded
 
 
+def _check_consistent_scaling(padded, n_global, rtol=1e-4):
+    """Warn when segments disagree about an electrode's gain or offset.
+
+    Only electrodes that more than one segment routes can disagree, and on a
+    single chip they never do. Worth checking anyway: concatenation keeps one
+    property array, so a disagreement resolves silently in favour of whichever
+    segment SpikeInterface happens to read, and the consequence is a scale error
+    confined to part of the array.
+    """
+    for name, getter in (("gain_to_uV", "get_channel_gains"),
+                         ("offset_to_uV", "get_channel_offsets")):
+        seen = np.full(n_global, np.nan, dtype=float)
+        conflicts = 0
+        for recording in padded:
+            try:
+                values = np.asarray(getattr(recording, getter)(), dtype=float)
+            except Exception:
+                continue
+            # A recording with no scaling returns a 0-d array rather than
+            # raising, which is not indexable — there is simply nothing to
+            # compare, and the missing-gain warning has already been emitted.
+            if values.ndim != 1 or values.size != int(n_global):
+                continue
+            live = np.asarray(recording.channel_mapping, dtype=np.int64) \
+                if hasattr(recording, "channel_mapping") else np.arange(values.size)
+            for slot in live:
+                current = values[slot]
+                if np.isnan(seen[slot]):
+                    seen[slot] = current
+                elif not np.isclose(seen[slot], current, rtol=rtol):
+                    conflicts += 1
+        if conflicts:
+            logger.warning(
+                "%d electrode(s) carry conflicting %s across segments; concatenation "
+                "keeps one value, so part of the array will be scaled wrongly. Are "
+                "these segments from the same device and acquisition settings?",
+                conflicts, name,
+            )
+
+
 def _grid_probe(grid_positions, channel_ids):
     """A probe describing the union grid, wired to the recording's channel order.
 
@@ -366,6 +413,13 @@ def union_recording(recordings, grid_positions, tolerance_um=1.0, channel_ids=No
             "%d of %d grid channels are not routed by any segment and will read "
             "as zeros throughout", int((~covered).sum()), n_global,
         )
+
+    # Concatenation keeps one property array for the whole recording, so if two
+    # segments disagree about an electrode's gain one of them silently wins.
+    # That cannot happen within a single chip, but it is exactly what mixing
+    # devices or acquisition settings would produce, and the result would be a
+    # scale error on part of the array with nothing to show for it.
+    _check_consistent_scaling(padded, n_global)
 
     joined = concatenate_segments(padded)
 

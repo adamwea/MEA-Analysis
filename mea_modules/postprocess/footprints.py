@@ -83,6 +83,7 @@ def _draw_footprint(
     width_um,
     height_um,
     amplitude_scale=None,
+    normalize="shared",
     show_all_electrodes=True,
     mark_extremum=True,
     linewidth=0.7,
@@ -99,8 +100,7 @@ def _draw_footprint(
     from matplotlib.collections import LineCollection
     from matplotlib.colors import Normalize
 
-    from .analyzer import unit_channel_ids, unit_template
-    from .waveforms import _unit_extremum_channel
+    from .analyzer import _extremum_index, unit_channel_ids, unit_template
 
     template = unit_template(analyzer, unit_id)  # (n_samples, n_unit_channels), uV
     channel_ids = unit_channel_ids(analyzer, unit_id)
@@ -122,8 +122,18 @@ def _draw_footprint(
         )
 
     offsets = np.linspace(-width_um / 2.0, width_um / 2.0, n_samples) if n_samples else np.zeros(0)
+    if normalize == "per_channel":
+        # The soma is routinely 50x the axonal deflection, so on one shared
+        # scale every channel but the soma is a flat line and the footprint
+        # reads as "no spread at all". Scaling each channel to its own peak
+        # trades amplitude for shape and is the only way to see propagation;
+        # the colour still carries the true amplitude, so nothing is lost.
+        per_channel = np.where(peak_to_peak > 0, peak_to_peak, 1.0)
+        drawn = template / per_channel[None, :] * height_um
+    else:
+        drawn = template * amplitude_scale
     segments = [
-        np.column_stack((xy[i, 0] + offsets, xy[i, 1] + template[:, i] * amplitude_scale))
+        np.column_stack((xy[i, 0] + offsets, xy[i, 1] + drawn[:, i]))
         for i in range(len(channel_ids))
     ]
 
@@ -138,9 +148,12 @@ def _draw_footprint(
     )
     ax.add_collection(collection)
 
-    extremum_channel = _unit_extremum_channel(analyzer, unit_id)
-    if mark_extremum and extremum_channel in channel_ids:
-        position = xy[channel_ids.index(extremum_channel)]
+    # From the template already in hand rather than re-slicing the dense
+    # templates array; identical to extremum_channels() by construction.
+    extremum_index = _extremum_index(template)
+    extremum_channel = channel_ids[extremum_index]
+    if mark_extremum:
+        position = xy[extremum_index]
         ax.scatter(
             [position[0]],
             [position[1]],
@@ -166,16 +179,19 @@ def _draw_footprint(
         "extent_x_um": float(xy[:, 0].max() - xy[:, 0].min()),
         "extent_y_um": float(xy[:, 1].max() - xy[:, 1].min()),
         "amplitude_scale_um_per_uV": float(amplitude_scale),
+        "normalize": normalize,
         "collection": collection,
         "duration_ms": (n_samples / float(analyzer.sampling_frequency)) * 1000.0,
     }
 
 
-def _add_scale_bar(ax, width_um, height_um, duration_ms, amplitude_scale):
+def _add_scale_bar(ax, width_um, height_um, duration_ms, amplitude_scale, normalize="shared"):
     """Corner marker saying what one trace's width and height mean.
 
     Without it the figure has micrometre axes and millivolt-shaped squiggles and
-    no way to tell how big either actually is.
+    no way to tell how big either actually is. Under per-channel normalisation
+    the height has no single microvolt value, and saying so is the point — a
+    number there would be a lie.
     """
     x_min, x_max = ax.get_xlim()
     y_min, y_max = ax.get_ylim()
@@ -188,12 +204,16 @@ def _add_scale_bar(ax, width_um, height_um, duration_ms, amplitude_scale):
         x0 + width_um / 2.0, y0 - 0.015 * (y_max - y_min), f"{duration_ms:.1f} ms",
         ha="center", va="top", fontsize=7, zorder=4,
     )
-    uv = (height_um / amplitude_scale) if amplitude_scale > 0 else float("nan")
+    if normalize == "per_channel":
+        uv_label = "per-channel"
+    else:
+        uv = (height_um / amplitude_scale) if amplitude_scale > 0 else float("nan")
+        uv_label = f"{uv:.0f} uV"
     ax.text(
         # Offset in trace widths, not axis fractions: the vertical bar is drawn
         # in data units, so an axis-fraction pad collides with it whenever the
         # aspect-equal box is tall and narrow.
-        x0 - 0.6 * width_um, y0 + height_um / 2.0, f"{uv:.0f} uV",
+        x0 - 0.6 * width_um, y0 + height_um / 2.0, uv_label,
         ha="center", va="center", fontsize=7, rotation=90, zorder=4,
     )
 
@@ -206,6 +226,7 @@ def plot_unit_footprint(
     width_um=None,
     height_um=None,
     amplitude_scale=None,
+    normalize="shared",
     show_all_electrodes=True,
     mark_extremum=True,
     show_colorbar=True,
@@ -227,6 +248,15 @@ def plot_unit_footprint(
     per microvolt) is derived per unit by default so each footprint fills its
     trace height; fix it to compare units directly.
 
+    `normalize` decides what a trace's height means. ``"shared"`` (the default)
+    puts every channel on one microvolt scale, which is physically honest and
+    shows at a glance how much of the unit is soma. ``"per_channel"`` scales each
+    trace to its own peak, which is what you want when actually tracking an axon:
+    a soma 50x larger than its axonal deflections flattens every distant channel
+    to a line under shared scaling, and the propagating waveform only becomes
+    visible once each channel is given its own height. Colour stays true
+    amplitude either way, so the two together still tell you the real numbers.
+
     `zoom` True frames the unit's own channels; False frames the whole array,
     which is the right choice when several PNGs will be compared side by side.
 
@@ -235,7 +265,7 @@ def plot_unit_footprint(
     look truncated at a suspiciously round distance, raise
     ``sparsity radius`` in :func:`mea_modules.postprocess.analyzer.build_analyzer`.
     """
-    channel_ids, locations = _layout(analyzer)
+    _channel_ids, locations = _layout(analyzer)
     pitch = estimate_electrode_pitch(locations[:, 0], locations[:, 1]) or 1.0
     width_um = float(width_um) if width_um else _WIDTH_IN_PITCHES * pitch
     height_um = float(height_um) if height_um else _HEIGHT_IN_PITCHES * pitch
@@ -252,6 +282,7 @@ def plot_unit_footprint(
         width_um,
         height_um,
         amplitude_scale=amplitude_scale,
+        normalize=normalize,
         show_all_electrodes=show_all_electrodes,
         mark_extremum=mark_extremum,
     )
@@ -262,7 +293,12 @@ def plot_unit_footprint(
         ax.set_ylim(float(locations[:, 1].min()) - margin, float(locations[:, 1].max()) + margin)
 
     _add_scale_bar(
-        ax, width_um, height_um, stats["duration_ms"], stats["amplitude_scale_um_per_uV"]
+        ax,
+        width_um,
+        height_um,
+        stats["duration_ms"],
+        stats["amplitude_scale_um_per_uV"],
+        normalize=normalize,
     )
 
     if show_colorbar:
@@ -303,6 +339,7 @@ def plot_footprint_grid(
     width_um=None,
     height_um=None,
     amplitude_scale=None,
+    normalize="shared",
     show_all_electrodes=True,
     zoom=False,
     panel_size=_GRID_PANEL_SIZE,
@@ -324,7 +361,7 @@ def plot_footprint_grid(
     if not unit_ids:
         raise ValueError("no unit ids to plot")
 
-    channel_ids, locations = _layout(analyzer)
+    _channel_ids, locations = _layout(analyzer)
     pitch = estimate_electrode_pitch(locations[:, 0], locations[:, 1]) or 1.0
     width_um = float(width_um) if width_um else _WIDTH_IN_PITCHES * pitch
     height_um = float(height_um) if height_um else _HEIGHT_IN_PITCHES * pitch
@@ -345,6 +382,7 @@ def plot_footprint_grid(
             width_um,
             height_um,
             amplitude_scale=amplitude_scale,
+            normalize=normalize,
             show_all_electrodes=show_all_electrodes,
             mark_extremum=True,
             linewidth=0.5,

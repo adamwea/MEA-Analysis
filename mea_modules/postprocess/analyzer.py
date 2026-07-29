@@ -127,6 +127,18 @@ def load_analyzer(analyzer_dir, load_extensions=True):
     The analyzer carries its own probe and channel ids, so the plots keep
     working even when the recording it was built from is not reachable from this
     machine — only recomputing an extension needs the traces back.
+
+    `load_extensions` False is worth knowing about. SpikeInterface reads
+    extension arrays eagerly rather than memory-mapping them (deliberately — see
+    its issue #3041), so loading everything pulls the whole waveforms buffer into
+    RAM: on an 800-unit scan that is several GB before a single figure is drawn.
+    Footprints need only ``templates``, which is two orders of magnitude smaller,
+    so a footprint-only pass should load nothing and then ask for what it needs::
+
+        analyzer = load_analyzer(analyzer_dir, load_extensions=False)
+        analyzer.load_extension("templates")
+
+    Waveform plots do need the snippets, and therefore the RAM.
     """
     analyzer_dir = Path(analyzer_dir).expanduser()
     if not analyzer_dir.exists():

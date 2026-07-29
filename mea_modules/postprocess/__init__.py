@@ -40,9 +40,12 @@ from .analyzer import (
     load_analyzer,
     template_nbefore,
     unit_channel_ids,
+    unit_extremum_channel,
+    unit_random_spike_count,
     unit_template,
 )
 from .footprints import plot_footprint_grid, plot_unit_footprint
+from .unit_raster import plot_unit_raster, unit_firing_rates
 from .waveforms import plot_unit_waveform, unit_waveforms
 
 __all__ = [
@@ -50,11 +53,15 @@ __all__ = [
     "build_analyzer",
     "load_analyzer",
     "extremum_channels",
+    "unit_extremum_channel",
     "unit_channel_ids",
     "unit_template",
+    "unit_random_spike_count",
     "template_nbefore",
     # plot emitters
     "plot_unit_waveform",
+    "plot_unit_raster",
+    "unit_firing_rates",
     "plot_unit_footprint",
     "plot_footprint_grid",
     # numbers behind the waveform plot, for callers that want them without a PNG

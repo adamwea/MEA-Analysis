@@ -36,6 +36,11 @@ _WAVEFORM_DPI = 180
 # filled block that hides exactly the spread it is supposed to show.
 _DEFAULT_N_SPIKES = 100
 
+# Per-sample quantile the y range is taken from. 2% is enough to reject the
+# occasional overlapping-spike snippet without touching the honest spread of a
+# clean unit.
+_DEFAULT_YLIM_QUANTILE = 0.02
+
 _SPIKE_COLOR = "#4a4a4a"
 _TEMPLATE_COLOR = "#c0392b"
 
@@ -110,6 +115,41 @@ def _trough_aligned_time_ms(template, fs, nbefore):
     return (np.arange(n_samples, dtype=float) - zero_index) / float(fs) * 1000.0, zero_index
 
 
+def _robust_ylim(snippets, template, quantile):
+    """(low, high) that frame the template and the bulk of the snippets.
+
+    Min/max limits are the obvious choice and the wrong one on real data: a
+    single artifact snippet ten times the template's amplitude — an overlapping
+    spike, a stimulation transient — sets the whole y range and flattens the
+    template into a horizontal line at zero. That is the difference between a
+    plot that shows a unit is marginal and a plot that shows nothing at all.
+
+    So the range is taken from a per-sample quantile envelope across snippets,
+    unioned with the template's full range so the template is never clipped.
+    Outlier snippets are still drawn; they simply run out of the axes, which
+    reads as "this unit has contaminated spikes" rather than hiding them.
+    Pass `quantile` 0 to get true min/max back.
+    """
+    import numpy as np
+
+    values = [np.asarray(template, dtype=float)]
+    snippets = np.asarray(snippets, dtype=float)
+    if snippets.size:
+        q = float(quantile or 0.0)
+        if q > 0.0:
+            values.append(np.nanquantile(snippets, [q, 1.0 - q], axis=0).ravel())
+        else:
+            values.append(snippets.ravel())
+
+    finite = np.concatenate(values)
+    finite = finite[np.isfinite(finite)]
+    if not finite.size:
+        return None
+    low, high = float(np.min(finite)), float(np.max(finite))
+    pad = 0.05 * (high - low) or 1.0
+    return low - pad, high + pad
+
+
 def plot_unit_waveform(
     analyzer,
     unit_id,
@@ -118,6 +158,7 @@ def plot_unit_waveform(
     n_spikes=_DEFAULT_N_SPIKES,
     title=None,
     seed=0,
+    ylim_quantile=_DEFAULT_YLIM_QUANTILE,
     figsize=_WAVEFORM_FIGSIZE,
     dpi=_WAVEFORM_DPI,
 ):
@@ -131,17 +172,21 @@ def plot_unit_waveform(
     `n_spikes` caps how many snippets are drawn (None or <= 0 draws all the
     analyzer kept). The title carries the unit id, the channel id and both spike
     counts, so a PNG dropped into a report is self-describing.
+
+    `ylim_quantile` trims the y range to the bulk of the snippets so one artifact
+    spike cannot flatten the template — see :func:`_robust_ylim`, and pass 0 for
+    literal min/max. The count of snippets that leave the frame is logged.
     """
     import numpy as np
     from matplotlib.collections import LineCollection
 
-    from .analyzer import template_nbefore
+    from .analyzer import template_nbefore, unit_random_spike_count
 
     snippets, template, channel_id = unit_waveforms(
         analyzer, unit_id, channel_id=channel_id, n_spikes=n_spikes, seed=seed
     )
     n_drawn = int(snippets.shape[0])
-    n_kept = int(np.asarray(analyzer.get_extension("waveforms").get_waveforms_one_unit(unit_id)).shape[0])
+    n_kept = unit_random_spike_count(analyzer, unit_id)
 
     fs = float(analyzer.sampling_frequency)
     time_ms, zero_index = _trough_aligned_time_ms(template, fs, template_nbefore(analyzer))
@@ -163,11 +208,16 @@ def plot_unit_waveform(
 
     # add_collection does not update the data limits the way plot does.
     ax.set_xlim(float(time_ms[0]), float(time_ms[-1]))
-    finite = np.concatenate([snippets.ravel(), template]) if n_drawn else template
-    finite = finite[np.isfinite(finite)]
-    if finite.size:
-        span = float(np.nanmax(finite) - np.nanmin(finite)) or 1.0
-        ax.set_ylim(float(np.nanmin(finite)) - 0.05 * span, float(np.nanmax(finite)) + 0.05 * span)
+    ylim = _robust_ylim(snippets, template, ylim_quantile)
+    n_clipped = 0
+    if ylim is not None:
+        ax.set_ylim(*ylim)
+        if n_drawn:
+            n_clipped = int(
+                np.count_nonzero(
+                    (np.nanmin(snippets, axis=1) < ylim[0]) | (np.nanmax(snippets, axis=1) > ylim[1])
+                )
+            )
 
     ax.set_xlabel("time (ms, relative to trough)")
     ax.set_ylabel("amplitude (uV)")
@@ -179,12 +229,13 @@ def plot_unit_waveform(
 
     out_path = _save_and_release(fig, out_path)
     logger.info(
-        "wrote unit waveform: %s (unit=%s channel=%s drawn=%d kept=%d trough_sample=%d)",
+        "wrote unit waveform: %s (unit=%s channel=%s drawn=%d kept=%d trough_sample=%d clipped=%d)",
         out_path,
         unit_id,
         channel_id,
         n_drawn,
         n_kept,
         zero_index,
+        n_clipped,
     )
     return out_path

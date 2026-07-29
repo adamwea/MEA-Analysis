@@ -176,6 +176,27 @@ def _max_channels_per_unit(analyzer):
     return int(analyzer.sparsity.mask.sum(axis=1).max())
 
 
+def _log_template_budget(analyzer, ms_before, ms_after):
+    """Log the buffer a waveform-free template pass needs.
+
+    One accumulator per unit rather than one snippet per spike, so the cost is
+    independent of how many spikes are read — which is what makes a dense
+    analyzer over a full electrode set affordable.
+    """
+    fs = float(analyzer.sampling_frequency)
+    n_samples = int(round(ms_before * fs / 1000.0)) + int(round(ms_after * fs / 1000.0))
+    n_units = int(analyzer.get_num_units())
+    n_channels = int(analyzer.get_num_channels())
+    # average + std accumulators, float32.
+    n_bytes = n_units * n_samples * n_channels * 4 * 2
+
+    logger.info(
+        "template budget: %d units x %d samples x %d channels = %.2f GiB "
+        "(accumulated, no waveforms kept)",
+        n_units, n_samples, n_channels, n_bytes / 1024**3,
+    )
+
+
 def _log_waveform_budget(analyzer, sorting, max_spikes_per_unit, ms_before, ms_after):
     """Log (and warn about) the size of the buffer the waveforms pass will write.
 
@@ -224,6 +245,7 @@ def build_analyzer(
     format=DEFAULT_FORMAT,
     overwrite=False,
     job_kwargs=None,
+    extensions=None,
     **kwargs,
 ):
     """Build (or reuse) the SortingAnalyzer the waveform and footprint plots read.
@@ -305,13 +327,30 @@ def build_analyzer(
             **sparsity_kwargs,
         )
 
-    missing = _missing_extensions(analyzer)
+    wanted = tuple(extensions) if extensions is not None else _EXTENSION_ORDER
+    unknown = [name for name in wanted if name not in _EXTENSION_ORDER]
+    if unknown:
+        raise ValueError(
+            f"build_analyzer does not know how to parameterize {unknown}; "
+            f"it handles {list(_EXTENSION_ORDER)}"
+        )
+
+    missing = _missing_extensions(analyzer, wanted)
     if not missing:
         logger.info("analyzer already carries every needed extension; nothing to compute")
         return analyzer
     logger.info("computing extensions %s", missing)
 
-    _log_waveform_budget(analyzer, sorting, max_spikes_per_unit, ms_before, ms_after)
+    if "waveforms" in missing:
+        _log_waveform_budget(analyzer, sorting, max_spikes_per_unit, ms_before, ms_after)
+    else:
+        # Without the waveforms extension SpikeInterface accumulates templates in
+        # place instead of keeping every snippet, so the cost is one
+        # (n_units, n_samples, n_channels) buffer however many spikes are read.
+        # That is what makes a DENSE analyzer affordable, and dense is what axon
+        # reconstruction needs — a sparsity mask is a hard ceiling on how far a
+        # recovered footprint can reach.
+        _log_template_budget(analyzer, ms_before, ms_after)
 
     params = {
         "random_spikes": {
@@ -330,6 +369,12 @@ def build_analyzer(
     # One call so SpikeInterface can fuse the extensions that share a node
     # pipeline into a single traversal of the recording.
     analyzer.compute({name: params[name] for name in missing}, **resolved_jobs)
+
+    if "waveforms" not in wanted and analyzer.has_extension("templates"):
+        # Worth stating plainly: with no waveforms extension the templates are
+        # accumulated means, and nothing downstream can go back to individual
+        # snippets without a rebuild.
+        logger.info("templates were accumulated directly; no per-spike waveforms were kept")
 
     logger.info(
         "analyzer ready: %d units, %d channels, extensions=%s",

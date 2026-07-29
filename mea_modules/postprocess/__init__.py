@@ -45,6 +45,7 @@ from .analyzer import (
     unit_template,
 )
 from .footprints import plot_footprint_grid, plot_unit_footprint
+from .unit_locations import plot_unit_locations, unit_location_array
 from .unit_raster import plot_unit_raster, unit_firing_rates
 from .waveforms import plot_unit_waveform, unit_waveforms
 
@@ -60,6 +61,8 @@ __all__ = [
     "template_nbefore",
     # plot emitters
     "plot_unit_waveform",
+    "plot_unit_locations",
+    "unit_location_array",
     "plot_unit_raster",
     "unit_firing_rates",
     "plot_unit_footprint",

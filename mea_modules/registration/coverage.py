@@ -40,34 +40,66 @@ import logging
 logger = logging.getLogger(__name__)
 
 
-def routing_table(grid_positions, segment_locations, tolerance_um=1.0):
+def routing_table(grid_positions, segment_locations, tolerance_um=1.0,
+                  grid_ids=None, segment_ids=None):
     """``(n_segments, n_grid)`` bool — which segment routed which electrode.
 
     `segment_locations` is one ``(n_local, 2)`` xy array per segment, in the
-    order the segments occupy the concatenated timeline. Positions are matched
-    onto the grid within `tolerance_um`; an unmatched electrode is a grid that
-    was not built from these segments and is reported rather than dropped.
+    order the segments occupy the concatenated timeline.
+
+    Matching prefers electrode ID over geometry, which is what the previous
+    build did (``electrode_id`` -> ``channel_id`` -> ``location`` priority in
+    ``templates/core/merge.py``). On Maxwell the channel id IS the electrode, so
+    an ID match is exact where a positional match is a nearest-neighbour guess
+    under a tolerance. Pass `grid_ids` and `segment_ids` to get it; without them
+    this falls back to position matching within `tolerance_um`.
+
+    An electrode that matches nothing is reported rather than dropped — it means
+    the grid was not built from these segments, and silently ignoring it would
+    leave a hole in the coverage map that nothing downstream would notice.
     """
     import numpy as np
 
     grid = np.asarray(grid_positions, dtype=float)[:, :2]
     table = np.zeros((len(segment_locations), grid.shape[0]), dtype=bool)
 
+    by_id = None
+    if grid_ids is not None and segment_ids is not None:
+        by_id = {str(value): index for index, value in enumerate(grid_ids)}
+        if len(by_id) != len(list(grid_ids)):
+            logger.warning(
+                "grid ids are not unique; falling back to position matching"
+            )
+            by_id = None
+
     unmatched = 0
+    matched_by_id = 0
     for index, locations in enumerate(segment_locations):
         locations = np.asarray(locations, dtype=float)[:, :2]
-        for point in locations:
-            distances = np.sum((grid - point) ** 2, axis=1)
-            nearest = int(np.argmin(distances))
-            if np.sqrt(distances[nearest]) <= float(tolerance_um):
-                table[index, nearest] = True
-            else:
-                unmatched += 1
+        ids = list(segment_ids[index]) if (by_id is not None and segment_ids is not None) else None
 
+        for local, point in enumerate(locations):
+            slot = None
+            if ids is not None:
+                slot = by_id.get(str(ids[local]))
+                if slot is not None:
+                    matched_by_id += 1
+            if slot is None:
+                distances = np.sum((grid - point) ** 2, axis=1)
+                nearest = int(np.argmin(distances))
+                if np.sqrt(distances[nearest]) <= float(tolerance_um):
+                    slot = nearest
+            if slot is None:
+                unmatched += 1
+                continue
+            table[index, slot] = True
+
+    if matched_by_id:
+        logger.info("matched %d electrode(s) by id rather than position", matched_by_id)
     if unmatched:
         logger.warning(
-            "%d segment electrode(s) had no grid position within %.3f um; the grid "
-            "does not describe these segments", unmatched, float(tolerance_um),
+            "%d segment electrode(s) matched no grid slot by id or within %.3f um; "
+            "the grid does not describe these segments", unmatched, float(tolerance_um),
         )
     logger.info(
         "routing table: %d segment(s) x %d electrode(s); %d electrode(s) routed once, "

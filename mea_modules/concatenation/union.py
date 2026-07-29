@@ -265,6 +265,30 @@ def _padder(recording, n_global, mapping, channel_ids):
     return padded
 
 
+def _grid_probe(grid_positions, channel_ids):
+    """A probe describing the union grid, wired to the recording's channel order.
+
+    `device_channel_indices` is what maps a contact to a trace column; set to
+    ``arange`` because the grid's own ordering IS the recording's column order.
+    Getting this wrong permutes every channel silently — the traces stay valid
+    and every footprint lands on the wrong electrode.
+    """
+    from probeinterface import Probe
+
+    positions = np.asarray(grid_positions, dtype=float)[:, :2]
+    probe = Probe(ndim=2, si_units="um")
+    # Square contacts sized to the Maxwell pitch; the geometry only has to be
+    # plausible, the positions are what carry meaning.
+    probe.set_contacts(
+        positions=positions,
+        shapes="square",
+        shape_params={"width": 5.0},
+    )
+    probe.set_device_channel_indices(np.arange(positions.shape[0]))
+    probe.set_contact_ids([str(cid) for cid in channel_ids])
+    return probe
+
+
 def union_recording(recordings, grid_positions, tolerance_um=1.0, channel_ids=None):
     """Concatenate `recordings` onto the global grid; return the lazy recording.
 
@@ -300,6 +324,13 @@ def union_recording(recordings, grid_positions, tolerance_um=1.0, channel_ids=No
         )
 
     joined = concatenate_segments(padded)
+
+    # A probe is not optional here. `create_sorting_analyzer` calls
+    # `recording.get_probegroup()` and raises outright without one, and the
+    # padding wrappers do not inherit the parents' probes — each parent carries
+    # only its own subset, and none of them describes the union.
+    joined = joined.set_probe(_grid_probe(grid_positions, joined.channel_ids))
+
     logger.info(
         "union recording: %d segment(s) -> %d channels x %d samples (lazy)",
         len(padded), joined.get_num_channels(), joined.get_num_samples(),

@@ -67,8 +67,7 @@ def set_plugin_path(hdf5_plugin_path=None, extra_candidates=()):
         if not is_plugin_dir(plugin_dir):
             raise FileNotFoundError(
                 f"no {plugin_lib_name()} in HDF5 plugin dir: {plugin_dir}. "
-                "Point --hdf5-plugin-path at the vendored Maxwell plugin "
-                "(e.g. MEA-recon-pipeline/vendor/maxwell_hdf5_plugin/Linux/)."
+                "Supply a directory holding the Maxwell HDF5 compression plugin."
             )
     else:
         plugin_dir = find_plugin_dir([os.environ.get("HDF5_PLUGIN_PATH"), *extra_candidates])

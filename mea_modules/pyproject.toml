@@ -1,0 +1,23 @@
+[project]
+name = "mea_modules"
+version = "0.0.1"
+requires-python = ">=3.10"
+dependencies = [
+    "spikeinterface==0.103.2",
+    "numpy",
+    "h5py",
+]
+
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+# This directory *is* the package: pyproject.toml sits inside mea_modules/, so
+# the package root maps onto ".". Packages are listed explicitly rather than
+# auto-discovered — discovery over "." would expose io/ as a bare top-level
+# `io` package and shadow nothing good.
+[tool.setuptools]
+packages = ["mea_modules", "mea_modules.io"]
+
+[tool.setuptools.package-dir]
+"mea_modules" = "."

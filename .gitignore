@@ -49,3 +49,11 @@ Yuxin_MEA/
 MEA_stim_analysis
 MEA-Analysis-Plotter
 MaxwellMEA-Toolkit-MATLAB
+
+# graphify knowledge graph (regenerate with `graphify update .`)
+graphify-out/
+.graphify/
+
+# harness per-session runtime state
+.claude/state/
+.claude/sessions/

@@ -58,6 +58,41 @@ _DEFAULT_MAX_CHANNELS = 8
 _DEFAULT_DURATION_S = 60.0
 
 
+def _shared_y_limits(parts_per_channel, margin=0.05):
+    """Global (low, high) across every channel's samples, or None if empty.
+
+    One y range for every panel. Per-panel autoscaling is actively misleading
+    when traces are stacked: a quiet channel is stretched to fill its axes and
+    reads like an active one, so channels cannot be compared by eye — which is
+    the reason for stacking them in the first place.
+
+    NaN-aware, because gap handling writes NaN at breaks. A small symmetric
+    margin keeps peaks off the frame. Returns None when nothing finite is left
+    to scale to, in which case the caller leaves matplotlib's autoscale alone.
+    """
+    import numpy as np
+
+    low, high = np.inf, -np.inf
+    for parts in parts_per_channel:
+        for part in parts:
+            values = np.asarray(part, dtype=float)
+            if values.size == 0:
+                continue
+            finite = values[np.isfinite(values)]
+            if finite.size == 0:
+                continue
+            low = min(low, float(finite.min()))
+            high = max(high, float(finite.max()))
+
+    if not np.isfinite(low) or not np.isfinite(high):
+        return None
+    if high == low:  # a flat trace still needs a non-degenerate axis
+        pad = abs(high) * margin or 1.0
+        return low - pad, high + pad
+    pad = (high - low) * margin
+    return low - pad, high + pad
+
+
 def _resolve_frame_window(recording, start_time_s=0.0, duration_s=None):
     """Clamp a (start, duration) request to a valid [start_frame, end_frame).
 
@@ -385,6 +420,13 @@ def plot_traces(
     if len(channel_ids) == 1:
         axes = [axes]
 
+    # One y range for every panel, spanning the global min/max of everything
+    # plotted. Per-panel autoscaling is actively misleading here: a quiet
+    # channel gets stretched to fill its axes and reads like an active one, so
+    # channels cannot be compared by eye — which is the whole point of stacking
+    # them. Computed before drawing so every axis gets the same limits.
+    y_limits = _shared_y_limits(parts_per_channel)
+
     # Boundary markers are positions on the same axis as the traces, so they go
     # through whichever mapping the traces did.
     if real_time:
@@ -410,6 +452,8 @@ def plot_traces(
                 y = y.copy()
                 y[breaks + 1] = np.nan
         axis.plot(t, y, lw=0.2, color="black")
+        if y_limits is not None:
+            axis.set_ylim(*y_limits)
         if real_time and t.size:
             shaded = _shade_gap_spans(axis, spans, x_min=float(t[0]), x_max=float(t[-1]))
         for x_value in stitch_seconds:

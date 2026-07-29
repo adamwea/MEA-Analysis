@@ -33,15 +33,35 @@ DEFAULT_DPI = 170
 
 
 def plot_coverage_map(positions, n_segments_routed, out_path, title=None,
+                      routing=None, segment_labels=None,
                       figsize=DEFAULT_FIGSIZE, dpi=DEFAULT_DPI):
-    """Electrodes coloured by how many segments routed them; returns `out_path`."""
+    """Electrodes coloured by how many segments routed them; returns `out_path`.
+
+    Three panels, because two different "coverage" questions get confused
+    otherwise:
+
+    * where on the array each electrode sits, coloured by how many segments
+      reached it;
+    * how many ELECTRODES fall into each coverage count — this axis is a count
+      of segments, NOT a segment index, and its empty bins mean "no electrode is
+      routed by exactly this many segments", not "this segment routed nothing";
+    * how many electrodes EACH SEGMENT routes, which is the per-segment view and
+      the one that would actually reveal a segment contributing nothing.
+
+    `routing` is the ``(n_segments, n_electrodes)`` boolean table; without it the
+    third panel is omitted.
+    """
     import numpy as np
 
     positions = np.asarray(positions, dtype=float)[:, :2]
     counts = np.asarray(n_segments_routed, dtype=int)
 
     fig = _new_figure(figsize, dpi)
-    left, right = fig.subplots(1, 2, width_ratios=[2.0, 1.0])
+    if routing is None:
+        left, right = fig.subplots(1, 2, width_ratios=[2.0, 1.0])
+        bottom = None
+    else:
+        left, right, bottom = fig.subplots(1, 3, width_ratios=[2.0, 1.0, 1.2])
 
     scatter = left.scatter(
         positions[:, 0], positions[:, 1], c=counts, s=4, marker="s",
@@ -58,17 +78,43 @@ def plot_coverage_map(positions, n_segments_routed, out_path, title=None,
     bins = np.arange(0.5, counts.max() + 1.5)
     right.hist(counts, bins=bins, color="0.3")
     right.set_yscale("log")
-    right.set_xlabel("segments routing an electrode")
-    right.set_ylabel("electrodes (log)")
-    right.set_title("coverage distribution")
+    # Spelled out because the obvious short label ("segments routing an
+    # electrode") reads as a segment index, and then the empty bins look like
+    # segments that contributed nothing.
+    right.set_xlabel("how many segments route an electrode\n(count, NOT segment index)")
+    right.set_ylabel("number of electrodes (log)")
+    right.set_title("electrodes per coverage count")
 
     once = int((counts == 1).sum())
     every = int((counts == counts.max()).sum())
     right.text(
         0.97, 0.95,
-        f"routed once: {once}\nrouted by all {counts.max()}: {every}",
-        transform=right.transAxes, ha="right", va="top", fontsize=9,
+        f"routed once: {once}\nrouted by all {counts.max()}: {every}\n"
+        f"empty bins = no electrode\nhas that coverage",
+        transform=right.transAxes, ha="right", va="top", fontsize=8,
     )
+
+    if bottom is not None:
+        routing = np.asarray(routing, dtype=bool)
+        per_segment = routing.sum(axis=1)
+        labels = list(segment_labels) if segment_labels is not None \
+            else [str(i) for i in range(per_segment.size)]
+        y = np.arange(per_segment.size)
+        bottom.barh(y, per_segment, color="0.35")
+        bottom.set_yticks(y)
+        bottom.set_yticklabels(labels, fontsize=6)
+        bottom.invert_yaxis()
+        bottom.set_xlabel("electrodes routed")
+        bottom.set_title("per segment")
+        # The floor every segment shares: the anchor set that makes
+        # concatenation and sorting possible in the first place.
+        anchor = int((counts == counts.max()).sum())
+        bottom.axvline(anchor, color="red", ls="--", lw=1.0)
+        bottom.text(anchor, per_segment.size * 0.5, f" anchor = {anchor}",
+                    color="red", fontsize=8, rotation=90, va="center")
+        bottom.text(0.97, 0.02,
+                    f"min {per_segment.min()}  max {per_segment.max()}",
+                    transform=bottom.transAxes, ha="right", va="bottom", fontsize=8)
 
     if title:
         fig.suptitle(title)

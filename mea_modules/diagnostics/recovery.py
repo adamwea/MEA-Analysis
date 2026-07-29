@@ -338,6 +338,86 @@ def plot_footprint_gain(positions, template, out_path, backbone_mask=None,
     return _save_and_release(fig, out_path)
 
 
+def plot_rescale_before_after(positions, templates, coverage, totals, out_path,
+                              unit_ids=None, title=None, dpi=DEFAULT_DPI):
+    """The same units with and without the coverage correction, side by side.
+
+    The uncorrected template is recovered exactly, without recomputing anything:
+    the correction is a per-(unit, electrode) multiply, so dividing it back out
+    reproduces what SpikeInterface originally averaged.
+
+    This is the plot that shows what the correction is FOR. An uncorrected
+    template keeps only the fraction of its amplitude contributed by segments
+    that routed each electrode — about 1/21 on the tiled electrodes of an
+    AxonTracking scan — so the arbor sits at the noise floor and the footprint
+    collapses to whatever happens to sit on the always-on electrodes. The
+    always-on electrodes themselves are untouched by the correction (their
+    coverage IS the total, so the factor is exactly 1), which is why the two
+    panels agree there and diverge everywhere else.
+
+    Each unit gets ONE colour scale shared by its before and after panel, so the
+    difference is the data and not the normalisation.
+    """
+    import numpy as np
+
+    positions = np.asarray(positions, dtype=float)[:, :2]
+    templates = np.asarray(templates)
+    coverage = np.asarray(coverage, dtype=float)
+    totals = np.asarray(totals, dtype=float)
+    n_units = templates.shape[0]
+    labels = list(unit_ids) if unit_ids is not None else list(range(n_units))
+
+    xs, ys = np.unique(positions[:, 0]), np.unique(positions[:, 1])
+    col = np.searchsorted(xs, positions[:, 0])
+    row = np.searchsorted(ys, positions[:, 1])
+    extent = [xs[0] - 8.75, xs[-1] + 8.75, ys[0] - 8.75, ys[-1] + 8.75]
+
+    import matplotlib.pyplot as plt
+    from matplotlib.colors import LogNorm
+
+    cmap = plt.get_cmap("magma").copy()
+    cmap.set_bad("#ffffff")
+
+    fig = _new_figure((4.1 * n_units, 8.6), dpi)
+    axes = np.atleast_2d(fig.subplots(2, n_units))
+    if axes.shape[0] == 1:
+        axes = axes.T if n_units == 1 else axes
+
+    for j in range(n_units):
+        corrected = templates[j]
+        with np.errstate(divide="ignore", invalid="ignore"):
+            undo = np.where(coverage[j] > 0, coverage[j] / max(totals[j], 1.0), 0.0)
+        uncorrected = corrected * undo[None, :]
+
+        pc = np.abs(corrected).max(axis=0)
+        pu = np.abs(uncorrected).max(axis=0)
+        vmax = max(pc.max(), pu.max())
+        live = pc[pc > 0]
+        vmin = max(np.percentile(live, 1) if live.size else vmax * 1e-4, vmax * 1e-4)
+        norm = LogNorm(vmin=vmin, vmax=vmax)
+
+        for k, (peak, label) in enumerate(((pu, "before"), (pc, "after"))):
+            ax = axes[k, j]
+            img = np.full((ys.size, xs.size), np.nan)
+            img[row, col] = peak
+            ax.imshow(img, origin="lower", extent=extent, cmap=cmap, norm=norm,
+                      interpolation="nearest", aspect="equal")
+            ax.set_xticks([]); ax.set_yticks([])
+            if k == 0:
+                ax.set_title(f"unit {labels[j]}", fontsize=12, pad=5)
+            ax.set_xlabel(f"{label} rescale · peak {peak.max():.0f} uV", fontsize=8.5)
+
+    axes[0, 0].set_ylabel("BEFORE\n(raw SI average)", fontsize=10.5)
+    axes[1, 0].set_ylabel("AFTER\n(what this capsule ships)", fontsize=10.5)
+    if title:
+        fig.suptitle(title, fontsize=13, y=0.975)
+    fig.subplots_adjust(left=0.05, right=0.99, top=0.90, bottom=0.055,
+                        wspace=0.03, hspace=0.13)
+
+    logger.info("rescale before/after: %d unit(s) -> %s", n_units, out_path)
+    return _save_and_release(fig, out_path)
+
+
 def _finish_axis(ax, backbone_mask, positions):
     """Shared axis dressing for the footprint panels."""
     import numpy as np
@@ -403,6 +483,7 @@ def plot_template_agreement(reference, candidate, out_path, coverage=None,
 
 __all__ = [
     "plot_coverage_map",
+    "plot_rescale_before_after",
     "plot_rescale_effect",
     "plot_footprint_gain",
     "plot_template_agreement",

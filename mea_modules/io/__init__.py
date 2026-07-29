@@ -12,7 +12,7 @@ much time it is missing, both inside a segment and between segments. Its output
 feeds :mod:`mea_modules.diagnostics.timebase`.
 """
 
-from .gaps import frame_gaps, segment_time_bounds, well_gap_summary
+from .gaps import concatenated_gaps, frame_gaps, segment_time_bounds, well_gap_summary
 from .hdf5_plugin import find_plugin_dir, is_plugin_dir, plugin_lib_name, set_plugin_path
 from .load import (
     count_segments,
@@ -43,6 +43,9 @@ __all__ = [
     "frame_gaps",
     "segment_time_bounds",
     "well_gap_summary",
+    # both kinds at once, on the concatenated timeline — what a real-elapsed
+    # time axis needs, and what the summary alone cannot give it
+    "concatenated_gaps",
     # metadata
     "extract_metadata",
     "save_metadata",

@@ -320,6 +320,17 @@ def well_gap_summary(h5_path, stream_id, fs_hz=None):
             for rec, _start, _stop in bounds
         }
 
+    return _summarize(stream_id, bounds, per_rec_gaps, fs_hz)
+
+
+def _summarize(stream_id, bounds, per_rec_gaps, fs_hz):
+    """Roll per-segment gap counts up into the summary record.
+
+    Split out from :func:`well_gap_summary` so :func:`concatenated_gaps`, which
+    has already read every counter, can produce the same summary without a
+    second pass over the file — the counters are tens of MB per segment and
+    reading them twice is the most expensive thing either function does.
+    """
     segments = []
     start_sample = 0
     previous_stop = None
@@ -390,4 +401,91 @@ def well_gap_summary(h5_path, stream_id, fs_hz=None):
     return summary
 
 
-__all__ = ["frame_gaps", "segment_time_bounds", "well_gap_summary"]
+def concatenated_gaps(h5_path, stream_id, fs_hz=None):
+    """Every gap in a well, indexed on the CONCATENATED sample timeline.
+
+    :func:`well_gap_summary` reports how much time is missing but deliberately
+    drops the per-break detail, so a plot handed the summary can only stretch
+    its axis by the between-segment gaps. On the P003454 reference scan that is
+    465 s of the ~3500 s actually missing — an axis still labelled "real elapsed
+    time" while being wrong by most of what it exists to correct. This returns
+    what such an axis actually needs: both gap kinds, with each segment's break
+    indices offset by that segment's start on the concatenated timeline so they
+    align with the sample indices a concatenated recording — and every spike
+    train sorted from it — is addressed by.
+
+    The result is the ``{"gaps": ..., "segment_gaps": ...}`` shape
+    :func:`mea_modules.diagnostics.timebase.resolve_time_gaps` accepts, so it
+    goes straight into any emitter's ``time_gaps``. The roll-up under
+    ``summary`` is :func:`well_gap_summary`'s, for callers that want to record
+    the totals beside the plot.
+
+    Costs one pass over every segment's frame counter — the same read
+    :func:`well_gap_summary` already does, keeping the breaks instead of
+    discarding them, so a whole well is seconds. ``raw`` is never touched.
+    """
+    import h5py
+
+    h5_path = Path(h5_path).expanduser()
+    if not h5_path.exists():
+        raise FileNotFoundError(f"no such Maxwell file: {h5_path}")
+
+    _resolve_rec_name(h5_path, stream_id, None)
+
+    with h5py.File(str(h5_path), mode="r") as h5:
+        if fs_hz is None:
+            fs_hz = _stream_sampling_hz(h5, stream_id)
+        bounds = _segment_bounds(h5, stream_id)
+        # with_breaks=True is the whole difference from well_gap_summary: same
+        # single pass over the counters, keeping the per-break detail it drops.
+        per_rec = {
+            rec: _gaps_from_frame_nos(_routed_group(h5, stream_id, rec), with_breaks=True)
+            for rec, _start, _stop in bounds
+        }
+
+    # The offset is the running sample count, which is exactly how concatenate
+    # lays the segments end to end — so a break at segment-local sample k in the
+    # third segment lands where the concatenated recording actually holds it.
+    indices, steps = [], []
+    segments = []
+    start_sample = 0
+    previous_stop = None
+    for segment_index, (rec, start_s, stop_s) in enumerate(bounds):
+        gaps = per_rec[rec]
+        indices.extend(int(value) + start_sample for value in gaps["break_sample_indices"])
+        steps.extend(int(value) for value in gaps["break_gap_frames"])
+
+        gap_before = None
+        if previous_stop is not None and start_s is not None:
+            gap_before = float(start_s - previous_stop)
+        segments.append({
+            "rec": rec,
+            "segment_index": int(segment_index),
+            "start_sample": int(start_sample),
+            "n_samples": int(gaps["n_samples"]),
+            "gap_before_s": gap_before,
+        })
+
+        start_sample += int(gaps["n_samples"])
+        if stop_s is not None:
+            previous_stop = stop_s
+
+    summary = _summarize(stream_id, bounds, per_rec, fs_hz)
+    logger.info(
+        "%s: %d break(s) within segments + %d gap(s) between them; %s s recorded "
+        "spans %s s of real time",
+        stream_id,
+        len(indices),
+        sum(1 for entry in segments if entry["gap_before_s"]),
+        None if summary["recorded_s"] is None else round(summary["recorded_s"], 1),
+        None if summary["real_span_s"] is None else round(summary["real_span_s"], 1),
+    )
+
+    return {
+        "gaps": {"break_sample_indices": indices, "break_gap_frames": steps},
+        "segment_gaps": segments,
+        "summary": summary,
+    }
+
+
+__all__ = ["concatenated_gaps", "frame_gaps", "segment_time_bounds", "well_gap_summary"]

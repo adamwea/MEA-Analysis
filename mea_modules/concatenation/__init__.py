@@ -16,6 +16,7 @@ from .concat import (
     save_concatenated,
     stitch_frames,
 )
+from .union import UnionChannelRecording, build_channel_mapping, union_recording
 
 __all__ = [
     "concatenate_segments",
@@ -23,4 +24,9 @@ __all__ = [
     "save_concatenated",
     "load_concatenated",
     "DEFAULT_CHUNK_DURATION",
+    # the other direction: segments widened back onto the union electrode set,
+    # so the sort can be put back on the whole array
+    "union_recording",
+    "UnionChannelRecording",
+    "build_channel_mapping",
 ]

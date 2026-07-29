@@ -6,6 +6,9 @@ dependencies = [
     "spikeinterface==0.103.2",
     "numpy",
     "h5py",
+    "scipy",
+    # diagnostics/ renders review-artifact plots; it is the only matplotlib user.
+    "matplotlib",
 ]
 
 [build-system]
@@ -17,7 +20,15 @@ build-backend = "setuptools.build_meta"
 # auto-discovered — discovery over "." would expose io/ as a bare top-level
 # `io` package and shadow nothing good.
 [tool.setuptools]
-packages = ["mea_modules", "mea_modules.io"]
+packages = [
+    "mea_modules",
+    "mea_modules.io",
+    "mea_modules.preprocessing",
+    "mea_modules.quality",
+    "mea_modules.concatenation",
+    "mea_modules.spikesorting",
+    "mea_modules.diagnostics",
+]
 
 [tool.setuptools.package-dir]
 "mea_modules" = "."

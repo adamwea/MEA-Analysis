@@ -57,3 +57,4 @@ graphify-out/
 # harness per-session runtime state
 .claude/state/
 .claude/sessions/
+mea_modules/.claude/

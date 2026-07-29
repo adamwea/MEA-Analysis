@@ -51,6 +51,48 @@ def count_segments(h5_path):
     return sum(len(recs) or 1 for recs in layout["streams"].values())
 
 
+# The reader in neo/SpikeInterface only ever opens the "routed" electrode group;
+# anything else in a recording's groups/ is invisible to it.
+ROUTED_GROUP = "routed"
+
+
+def segment_index(h5_path):
+    """Enumerate the file's segments across all three axes.
+
+    A Maxwell file is organised well -> recording -> group. MaxOne is 1 well;
+    MaxTwo plates are 6 or 24. An AxonTracking scan gives many recordings (one
+    per electrode configuration); a network scan gives one. The group axis is
+    almost always the single "routed" group.
+
+    Returns a list of dicts with keys: well, rec, groups, readable. `readable`
+    is False when the recording has no "routed" group — SpikeInterface drops
+    such a well from its stream list with only a warning, so surfacing it here
+    keeps our segment count honest about what can actually be opened.
+    """
+    import h5py
+
+    segments = []
+    with h5py.File(str(h5_path), mode="r") as h5:
+        version = int(h5["version"][0].decode())
+        if version <= _OLD_FORMAT_VERSION:
+            return [
+                {"well": _OLD_FORMAT_STREAM, "rec": None, "groups": [], "readable": True}
+            ]
+        for well in sorted(h5["wells"].keys()):
+            for rec in sorted(h5["wells"][well].keys()):
+                node = h5["wells"][well][rec]
+                groups = sorted(node["groups"].keys()) if "groups" in node else []
+                segments.append(
+                    {
+                        "well": well,
+                        "rec": rec,
+                        "groups": groups,
+                        "readable": ROUTED_GROUP in groups,
+                    }
+                )
+    return segments
+
+
 def load_maxwell(h5_path, stream_id=None, rec_name=None, hdf5_plugin_path=None, plugin_candidates=()):
     """Open one Maxwell stream/recording and return the SpikeInterface recording.
 

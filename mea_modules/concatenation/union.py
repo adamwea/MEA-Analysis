@@ -101,6 +101,24 @@ class UnionChannelRecording(BaseRecording):
         self.n_global_channels = int(n_global_channels)
         self.channel_mapping = mapping
 
+        # Gains and offsets do NOT come along for free. Without them
+        # `has_scaleable_traces()` is False, `return_in_uV=True` silently does
+        # nothing, and every template comes out in ADC units — a factor of 6.29
+        # on Maxwell, which looks entirely plausible and is entirely wrong.
+        # Padded channels take the parent's median gain: their traces are zero,
+        # so the value cannot affect a result, but it has to be finite for
+        # SpikeInterface to treat the recording as scaleable at all.
+        gains = _scaling_property(recording, "gain_to_uV", "get_channel_gains", 1.0)
+        offsets = _scaling_property(recording, "offset_to_uV", "get_channel_offsets", 0.0)
+        if gains is not None:
+            full_gains = np.full(int(n_global_channels), float(np.median(gains)), dtype="float32")
+            full_gains[mapping] = gains
+            self.set_channel_gains(full_gains)
+        if offsets is not None:
+            full_offsets = np.zeros(int(n_global_channels), dtype="float32")
+            full_offsets[mapping] = offsets
+            self.set_channel_offsets(full_offsets)
+
         for segment in recording._recording_segments:
             # Sampling frequency comes from the RECORDING, not the segment:
             # SpikeInterface stopped exposing it on every segment type, and
@@ -121,6 +139,32 @@ class UnionChannelRecording(BaseRecording):
             "channel_mapping": mapping.tolist(),
             "channel_ids": None if channel_ids is None else ids.tolist(),
         }
+
+
+def _scaling_property(recording, name, getter, default):
+    """A parent's per-channel gain or offset, or None when it has none.
+
+    Both spellings are tried because a preprocessed recording may carry the
+    value as a property while a raw extractor exposes it only through the
+    accessor.
+    """
+    try:
+        values = getattr(recording, getter)()
+    except Exception:
+        values = None
+    if values is None:
+        values = recording.get_property(name)
+    if values is None:
+        logger.debug("parent recording carries no %s; padded channels stay unscaled", name)
+        return None
+    values = np.asarray(values, dtype="float32")
+    if values.size != int(recording.get_num_channels()):
+        logger.warning(
+            "parent %s has %d entries for %d channels; ignoring it",
+            name, values.size, recording.get_num_channels(),
+        )
+        return None
+    return values
 
 
 class _UnionChannelSegment(BaseRecordingSegment):

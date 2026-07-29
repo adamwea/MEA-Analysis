@@ -241,59 +241,118 @@ def plot_rescale_effect(coverage, totals, out_path, templates=None, nbefore=None
 
 
 def plot_footprint_gain(positions, template, out_path, backbone_mask=None,
-                        unit_id=None, threshold_frac=0.05, title=None,
-                        figsize=DEFAULT_FIGSIZE, dpi=DEFAULT_DPI):
-    """One unit's footprint on the union, with the backbone marked.
+                        unit_id=None, coverage=None, title=None,
+                        figsize=(15.0, 7.0), dpi=DEFAULT_DPI):
+    """One unit on the union array: what was measured, and how much backs it.
 
-    `template` is ``(n_samples, n_channels)`` for a single unit. Electrodes are
-    sized and coloured by peak absolute amplitude, and `backbone_mask` outlines
-    the electrodes the sorter could actually see — so the recovered extent is
-    the difference between the two.
+    **Descriptive only — nothing is thresholded, masked, or hidden.** This runs
+    before any post-sort QC, so every electrode is drawn at whatever amplitude
+    it carries and the reader decides what to believe. There is deliberately no
+    "electrodes above X% of peak" count: choosing that percentage would be a
+    claim about where the footprint ends, which is exactly the judgement this
+    capsule refuses to make.
+
+    Two maps of the same array, which is what makes the plot readable without a
+    threshold:
+
+    * **amplitude** — peak |value| per electrode, all of them;
+    * **coverage** — how many spikes stand behind each electrode's average.
+
+    Read together they answer the only question that matters here: a distant
+    electrode showing signal is interesting if its coverage is high and is
+    probably one noisy snippet if its coverage is 1. Neither map decides that
+    for the reader; putting them side by side lets the reader decide.
+
+    `backbone_mask` outlines the electrodes the sorter could actually see, so
+    the recovered extent is visible as the difference.
     """
     import numpy as np
 
     positions = np.asarray(positions, dtype=float)[:, :2]
     peak = np.abs(np.asarray(template, dtype=float)).max(axis=0)
-    live = peak > 0
-    strong = peak > (peak.max() * float(threshold_frac)) if peak.max() > 0 else live
 
     fig = _new_figure(figsize, dpi)
-    ax = fig.subplots(1, 1)
+    axes = fig.subplots(1, 2 if coverage is not None else 1)
+    axes = np.atleast_1d(axes)
 
-    ax.scatter(positions[~live, 0], positions[~live, 1], s=2, c="0.88",
-               marker="s", linewidths=0, rasterized=True)
+    # --- amplitude, every electrode, no threshold -------------------------
+    # Log colour, because the dynamic range is the whole problem: a soma at
+    # ~700 uV beside axonal signal at ~5-50 uV puts the entire arbor in the
+    # bottom 7% of a linear scale, i.e. black. This shows MORE than a linear
+    # scale, it does not hide anything — every electrode is still drawn.
+    from matplotlib.colors import LogNorm
+
+    ax = axes[0]
+    positive = peak[peak > 0]
+    amp_norm = None
+    if positive.size:
+        floor = max(float(np.percentile(positive, 1)), float(peak.max()) * 1e-4)
+        amp_norm = LogNorm(vmin=floor, vmax=max(float(peak.max()), floor * 10))
     scatter = ax.scatter(
-        positions[live, 0], positions[live, 1], c=peak[live],
-        s=4 + 40 * peak[live] / max(peak.max(), 1e-12),
-        cmap="magma", marker="s", linewidths=0, rasterized=True,
+        positions[:, 0], positions[:, 1], c=np.maximum(peak, 1e-12),
+        s=6, cmap="magma", marker="s", linewidths=0, norm=amp_norm, rasterized=True,
     )
-    fig.colorbar(scatter, ax=ax, label="peak |amplitude| (uV)", shrink=0.8)
+    fig.colorbar(scatter, ax=ax, label="peak |amplitude| (uV, log)", shrink=0.8)
+    ax.set_title("measured amplitude (all electrodes)")
+    _finish_axis(ax, backbone_mask, positions)
+    # Below the axes, not inside them: the legend sits top-right and the array
+    # fills the frame, so an in-axes box lands on top of one or the other.
+    ax.set_xlabel(
+        f"x (um)\npeak {peak.max():.1f} uV   |   non-zero on "
+        f"{int((peak > 0).sum())} of {peak.size} electrodes"
+    )
+
+    # --- coverage, every electrode ----------------------------------------
+    if coverage is not None:
+        coverage = np.asarray(coverage)
+        ax = axes[1]
+        # Log colour: coverage spans 1 to thousands, and on a linear scale the
+        # single-spike electrodes are indistinguishable from the well-sampled.
+        shown = np.where(coverage > 0, coverage, np.nan).astype(float)
+        from matplotlib.colors import LogNorm
+        finite = shown[np.isfinite(shown)]
+        norm = LogNorm(vmin=max(finite.min(), 1), vmax=max(finite.max(), 2)) \
+            if finite.size else None
+        sc2 = ax.scatter(positions[:, 0], positions[:, 1], c=shown, s=6,
+                         cmap="viridis", marker="s", linewidths=0,
+                         norm=norm, rasterized=True)
+        fig.colorbar(sc2, ax=ax, label="spikes behind this electrode", shrink=0.8)
+        ax.set_title("spikes behind each average")
+        _finish_axis(ax, backbone_mask, positions)
+        live = coverage[coverage > 0]
+        ax.set_xlabel(
+            f"x (um)\nmedian {int(np.median(live)) if live.size else 0} spikes   |   "
+            f"min {int(live.min()) if live.size else 0}   |   "
+            f"n=1 on {int((coverage == 1).sum())} electrodes"
+        )
+
+    if title:
+        fig.suptitle(title)
+    fig.tight_layout()
+    logger.info(
+        "footprint unit %s: peak %.1f uV, non-zero on %d of %d electrodes%s",
+        unit_id, float(peak.max()), int((peak > 0).sum()), peak.size,
+        "" if coverage is None else
+        f", coverage median {int(np.median(coverage[coverage > 0])) if (coverage > 0).any() else 0}",
+    )
+    return _save_and_release(fig, out_path)
+
+
+def _finish_axis(ax, backbone_mask, positions):
+    """Shared axis dressing for the footprint panels."""
+    import numpy as np
 
     if backbone_mask is not None:
         backbone_mask = np.asarray(backbone_mask, dtype=bool)
         ax.scatter(
             positions[backbone_mask, 0], positions[backbone_mask, 1],
             s=18, facecolors="none", edgecolors="cyan", linewidths=0.35,
-            label=f"sorting backbone ({int(backbone_mask.sum())} electrodes)",
-            rasterized=True,
+            label=f"sorting backbone ({int(backbone_mask.sum())})", rasterized=True,
         )
         ax.legend(loc="upper right", fontsize=8)
-
     ax.set_aspect("equal")
     ax.set_xlabel("x (um)")
     ax.set_ylabel("y (um)")
-    ax.set_title(title or f"unit {unit_id} footprint on the union array")
-
-    n_strong = int(strong.sum())
-    ax.text(
-        0.02, 0.98,
-        f"electrodes above {threshold_frac:.0%} of peak: {n_strong}",
-        transform=ax.transAxes, va="top", fontsize=9,
-    )
-    fig.tight_layout()
-    logger.info("footprint unit %s: %d electrode(s) above %.0f%% of peak",
-                unit_id, n_strong, 100 * threshold_frac)
-    return _save_and_release(fig, out_path)
 
 
 def plot_template_agreement(reference, candidate, out_path, coverage=None,

@@ -126,49 +126,116 @@ def plot_coverage_map(positions, n_segments_routed, out_path, title=None,
     return _save_and_release(fig, out_path)
 
 
-def plot_rescale_effect(coverage, totals, out_path, title=None,
-                        figsize=DEFAULT_FIGSIZE, dpi=DEFAULT_DPI):
-    """How far the union-recording average was from correct, per unit/electrode."""
+def plot_rescale_effect(coverage, totals, out_path, templates=None, nbefore=None,
+                        title=None, figsize=(16.0, 5.4), dpi=DEFAULT_DPI):
+    """Which electrodes in a recovered footprint can be trusted, and why.
+
+    The rescale factor on its own answers nothing: a factor of 21 backed by 100
+    spikes is a good estimate, and a factor of 2000 backed by 1 spike is noise
+    at full amplitude. Both are "large corrections". What decides trust is how
+    many spikes stand behind each unit-electrode average, so that is what these
+    panels are keyed on.
+
+    1. **How much data backs each estimate.** The coverage distribution, with
+       the counts a reader would threshold on.
+    2. **What that buys, measured.** The pre-spike baseline of a template is
+       signal-free, so its RMS IS the residual noise left after averaging. Plotted
+       against coverage it shows the precision actually achieved — no assumption
+       about the noise level, and it should fall as 1/sqrt(n).
+    3. **What a threshold costs.** How much of the array survives at each
+       minimum-coverage cut, which is the decision being made.
+
+    `templates` is ``(n_units, n_samples, n_channels)``; without it panel 2 is
+    skipped. `nbefore` is how many leading samples precede the spike (default:
+    a third of the window).
+    """
     import numpy as np
 
     coverage = np.asarray(coverage, dtype=float)
     totals = np.asarray(totals, dtype=float)
-    with np.errstate(divide="ignore", invalid="ignore"):
-        # The reciprocal of the correction: what fraction of the true amplitude
-        # an uncorrected template would have carried.
-        retained = np.where(coverage > 0, coverage / totals[:, None], np.nan)
-    flat = retained[np.isfinite(retained)]
+    live = coverage > 0
+    counts = coverage[live]
 
     fig = _new_figure(figsize, dpi)
-    left, right = fig.subplots(1, 2)
+    axes = fig.subplots(1, 3)
 
-    left.hist(flat, bins=60, color="0.3")
-    left.set_yscale("log")
-    left.set_xlabel("fraction of true amplitude BEFORE correction")
-    left.set_ylabel("unit-electrode pairs (log)")
-    left.set_title("what the uncorrected average would have kept")
-    for q, style in ((0.5, "-"), (0.05, ":"), (0.95, ":")):
-        v = float(np.quantile(flat, q))
-        left.axvline(v, color="red", ls=style, lw=1.0)
-        left.text(v, left.get_ylim()[1] * 0.6, f" {q:.0%}={v:.3f}",
-                  color="red", fontsize=8, rotation=90, va="top")
+    # --- 1. how many spikes back each estimate ---------------------------
+    ax = axes[0]
+    bins = np.logspace(0, np.log10(max(counts.max(), 10.0)), 40)
+    ax.hist(counts, bins=bins, color="0.35")
+    ax.set_xscale("log"); ax.set_yscale("log")
+    ax.set_xlabel("spikes behind one unit-electrode average")
+    ax.set_ylabel("unit-electrode pairs (log)")
+    ax.set_title("how much data backs each estimate")
+    for n, c in ((1, "red"), (10, "darkorange"), (100, "green")):
+        if counts.max() >= n:
+            ax.axvline(n, color=c, ls="--", lw=1.0)
+            ax.text(n, ax.get_ylim()[1] * 0.5, f" n={n}", color=c, fontsize=8, rotation=90)
+    ax.text(0.97, 0.95,
+            f"median {int(np.median(counts))}\nmin {int(counts.min())}\n"
+            f"n=1: {int((counts == 1).sum()):,}",
+            transform=ax.transAxes, ha="right", va="top", fontsize=8)
 
-    # Per-unit spread: a unit firing evenly across segments is corrected
-    # uniformly; one concentrated in a few segments is not.
-    per_unit = np.nanmedian(retained, axis=1)
-    right.plot(np.sort(per_unit), lw=1.2, color="0.2")
-    right.set_xlabel("unit (sorted)")
-    right.set_ylabel("median retained fraction")
-    right.set_title("per-unit median, before correction")
-    right.set_ylim(0, 1.05)
+    # --- 2. measured precision vs coverage -------------------------------
+    ax = axes[1]
+    if templates is not None:
+        templates = np.asarray(templates)
+        pre = int(nbefore if nbefore is not None else max(2, templates.shape[1] // 3))
+        # The window before the spike carries no signal, so whatever is left in
+        # it is the noise that survived averaging.
+        baseline = np.sqrt((templates[:, :pre, :] ** 2).mean(axis=1))   # (units, chans)
+        noise = baseline[live]
+        edges = np.unique(np.round(np.logspace(0, np.log10(max(counts.max(), 10.0)), 18)))
+        mids, meds = [], []
+        for lo, hi in zip(edges[:-1], edges[1:]):
+            m = (counts >= lo) & (counts < hi)
+            if m.sum() > 20:
+                mids.append(np.sqrt(lo * hi)); meds.append(float(np.median(noise[m])))
+        if mids:
+            mids, meds = np.array(mids), np.array(meds)
+            ax.loglog(mids, meds, "o-", color="0.2", label="measured baseline RMS")
+            # 1/sqrt(n) anchored on the first bin — the shape averaging should give.
+            ax.loglog(mids, meds[0] * np.sqrt(mids[0] / mids), "--", color="red",
+                      label=r"$1/\sqrt{n}$ reference")
+            ax.legend(fontsize=8)
+        ax.set_xlabel("spikes behind the average")
+        ax.set_ylabel("residual noise (uV RMS)")
+        ax.set_title("precision actually achieved")
+    else:
+        ax.set_axis_off()
+        ax.text(0.5, 0.5, "pass templates= for the\nmeasured-precision panel",
+                ha="center", va="center", transform=ax.transAxes, fontsize=9)
 
+    # --- 3. what a coverage threshold costs -------------------------------
+    ax = axes[2]
+    thresholds = np.array([1, 2, 5, 10, 20, 50, 100, 200, 500])
+    thresholds = thresholds[thresholds <= counts.max()]
+    kept = [100.0 * (counts >= t).sum() / coverage.size for t in thresholds]
+    ax.plot(thresholds, kept, "o-", color="0.2")
+    ax.set_xscale("log")
+    ax.set_xlabel("minimum spikes required")
+    ax.set_ylabel("% of unit-electrode pairs kept")
+    ax.set_title("what a trust threshold costs")
+    ax.grid(alpha=0.3)
+    for t, k in zip(thresholds, kept):
+        if t in (1, 10, 100):
+            ax.annotate(f"{k:.0f}%", (t, k), textcoords="offset points",
+                        xytext=(4, 6), fontsize=8)
+
+    # The correction's size belongs here as context, not as its own panel: it
+    # is what the rescale bought, but it is not what decides trust.
+    with np.errstate(divide="ignore", invalid="ignore"):
+        retained = np.where(live, coverage / totals[:, None], np.nan)
+    med = float(np.nanmedian(retained))
     if title:
-        fig.suptitle(title)
+        fig.suptitle(f"{title}\nuncorrected would have kept a median {med:.4f} "
+                     f"of true amplitude", fontsize=10)
     fig.tight_layout()
+
     logger.info(
-        "rescale effect: median retained %.4f, 5th %.4f, 95th %.4f over %d pairs",
-        float(np.median(flat)), float(np.quantile(flat, 0.05)),
-        float(np.quantile(flat, 0.95)), flat.size,
+        "estimate reliability: coverage median %d, min %d, %d pair(s) rest on a "
+        "single spike; uncorrected would have kept a median %.4f of amplitude",
+        int(np.median(counts)), int(counts.min()), int((counts == 1).sum()), med,
     )
     return _save_and_release(fig, out_path)
 

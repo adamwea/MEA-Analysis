@@ -21,10 +21,14 @@ Three things, in order of what they establish.
 at electrode ``c`` for unit ``u`` should be ``sigma_c / sqrt(coverage[u, c])`` —
 ordinary ``1/sqrt(n)`` averaging. :func:`channel_noise_scale` measures this
 directly from the templates' own pre-spike baselines and reports whether
-``scale * sqrt(coverage)`` is constant. On P003454 it is, to within about 9%
-across coverage from 2 to 2000, and the ``coverage == 1`` case lands on the raw
-trace noise exactly as it must. Establishing this first is what makes the rest
-quantitative rather than descriptive.
+``scale * sqrt(coverage)`` is constant. On P003454 it is, within 1.3x across
+coverage from 1 to 2000, and adversarial review confirmed the model holds.
+
+Do NOT read the ``coverage == 1`` bin landing on 9.332 uV as independent
+confirmation. An earlier version of this docstring did, calling it the raw trace
+noise "exactly as it must" be; review showed that agreement is a quantization
+artifact which cannot distinguish any sigma between 4.7 and 13.9 uV. The model
+stands on the constancy of the normalised column, not on that coincidence.
 
 **2. Detection specificity.** Given the model, an electrode "carries signal"
 when its peak exceeds a multiple of its *own* predicted noise. Poorly-supported
@@ -69,6 +73,8 @@ __all__ = [
     "plot_footprint_threshold_ladder",
     "plot_coverage_vs_amplitude",
     "plot_enrichment_distribution",
+    "propagation_test",
+    "plot_propagation_test",
     "write_sensitivity_plots",
 ]
 
@@ -795,6 +801,188 @@ def plot_enrichment_distribution(sweep, out_path, threshold=None, title=None):
     ax.grid(alpha=0.25, linewidth=0.5)
 
     fig.suptitle(title or f"Step 5 — per-unit spread at z >= {used:g}", fontsize=12)
+    fig.tight_layout(rect=(0, 0, 1, 0.93))
+    fig.savefig(out_path, dpi=150)
+    plt.close(fig)
+    logger.info("wrote %s", out_path)
+    return out_path
+
+
+def propagation_test(
+    templates, coverage, routing, positions, sigma, *, nbefore,
+    thresholds=(1.0, 2.0, 3.0, 6.0), coverage_floor=25, max_units=120,
+    min_distance_um=30.0, sampling_frequency=20000.0, seed=0,
+):
+    """Does the far-field signal PROPAGATE, or just appear? The decisive test.
+
+    Amplitude tests cannot separate a real axon from noise the rescale amplified,
+    because the rescale acts on amplitude. Timing is untouched by it, so a
+    propagation test is immune to the transformation that confounds everything
+    else — and a single spike multiplied 2000x cannot manufacture a coherent
+    delay gradient.
+
+    Two statistics, the first of which is the one to trust:
+
+    **Fraction of positive delays.** Under noise, peak delays are symmetric about
+    the median, so ~50% are positive. Under conduction away from the soma they
+    must be predominantly positive. This needs no fit, no velocity estimate and
+    no assumption about the delay-distance relationship being linear — which is
+    why it survived when everything else was ambiguous.
+
+    **Apparent velocity and its r-squared**, from a Theil-Sen fit of delay against
+    distance. Report both together and never the velocity alone: fitting a slope
+    to uncorrelated data returns a number regardless, and on real data here it
+    returned anything from 0.8 to 7.5 m/s purely as a function of the threshold
+    chosen. A genuine conduction velocity is threshold-invariant; one that tracks
+    the threshold is an artefact. Ronchi et al. 2021 discard velocity branches
+    below r-squared 0.9.
+
+    The null repeats both on the pre-spike window. Note it is a contaminated
+    upper bound rather than a clean null — detection rates there fall
+    monotonically with distance from the spike — so treat a real-versus-null gap
+    as conservative.
+    """
+
+    from scipy import stats
+
+    coverage = np.asarray(coverage)
+    routing = np.asarray(routing)
+    positions = np.asarray(positions, dtype=float)
+    per_electrode = routing.sum(axis=0).astype(int)
+    backbone = per_electrode >= int(per_electrode.max())
+    baseline_end = max(2, int(nbefore) - _BASELINE_GUARD)
+
+    n_units = templates.shape[0]
+    rng = np.random.default_rng(seed)
+    units = np.sort(rng.choice(n_units, size=min(int(max_units), n_units), replace=False))
+
+    rows = []
+    for threshold in np.asarray(thresholds, dtype=float):
+        for label, use_null in (("real", False), ("null", True)):
+            fractions, velocities, r2s, counts = [], [], [], []
+            for unit_index in units:
+                template = np.asarray(templates[int(unit_index)], dtype=float)
+                state = _unit_state(template, coverage[int(unit_index)], sigma, nbefore)
+                bb = np.flatnonzero(backbone)
+                soma = int(bb[np.argmax(state["peak"][bb])]) if bb.size else int(np.argmax(state["peak"]))
+                distance = np.linalg.norm(positions - positions[soma], axis=1)
+
+                window = template[:baseline_end, :] if use_null else template[baseline_end:, :]
+                z = state["z_null"] if use_null else state["z"]
+                delay_ms = np.argmin(window, axis=0).astype(float) / sampling_frequency * 1000.0
+
+                keep = (
+                    (z >= threshold)
+                    & (coverage[int(unit_index)] >= coverage_floor)
+                    & (distance > float(min_distance_um))
+                    & (~backbone)
+                )
+                if keep.sum() < 8:
+                    continue
+                d = distance[keep]
+                centred = delay_ms[keep] - np.median(delay_ms[keep])
+                counts.append(int(keep.sum()))
+                fractions.append(float((centred > 0).mean()))
+                try:
+                    slope = stats.theilslopes(centred, d)[0]  # ms per um
+                    if abs(slope) > 1e-12:
+                        velocities.append(abs(1e-3 / slope))  # um/ms -> m/s
+                    r2s.append(float(stats.pearsonr(d, centred)[0] ** 2))
+                except Exception:  # pragma: no cover - degenerate fits
+                    pass
+
+            if not counts:
+                continue
+            rows.append({
+                "threshold": float(threshold),
+                "kind": label,
+                "n_units": len(counts),
+                "median_electrodes": int(np.median(counts)),
+                "positive_delay_fraction": float(np.median(fractions)),
+                "median_velocity_m_s": float(np.median(velocities)) if velocities else float("nan"),
+                "median_r2": float(np.median(r2s)) if r2s else float("nan"),
+                "frac_r2_above_0p5": float(np.mean(np.asarray(r2s) > 0.5)) if r2s else float("nan"),
+            })
+
+    real = [r for r in rows if r["kind"] == "real"]
+    if real:
+        worst = max(abs(r["positive_delay_fraction"] - 0.5) for r in real)
+        logger.info(
+            "propagation test: positive-delay fraction departs from 0.5 by at most "
+            "%.3f across thresholds %s — %s. Median r2 %.3f (Ronchi's branch "
+            "criterion is 0.9)",
+            worst, [r["threshold"] for r in real],
+            "NO evidence of outward propagation" if worst < 0.05
+            else "some directional asymmetry, investigate",
+            float(np.nanmedian([r["median_r2"] for r in real])),
+        )
+    return rows
+
+
+def plot_propagation_test(rows, out_path, title=None):
+    """Three panels: delay symmetry, apparent velocity, and fit quality."""
+
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    if not rows:
+        return None
+    real = [r for r in rows if r["kind"] == "real"]
+    null = [r for r in rows if r["kind"] == "null"]
+    if not real:
+        return None
+
+    fig, axes = plt.subplots(1, 3, figsize=(14.0, 4.3))
+
+    ax = axes[0]
+    for series, colour, label in ((real, "#2b6cb0", "real"), (null, "#a0aec0", "null (pre-spike)")):
+        if series:
+            ax.plot([r["threshold"] for r in series],
+                    [100 * r["positive_delay_fraction"] for r in series],
+                    marker="o", color=colour, label=label)
+    ax.axhline(50.0, color="#c53030", linestyle="--", linewidth=1.4)
+    ax.annotate("50% = symmetric = noise", xy=(0.04, 0.9), xycoords="axes fraction",
+                fontsize=8, color="#c53030")
+    ax.set_ylim(35, 75)
+    ax.set_xlabel("detection threshold (z)")
+    ax.set_ylabel("% of delays positive")
+    ax.set_title("Outward propagation would push this ABOVE 50%", fontsize=10)
+    ax.legend(fontsize=8)
+    ax.grid(alpha=0.25, linewidth=0.5)
+
+    ax = axes[1]
+    for series, colour, label in ((real, "#2b6cb0", "real"), (null, "#a0aec0", "null")):
+        if series:
+            ax.plot([r["threshold"] for r in series],
+                    [r["median_velocity_m_s"] for r in series],
+                    marker="o", color=colour, label=label)
+    ax.axhspan(0.3, 2.0, color="#2f855a", alpha=0.15, linewidth=0)
+    ax.annotate("unmyelinated axon\n0.3-2 m/s", xy=(0.5, 1.0), xycoords=("axes fraction", "data"),
+                fontsize=8, color="#2f855a", va="center")
+    ax.set_yscale("log")
+    ax.set_xlabel("detection threshold (z)")
+    ax.set_ylabel("apparent velocity (m/s)")
+    ax.set_title("A real velocity would be FLAT across thresholds", fontsize=10)
+    ax.legend(fontsize=8)
+    ax.grid(alpha=0.25, which="both", linewidth=0.5)
+
+    ax = axes[2]
+    for series, colour, label in ((real, "#2b6cb0", "real"), (null, "#a0aec0", "null")):
+        if series:
+            ax.plot([r["threshold"] for r in series], [r["median_r2"] for r in series],
+                    marker="o", color=colour, label=label)
+    ax.axhline(0.9, color="#c53030", linestyle="--", linewidth=1.4)
+    ax.annotate("Ronchi 2021 branch criterion", xy=(0.04, 0.9), xycoords="axes fraction",
+                fontsize=8, color="#c53030")
+    ax.set_ylim(0, 1.0)
+    ax.set_xlabel("detection threshold (z)")
+    ax.set_ylabel("median r$^2$ of delay vs distance")
+    ax.set_title("Without this, the velocity is a fit to noise", fontsize=10)
+    ax.legend(fontsize=8)
+    ax.grid(alpha=0.25, linewidth=0.5)
+
+    fig.suptitle(title or "Does the far-field signal propagate?", fontsize=12)
     fig.tight_layout(rect=(0, 0, 1, 0.93))
     fig.savefig(out_path, dpi=150)
     plt.close(fig)

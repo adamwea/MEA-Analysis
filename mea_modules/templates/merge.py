@@ -226,7 +226,6 @@ def merge_segment_templates(
     *,
     well=None,
     weighting="uniform",
-    unit_ids=None,
     ms_before=DEFAULT_MS_BEFORE,
     ms_after=DEFAULT_MS_AFTER,
     max_spikes_per_unit=DEFAULT_MAX_SPIKES_PER_UNIT,
@@ -313,7 +312,15 @@ def merge_segment_templates(
     from mea_modules.postprocess import load_analyzer, unit_random_spike_count, unit_template
 
     well_suffix = f" well={well}" if well else ""
-    seen_unit_ids = list(unit_ids) if unit_ids is not None else None
+    # Always discovered from the first segment opened, never caller-supplied:
+    # an earlier version accepted a `unit_ids=` override, but nothing ever
+    # populated `unit_accumulators` for a caller-supplied id (only the
+    # "discovered from the first segment" branch below did), so it raised
+    # KeyError on first use -- and even fixed, restricting to a SUBSET would
+    # have tripped the full-set consistency check below on every segment. A
+    # units filter is straightforward to add back later with its own test;
+    # today nothing calls this with anything but the full set.
+    seen_unit_ids = None
     unit_accumulators = {}
     channel_locations = {}  # channel_id -> xy, EVERY channel any segment routed
     n_segments_used = 0
@@ -369,6 +376,13 @@ def merge_segment_templates(
 
             channel_ids = list(analyzer.channel_ids)
             locations_xy = np.asarray(analyzer.get_channel_locations(), dtype=np.float64)[:, :2]
+            # `setdefault` keeps the FIRST segment's xy for a channel routed
+            # by more than one -- unlike the n_samples mismatch above, this is
+            # never cross-checked, because electrode position is a fixed
+            # property of the physical probe, not a per-recording measurement:
+            # two segments disagreeing on where electrode 42 sits would mean
+            # they were not built from the same probe geometry, which is a
+            # deeper problem than this function can detect from templates alone.
             for channel_id, xy in zip(channel_ids, locations_xy):
                 channel_locations.setdefault(channel_id, xy)
 
@@ -409,8 +423,12 @@ def merge_segment_templates(
             # regardless of segment count.
             del analyzer
 
-    if seen_unit_ids is None:
-        raise ValueError("merge_segment_templates: no segment analyzer directories given")
+    # seen_unit_ids cannot still be None here: segment_analyzer_dirs was
+    # already checked non-empty above, and any exception raised inside the
+    # loop propagates immediately rather than falling through to this line --
+    # so the loop body ran at least once and set it. Asserted, not re-raised
+    # as a second ValueError, precisely because it should be unreachable.
+    assert seen_unit_ids is not None
 
     union_channel_ids = sorted(channel_locations.keys(), key=_channel_sort_key)
     channel_index = {channel_id: i for i, channel_id in enumerate(union_channel_ids)}

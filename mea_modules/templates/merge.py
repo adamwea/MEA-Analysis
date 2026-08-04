@@ -71,6 +71,7 @@ Pure library: no argparse, no printing, no ``__main__``.
 """
 
 import logging
+import math
 from pathlib import Path
 
 import numpy as np
@@ -289,15 +290,26 @@ def merge_segment_templates(
             "weighting": weighting,
             "ms_before": float,
             "ms_after": float,
+            "sampling_frequency_hz": float,
         }
+
+    `sampling_frequency_hz` is read off each segment's own analyzer
+    (`analyzer.sampling_frequency`, which SpikeInterface 0.103.2's
+    `SortingAnalyzer` forwards from `analyzer.sorting.get_sampling_frequency()`
+    — the same attribute `mea_modules.postprocess.analyzer` already reads it
+    from) and checked for agreement across every segment opened: every segment
+    merged for one well comes from the same physical Maxwell recording, so a
+    disagreement is a data-integrity problem, not a rate to average over — see
+    the `ValueError` below.
 
     Raises `ValueError` if `segment_analyzer_dirs` is empty, if any analyzer is
     sparse (`register_segment`'s contract is `sparse=False` — see its module
     docstring; a sparsity mask would silently hide channels this merge needs to
     see), if two segments disagree on the unit id set (a sign they were not
     registered from the same backbone sort — see
-    `mea_modules.registration.segments.register_sorting_to_segment`), or if not
-    one unit had a single spike across every segment given.
+    `mea_modules.registration.segments.register_sorting_to_segment`), if two
+    segments disagree on `sampling_frequency_hz`, or if not one unit had a
+    single spike across every segment given.
     """
     if weighting not in WEIGHTING_MODES:
         raise ValueError(f"weighting must be one of {WEIGHTING_MODES}, got {weighting!r}")
@@ -321,6 +333,7 @@ def merge_segment_templates(
     # units filter is straightforward to add back later with its own test;
     # today nothing calls this with anything but the full set.
     seen_unit_ids = None
+    sampling_frequency_hz = None
     unit_accumulators = {}
     channel_locations = {}  # channel_id -> xy, EVERY channel any segment routed
     n_segments_used = 0
@@ -374,6 +387,29 @@ def merge_segment_templates(
                     "same backbone sort"
                 )
 
+            # Every segment analyzer merged for one well is built off the same
+            # physical Maxwell recording (mea_modules.io.load_segment), so they
+            # must all report the same rate. `analyzer.sampling_frequency`
+            # forwards `analyzer.sorting.get_sampling_frequency()` (confirmed
+            # against SpikeInterface 0.103.2's SortingAnalyzer -- the same
+            # attribute mea_modules.postprocess.analyzer already reads). Checked
+            # with a tight relative tolerance rather than bare `==` only to
+            # absorb harmless float round-trip noise, not to paper over a real
+            # disagreement -- see the module's own no-silent-averaging stance on
+            # channel/unit disagreement above.
+            this_fs = float(analyzer.sampling_frequency)
+            if sampling_frequency_hz is None:
+                sampling_frequency_hz = this_fs
+            elif not math.isclose(this_fs, sampling_frequency_hz, rel_tol=1e-9):
+                raise ValueError(
+                    f"{seg_dir}: sampling_frequency_hz={this_fs} does not match "
+                    f"{sampling_frequency_hz} seen in earlier segments -- every "
+                    "segment merged for one well is expected to share one "
+                    "sampling rate (same physical recording); a real "
+                    "disagreement here is a data-integrity problem worth "
+                    "surfacing loudly, not silently averaging over"
+                )
+
             channel_ids = list(analyzer.channel_ids)
             locations_xy = np.asarray(analyzer.get_channel_locations(), dtype=np.float64)[:, :2]
             # `setdefault` keeps the FIRST segment's xy for a channel routed
@@ -423,12 +459,14 @@ def merge_segment_templates(
             # regardless of segment count.
             del analyzer
 
-    # seen_unit_ids cannot still be None here: segment_analyzer_dirs was
+    # seen_unit_ids and sampling_frequency_hz cannot still be None here: both
+    # are set on the loop's first iteration, and segment_analyzer_dirs was
     # already checked non-empty above, and any exception raised inside the
     # loop propagates immediately rather than falling through to this line --
-    # so the loop body ran at least once and set it. Asserted, not re-raised
+    # so the loop body ran at least once and set them. Asserted, not re-raised
     # as a second ValueError, precisely because it should be unreachable.
     assert seen_unit_ids is not None
+    assert sampling_frequency_hz is not None
 
     union_channel_ids = sorted(channel_locations.keys(), key=_channel_sort_key)
     channel_index = {channel_id: i for i, channel_id in enumerate(union_channel_ids)}
@@ -480,6 +518,7 @@ def merge_segment_templates(
         "weighting": weighting,
         "ms_before": float(ms_before),
         "ms_after": float(ms_after),
+        "sampling_frequency_hz": sampling_frequency_hz,
     }
 
 

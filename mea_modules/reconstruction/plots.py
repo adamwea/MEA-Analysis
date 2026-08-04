@@ -110,7 +110,14 @@ DEFAULT_DPI = 150.0
 FOOTPRINT_RECONSTRUCTION_PLOT_FILENAME = "footprint_reconstruction.png"
 
 DEFAULT_FOOTPRINT_FIGSIZE = (7.5, 6.5)
-DEFAULT_FOOTPRINT_DPI = 150.0
+# Bumped 150 -> 220 (third correction, 2026-08-04): at pitch-capped radii
+# (max ~8.4um on this 17.5um-pitch array) and the OLD 150 DPI, even the
+# max-amplitude circle rendered at only a few px across on a ~2900um-wide
+# axes -- pixel resolution, not just the amplitude->radius mapping, was
+# part of why low-amplitude circles read as "invisible." Data-space sizing
+# (still pitch-capped, still non-overlapping) is unaffected by this -- DPI
+# only changes how many pixels represent a given um span.
+DEFAULT_FOOTPRINT_DPI = 220.0
 
 # SUPERSEDED (2026-08-04, second correction): a points^2 `scatter(s=...)`
 # size is fixed in the FIGURE's point space, not the axes' DATA space -- it
@@ -140,7 +147,25 @@ DEFAULT_MAX_RADIUS_PITCH_FRACTION = 0.48
 # scale" framing: the smallest-amplitude channel should read as a small but
 # still-visible dot, not vanish, and this stays proportionate however large
 # or small the detected pitch turns out to be.
-DEFAULT_MIN_RADIUS_MAX_FRACTION = 0.06
+# THIRD CORRECTION (2026-08-04): raised 0.06 -> 0.22 after Adam reviewed
+# unit 154 and reported many circles reading as invisible. 0.06 of an
+# already-small pitch-capped max radius (~8.4um at this array's 17.5um
+# pitch) rounds to a fraction of a pixel at any reasonable DPI -- correct
+# in data-space, but genuinely below the render's visible threshold. 0.22
+# keeps a real visual gap from the max (still obviously smaller) while
+# guaranteeing every electrode, even the very lowest amplitude, paints as
+# an actually-visible dot.
+DEFAULT_MIN_RADIUS_MAX_FRACTION = 0.22
+# Curve applied to the normalized [0, 1] amplitude position before mapping
+# onto [min_radius, max_radius] -- "linear" leaves it untouched, "sqrt"/"log"
+# both PULL low-normalized values UP toward the max (compressing the huge
+# dynamic range real amplitude data can have -- unit 154 alone spans
+# 0.9-320.6, ~356x) so the many low-but-not-minimum electrodes in between
+# read as visibly differentiated dots rather than clustering near the floor.
+# Defaults to "log" per Adam's own suggestion ("perhaps do log scaling or
+# set a floor... so everything remains basically visible") -- paired with
+# the raised floor above so even the true minimum is never sub-visible.
+DEFAULT_RADIUS_SCALING = "log"
 
 
 def _normalize_colorbar_limits(values: Any) -> tuple:
@@ -479,6 +504,7 @@ def _marker_radii_um(
     values, *, pitch_um,
     max_radius_pitch_fraction=DEFAULT_MAX_RADIUS_PITCH_FRACTION,
     min_radius_max_fraction=DEFAULT_MIN_RADIUS_MAX_FRACTION,
+    scaling=DEFAULT_RADIUS_SCALING,
 ):
     """Per-channel circle RADIUS in DATA units (um), capped by electrode pitch.
 
@@ -493,12 +519,21 @@ def _marker_radii_um(
     single largest-amplitude circle cannot reach past its neighbor's own
     center) and `min_radius = max_radius * min_radius_max_fraction` (a small
     but visible floor, proportionate to whatever the max radius turns out to
-    be). Per Adam's own framing -- "scaled so the biggest and smallest amps
-    set the scale" -- this is a plain linear min-max map of the amplitude
-    range onto `[min_radius, max_radius]`; no saturating `sqrt`/`log` curve
-    (those were the OLD points-based function's tool for a different problem
-    -- flattening outlier influence in a floor/ceiling that had no geometric
-    meaning -- not relevant once the ceiling is pitch-derived).
+    be).
+
+    THIRD CORRECTION (2026-08-04): the amplitude->radius map is no longer
+    strictly linear. Adam reviewed a real render (unit 154, amplitude range
+    0.9-320.6 -- a ~356x spread) and reported many circles reading as
+    invisible: a linear min-max map crams the huge majority of ordinary
+    (non-peak) electrodes into the bottom sliver of that range, right next
+    to the floor. `scaling="log"` (the new default, per Adam's own
+    suggestion) applies `log1p` to the NORMALIZED [0, 1] position before
+    the radius map, pulling low-but-not-minimum values up toward the max --
+    the true minimum still lands exactly on the floor either way, which is
+    why the floor itself was ALSO raised (0.06 -> 0.22, see
+    `DEFAULT_MIN_RADIUS_MAX_FRACTION`) so nothing, including the true
+    minimum, renders sub-visible. `"sqrt"` is available as a gentler
+    compression; `"linear"` restores the original literal min-max map.
 
     Returns an `(n_channels,)` float array of radii, safe to pass straight
     into `matplotlib.collections.EllipseCollection(widths=2*radii,
@@ -522,6 +557,13 @@ def _marker_radii_um(
 
     vmin, vmax = float(np.min(finite)), float(np.max(finite))
     normalized = np.clip((values - vmin) / (vmax - vmin), 0.0, 1.0)
+
+    token = str(scaling or "linear").strip().lower()
+    if token == "sqrt":
+        normalized = np.sqrt(normalized)
+    elif token == "log":
+        normalized = np.log1p(9.0 * normalized) / np.log(10.0)
+
     return min_radius + (max_radius - min_radius) * normalized
 
 
@@ -636,11 +678,13 @@ def plot_unit_footprint_reconstruction(
     (default :data:`DEFAULT_FOOTPRINT_FIGSIZE`), `invert_y_axis` (default
     `True`, matching `plot_unit_reconstruction`'s MEA convention), `cmap`
     (default `"viridis_r"`), `max_radius_pitch_fraction`/
-    `min_radius_max_fraction` (defaults :data:`DEFAULT_MAX_RADIUS_PITCH_FRACTION`/
-    :data:`DEFAULT_MIN_RADIUS_MAX_FRACTION` — see :func:`_marker_radii_um`),
-    `fs` (override for `gtr.fs`), `background` (default `"black"`). Unknown
-    kwargs are ignored, matching `plot_unit_reconstruction`'s own
-    plotting-convenience contract.
+    `min_radius_max_fraction`/`radius_scaling` (defaults
+    :data:`DEFAULT_MAX_RADIUS_PITCH_FRACTION`/
+    :data:`DEFAULT_MIN_RADIUS_MAX_FRACTION`/:data:`DEFAULT_RADIUS_SCALING`
+    — `radius_scaling` is `"linear"`/`"sqrt"`/`"log"`, see
+    :func:`_marker_radii_um`), `fs` (override for `gtr.fs`), `background`
+    (default `"black"`). Unknown kwargs are ignored, matching
+    `plot_unit_reconstruction`'s own plotting-convenience contract.
 
     Always closes the figure before returning (or raising) — same
     several-hundred-units-per-well memory concern as `plot_unit_reconstruction`.
@@ -681,6 +725,7 @@ def plot_unit_footprint_reconstruction(
     min_radius_max_fraction = float(
         kwargs.get("min_radius_max_fraction", DEFAULT_MIN_RADIUS_MAX_FRACTION)
     )
+    radius_scaling = str(kwargs.get("radius_scaling", DEFAULT_RADIUS_SCALING))
     background = str(kwargs.get("background", "black"))
     text_color = "white" if background.strip().lower() in {"black", "k", "#000", "#000000"} else "black"
 
@@ -690,6 +735,7 @@ def plot_unit_footprint_reconstruction(
         amplitude, pitch_um=pitch_um,
         max_radius_pitch_fraction=max_radius_pitch_fraction,
         min_radius_max_fraction=min_radius_max_fraction,
+        scaling=radius_scaling,
     )
 
     fig, ax = plt.subplots(figsize=figsize)
@@ -792,4 +838,5 @@ __all__ = [
     "DEFAULT_MARKER_MAX_DIAMETER_PT",
     "DEFAULT_MAX_RADIUS_PITCH_FRACTION",
     "DEFAULT_MIN_RADIUS_MAX_FRACTION",
+    "DEFAULT_RADIUS_SCALING",
 ]

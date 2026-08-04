@@ -28,6 +28,17 @@ is exposed separately because it has no SpikeInterface dependency and is
 unit-tested on its own, independent of the streaming orchestrator around it.
 """
 
+from .load import (
+    FS_MANIFEST_KEY,
+    LOCATIONS_FILENAME,
+    MANIFEST_FILENAME,
+    TEMPLATES_FILENAME,
+    UNIT_IDS_FILENAME,
+    WEIGHT_FILENAME,
+    discover_unit_ids,
+    load_unit_inputs,
+    load_well_inputs,
+)
 from .merge import (
     DEFAULT_MAX_SPIKES_PER_UNIT,
     DEFAULT_MS_AFTER,
@@ -50,4 +61,13 @@ __all__ = [
     "DEFAULT_MS_AFTER",
     "DEFAULT_MAX_SPIKES_PER_UNIT",
     "DEFAULT_SEED",
+    "discover_unit_ids",
+    "load_well_inputs",
+    "load_unit_inputs",
+    "TEMPLATES_FILENAME",
+    "WEIGHT_FILENAME",
+    "LOCATIONS_FILENAME",
+    "UNIT_IDS_FILENAME",
+    "MANIFEST_FILENAME",
+    "FS_MANIFEST_KEY",
 ]

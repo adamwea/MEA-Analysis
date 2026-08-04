@@ -701,6 +701,99 @@ def _add_scale_circle_um(ax, *, radius_um, reference_value, color="white", fonts
     )
 
 
+def _render_footprint_core(
+    template_arr, locations_arr, fs, *,
+    dpi, figsize, invert_y_axis, cmap_name,
+    max_radius_pitch_fraction, min_radius_max_fraction, radius_scaling, background,
+):
+    """The amplitude/latency circle footprint alone — no branches, no title,
+    not yet saved. Shared by :func:`plot_unit_footprint_reconstruction`
+    (adds the tracked-branch overlay on top) and :func:`plot_unit_footprint`
+    (footprint only, no `gtr`/reconstruction needed at all — inserted as its
+    own pipeline stage, `footprint_plots`, immediately after
+    `merge_templates` so a unit's raw merged-template footprint is visible
+    before `reconstruct_axons` ever runs on it).
+
+    Extracted 2026-08-04 when `footprint_plots` needed the IDENTICAL circle
+    rendering (size/color/scale-bar/scale-circle/axes chrome)
+    `plot_unit_footprint_reconstruction` already had, minus only the branch
+    overlay — duplicating ~100 lines of matplotlib setup across two
+    functions was the wrong call once a second caller existed for exactly
+    the same core.
+
+    Returns `(fig, ax, amplitude, latency, pitch_um, radii_um, text_color)`
+    — the caller finishes with its own branch overlay (or not), title, and
+    `fig.savefig`/`plt.close`.
+    """
+    import matplotlib
+
+    matplotlib.use("Agg", force=True)  # headless: no display on the box this runs on
+    import matplotlib.pyplot as plt
+    import numpy as np
+    from matplotlib.collections import EllipseCollection
+
+    background = str(background)
+    text_color = "white" if background.strip().lower() in {"black", "k", "#000", "#000000"} else "black"
+
+    amplitude, latency = _channel_amplitude_and_latency(template_arr, fs)
+    pitch_um = _electrode_pitch_um(locations_arr)
+    radii_um = _marker_radii_um(
+        amplitude, pitch_um=pitch_um,
+        max_radius_pitch_fraction=max_radius_pitch_fraction,
+        min_radius_max_fraction=min_radius_max_fraction,
+        scaling=radius_scaling,
+    )
+
+    fig, ax = plt.subplots(figsize=figsize)
+    fig.patch.set_facecolor(background)
+    ax.set_facecolor(background)
+    ax.set_aspect("equal", adjustable="box")
+    # Data limits must be set explicitly BEFORE adding the collection: an
+    # EllipseCollection with units="xy" does not participate in
+    # Axes.autoscale the way a scatter PathCollection does, so without this
+    # the axes can be left at their default (0, 1) view.
+    pad = float(np.max(radii_um)) if radii_um.size else 1.0
+    ax.set_xlim(locations_arr[:, 0].min() - pad, locations_arr[:, 0].max() + pad)
+    ax.set_ylim(locations_arr[:, 1].min() - pad, locations_arr[:, 1].max() + pad)
+
+    vmin, vmax = _normalize_colorbar_limits(latency)
+    diameters_um = 2.0 * radii_um
+    footprint = EllipseCollection(
+        diameters_um, diameters_um, np.zeros_like(diameters_um),
+        units="xy", offsets=locations_arr, offset_transform=ax.transData,
+        array=latency, cmap=cmap_name, clim=(vmin, vmax),
+        alpha=0.75, linewidths=0.0, edgecolors="none",
+    )
+    ax.add_collection(footprint)
+    cbar = fig.colorbar(footprint, ax=ax, fraction=0.045, pad=0.03)
+    cbar.set_label("Latency (ms)" if fs else "Latency (samples)", color=text_color)
+    cbar.ax.tick_params(colors=text_color, labelsize=8)
+    cbar.outline.set_edgecolor(text_color)
+
+    if invert_y_axis:
+        ax.invert_yaxis()
+    ax.set_xlabel("x (um)", color=text_color)
+    ax.set_ylabel("y (um)", color=text_color)
+    ax.tick_params(colors=text_color, labelsize=8)
+    for spine in ax.spines.values():
+        spine.set_color(text_color)
+
+    # Scale circle (top left): the plot's own largest-amplitude circle,
+    # labeled with the uV value it represents -- an honest reference since
+    # it's the ACTUAL max radius drawn, not a separately recomputed one.
+    # Scale bar (bottom right): a clean round-um spatial reference. Both
+    # ASCII-simple ports of the old build's `_add_scale_circle`/
+    # `_add_scale_bar` (see those functions' docstrings for what was
+    # collapsed) -- placed in fixed opposite corners from wherever a caller
+    # puts a branch legend (top right), so none of the three ever compete.
+    amp_max = float(np.max(amplitude)) if amplitude.size else 0.0
+    max_radius_drawn = float(np.max(radii_um)) if radii_um.size else 0.0
+    _add_scale_circle_um(ax, radius_um=max_radius_drawn, reference_value=amp_max, color=text_color)
+    _add_scale_bar_um(ax, color=text_color)
+
+    return fig, ax, amplitude, latency, pitch_um, radii_um, text_color
+
+
 def plot_unit_footprint_reconstruction(
     gtr, out_path, unit_id=None, template=None, locations=None, **kwargs,
 ) -> Path:
@@ -791,12 +884,8 @@ def plot_unit_footprint_reconstruction(
     several-hundred-units-per-well memory concern as `plot_unit_reconstruction`.
     Returns `out_path` as a `Path`.
     """
-    import matplotlib
-
-    matplotlib.use("Agg", force=True)  # headless: no display on the box this runs on
     import matplotlib.pyplot as plt
     import numpy as np
-    from matplotlib.collections import EllipseCollection
 
     out_path = Path(out_path)
 
@@ -815,57 +904,24 @@ def plot_unit_footprint_reconstruction(
             "gtr.branches' channel indices assume)"
         )
     fs = kwargs.get("fs", getattr(gtr, "fs", None))
-
-    dpi = float(kwargs.get("dpi", DEFAULT_FOOTPRINT_DPI))
-    figsize = tuple(kwargs.get("figsize", DEFAULT_FOOTPRINT_FIGSIZE))
-    invert_y_axis = bool(kwargs.get("invert_y_axis", True))
-    cmap_name = str(kwargs.get("cmap", "viridis_r"))
-    max_radius_pitch_fraction = float(
-        kwargs.get("max_radius_pitch_fraction", DEFAULT_MAX_RADIUS_PITCH_FRACTION)
-    )
-    min_radius_max_fraction = float(
-        kwargs.get("min_radius_max_fraction", DEFAULT_MIN_RADIUS_MAX_FRACTION)
-    )
-    radius_scaling = str(kwargs.get("radius_scaling", DEFAULT_RADIUS_SCALING))
     background = str(kwargs.get("background", "black"))
-    text_color = "white" if background.strip().lower() in {"black", "k", "#000", "#000000"} else "black"
 
-    amplitude, latency = _channel_amplitude_and_latency(template_arr, fs)
-    pitch_um = _electrode_pitch_um(locations_arr)
-    radii_um = _marker_radii_um(
-        amplitude, pitch_um=pitch_um,
-        max_radius_pitch_fraction=max_radius_pitch_fraction,
-        min_radius_max_fraction=min_radius_max_fraction,
-        scaling=radius_scaling,
+    fig, ax, amplitude, latency, pitch_um, radii_um, text_color = _render_footprint_core(
+        template_arr, locations_arr, fs,
+        dpi=float(kwargs.get("dpi", DEFAULT_FOOTPRINT_DPI)),
+        figsize=tuple(kwargs.get("figsize", DEFAULT_FOOTPRINT_FIGSIZE)),
+        invert_y_axis=bool(kwargs.get("invert_y_axis", True)),
+        cmap_name=str(kwargs.get("cmap", "viridis_r")),
+        max_radius_pitch_fraction=float(
+            kwargs.get("max_radius_pitch_fraction", DEFAULT_MAX_RADIUS_PITCH_FRACTION)
+        ),
+        min_radius_max_fraction=float(
+            kwargs.get("min_radius_max_fraction", DEFAULT_MIN_RADIUS_MAX_FRACTION)
+        ),
+        radius_scaling=str(kwargs.get("radius_scaling", DEFAULT_RADIUS_SCALING)),
+        background=background,
     )
-
-    fig, ax = plt.subplots(figsize=figsize)
     try:
-        fig.patch.set_facecolor(background)
-        ax.set_facecolor(background)
-        ax.set_aspect("equal", adjustable="box")
-        # Data limits must be set explicitly BEFORE adding the collection:
-        # an EllipseCollection with units="xy" does not participate in
-        # Axes.autoscale the way a scatter PathCollection does, so without
-        # this the axes can be left at their default (0, 1) view.
-        pad = float(np.max(radii_um)) if radii_um.size else 1.0
-        ax.set_xlim(locations_arr[:, 0].min() - pad, locations_arr[:, 0].max() + pad)
-        ax.set_ylim(locations_arr[:, 1].min() - pad, locations_arr[:, 1].max() + pad)
-
-        vmin, vmax = _normalize_colorbar_limits(latency)
-        diameters_um = 2.0 * radii_um
-        footprint = EllipseCollection(
-            diameters_um, diameters_um, np.zeros_like(diameters_um),
-            units="xy", offsets=locations_arr, offset_transform=ax.transData,
-            array=latency, cmap=cmap_name, clim=(vmin, vmax),
-            alpha=0.75, linewidths=0.0, edgecolors="none",
-        )
-        ax.add_collection(footprint)
-        cbar = fig.colorbar(footprint, ax=ax, fraction=0.045, pad=0.03)
-        cbar.set_label("Latency (ms)" if fs else "Latency (samples)", color=text_color)
-        cbar.ax.tick_params(colors=text_color, labelsize=8)
-        cbar.outline.set_edgecolor(text_color)
-
         branch_paths = _branch_channel_paths(gtr)
         n_branches = len(branch_paths)
         branch_cmap = plt.get_cmap("tab20")
@@ -887,18 +943,12 @@ def plot_unit_footprint_reconstruction(
                 label=(f"branch {branch_idx}" if show_legend else None),
             )
 
-        if invert_y_axis:
-            ax.invert_yaxis()
-        ax.set_xlabel("x (um)", color=text_color)
-        ax.set_ylabel("y (um)", color=text_color)
-        ax.tick_params(colors=text_color, labelsize=8)
-        for spine in ax.spines.values():
-            spine.set_color(text_color)
-
         if show_legend:
             # Adam: branch legend must live in a fixed corner (top right) --
             # "best" auto-placement had it landing dead-center on unit 154,
-            # on top of the very branches it was labeling.
+            # on top of the very branches it was labeling. The scale circle
+            # (top left) and scale bar (bottom right) already drawn by
+            # `_render_footprint_core` occupy the other two corners.
             legend = ax.legend(loc="upper right", fontsize=7, framealpha=0.85)
             if legend is not None:
                 legend.get_frame().set_facecolor(background)
@@ -908,19 +958,6 @@ def plot_unit_footprint_reconstruction(
         n_channels = int(locations_arr.shape[0])
         amp_min = float(np.min(amplitude)) if amplitude.size else 0.0
         amp_max = float(np.max(amplitude)) if amplitude.size else 0.0
-
-        # Scale circle (top left): the plot's own largest-amplitude circle,
-        # labeled with the uV value it represents -- an honest reference
-        # since it's the ACTUAL max radius drawn, not a separately
-        # recomputed one. Scale bar (bottom right): a clean round-um spatial
-        # reference. Both ASCII-simple ports of the old build's
-        # `_add_scale_circle`/`_add_scale_bar` (see those functions'
-        # docstrings for what was collapsed) -- placed in fixed opposite
-        # corners from the legend so none of the three ever compete.
-        max_radius_drawn = float(np.max(radii_um)) if radii_um.size else 0.0
-        _add_scale_circle_um(ax, radius_um=max_radius_drawn, reference_value=amp_max, color=text_color)
-        _add_scale_bar_um(ax, color=text_color)
-
         pitch_label = f"{pitch_um:.1f}um" if np.isfinite(pitch_um) else "n/a"
         title = (
             f"{n_branches} branch(es), {n_channels} electrode(s), "
@@ -931,10 +968,191 @@ def plot_unit_footprint_reconstruction(
         ax.set_title(title, color=text_color, fontsize=12)
 
         out_path.parent.mkdir(parents=True, exist_ok=True)
-        fig.savefig(out_path, dpi=dpi, bbox_inches="tight", facecolor=fig.get_facecolor())
+        fig.savefig(out_path, dpi=float(kwargs.get("dpi", DEFAULT_FOOTPRINT_DPI)), bbox_inches="tight", facecolor=fig.get_facecolor())
         logger.info(
             "wrote footprint reconstruction plot%s: %d branch(es), %d electrode(s) -> %s",
             f" for unit {unit_id}" if unit_id is not None else "", n_branches, n_channels, out_path,
+        )
+    finally:
+        plt.close(fig)
+
+    return out_path
+
+
+FOOTPRINT_PLOT_FILENAME = "footprint.png"
+
+
+def plot_unit_footprint(template, locations, out_path, unit_id=None, fs=None, **kwargs) -> Path:
+    """Render one unit's amplitude/latency electrode footprint alone — the
+    `footprint_plots` output, inserted as its own pipeline stage right
+    after `merge_templates`. "Basically the same as the recon plot ...
+    but without the branches" (Adam) — this is exactly
+    :func:`plot_unit_footprint_reconstruction` minus the `gtr`/tracked-
+    branch overlay, sharing the identical circle/color/scale-bar/
+    scale-circle rendering via :func:`_render_footprint_core`. Deliberately
+    does NOT need `reconstruct_axons` to have run at all: `template`/
+    `locations` come straight from `merge_templates`' own output
+    (`merged_templates.npy`/`channel_locations_xy.npy`), so a unit's raw
+    merged-template footprint is visible immediately, before axon_velocity
+    tracking is ever attempted on it.
+
+    `template` is `(n_channels, n_samples)`, `locations` is
+    `(n_channels, 2)` — the same contract `merge_templates`' own per-unit
+    slice already is. `fs` is optional (as in
+    `plot_unit_footprint_reconstruction`, a falsy `fs` reports latency in
+    raw samples rather than ms).
+
+    `kwargs`: identical surface to `plot_unit_footprint_reconstruction`'s
+    own kwargs (`dpi`/`figsize`/`invert_y_axis`/`cmap`/
+    `max_radius_pitch_fraction`/`min_radius_max_fraction`/`radius_scaling`/
+    `background`) — see that function's docstring.
+
+    No legend (nothing to label without branches) — the scale circle
+    (top left) and scale bar (bottom right) from `_render_footprint_core`
+    are the only chrome. Always closes the figure before returning (or
+    raising). Returns `out_path` as a `Path`.
+    """
+    import matplotlib.pyplot as plt
+    import numpy as np
+
+    out_path = Path(out_path)
+    template_arr = np.asarray(template, dtype=float)
+    locations_arr = np.asarray(locations, dtype=float)
+    if template_arr.shape[0] != locations_arr.shape[0]:
+        raise ValueError(
+            f"template has {template_arr.shape[0]} channel(s) but locations has "
+            f"{locations_arr.shape[0]} -- must match 1:1"
+        )
+
+    dpi = float(kwargs.get("dpi", DEFAULT_FOOTPRINT_DPI))
+    fig, ax, amplitude, latency, pitch_um, radii_um, text_color = _render_footprint_core(
+        template_arr, locations_arr, fs,
+        dpi=dpi,
+        figsize=tuple(kwargs.get("figsize", DEFAULT_FOOTPRINT_FIGSIZE)),
+        invert_y_axis=bool(kwargs.get("invert_y_axis", True)),
+        cmap_name=str(kwargs.get("cmap", "viridis_r")),
+        max_radius_pitch_fraction=float(
+            kwargs.get("max_radius_pitch_fraction", DEFAULT_MAX_RADIUS_PITCH_FRACTION)
+        ),
+        min_radius_max_fraction=float(
+            kwargs.get("min_radius_max_fraction", DEFAULT_MIN_RADIUS_MAX_FRACTION)
+        ),
+        radius_scaling=str(kwargs.get("radius_scaling", DEFAULT_RADIUS_SCALING)),
+        background=str(kwargs.get("background", "black")),
+    )
+    try:
+        n_channels = int(locations_arr.shape[0])
+        amp_min = float(np.min(amplitude)) if amplitude.size else 0.0
+        amp_max = float(np.max(amplitude)) if amplitude.size else 0.0
+        pitch_label = f"{pitch_um:.1f}um" if np.isfinite(pitch_um) else "n/a"
+        title = f"{n_channels} electrode(s), amplitude {amp_min:.1f}-{amp_max:.1f}, pitch {pitch_label}"
+        if unit_id is not None:
+            title = f"Unit {unit_id} — {title}"
+        ax.set_title(title, color=text_color, fontsize=12)
+
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        fig.savefig(out_path, dpi=dpi, bbox_inches="tight", facecolor=fig.get_facecolor())
+        logger.info(
+            "wrote footprint plot%s: %d electrode(s) -> %s",
+            f" for unit {unit_id}" if unit_id is not None else "", n_channels, out_path,
+        )
+    finally:
+        plt.close(fig)
+
+    return out_path
+
+
+FOOTPRINT_DIAGNOSTIC_PLOT_FILENAME = "footprint_diagnostic.png"
+
+DEFAULT_FOOTPRINT_DIAGNOSTIC_FIGSIZE = (10.0, 4.5)
+DEFAULT_FOOTPRINT_DIAGNOSTIC_DPI = 120.0
+
+
+def plot_unit_footprint_diagnostic(template, locations, out_path, unit_id=None, fs=None, **kwargs) -> Path:
+    """Quick, cheap 2-panel look at one unit's raw merged template — the
+    `footprint_diagnostics` output, inserted right after `merge_templates`
+    (same slot as `footprint_plots`, an independent reader of the same
+    input). Mirrors `recon_diagnostics`' role relative to
+    `plot_reconstructions` one stage later: "light, judge quality per unit,
+    NOT presentation-grade" — so this is deliberately NOT
+    `_render_footprint_core`'s pitch-capped, non-overlapping, chrome-laden
+    rendering (that machinery exists specifically because `footprint_plots`
+    needs to look good; a diagnostic only needs to look INFORMATIVE, fast,
+    over potentially hundreds of units).
+
+    Two plain `Axes.scatter` panels side by side, fixed small marker size
+    (no per-channel size encoding, no pitch/overlap math): LEFT = amplitude
+    (`viridis`), RIGHT = latency (`viridis_r`) — the same two underlying
+    per-channel metrics `_channel_amplitude_and_latency` already computes
+    for the presentation plot, just rendered the cheap way. No scale bar,
+    no scale circle, no legend — this is a sanity-check view, not a figure
+    meant to stand alone.
+
+    `kwargs`: `dpi` (default :data:`DEFAULT_FOOTPRINT_DIAGNOSTIC_DPI`),
+    `figsize` (default :data:`DEFAULT_FOOTPRINT_DIAGNOSTIC_FIGSIZE`),
+    `invert_y_axis` (default `True`), `background` (default `"black"`).
+
+    Always closes the figure before returning (or raising). Returns
+    `out_path` as a `Path`.
+    """
+    import matplotlib
+
+    matplotlib.use("Agg", force=True)
+    import matplotlib.pyplot as plt
+    import numpy as np
+
+    out_path = Path(out_path)
+    template_arr = np.asarray(template, dtype=float)
+    locations_arr = np.asarray(locations, dtype=float)
+    if template_arr.shape[0] != locations_arr.shape[0]:
+        raise ValueError(
+            f"template has {template_arr.shape[0]} channel(s) but locations has "
+            f"{locations_arr.shape[0]} -- must match 1:1"
+        )
+
+    dpi = float(kwargs.get("dpi", DEFAULT_FOOTPRINT_DIAGNOSTIC_DPI))
+    figsize = tuple(kwargs.get("figsize", DEFAULT_FOOTPRINT_DIAGNOSTIC_FIGSIZE))
+    invert_y_axis = bool(kwargs.get("invert_y_axis", True))
+    background = str(kwargs.get("background", "black"))
+    text_color = "white" if background.strip().lower() in {"black", "k", "#000", "#000000"} else "black"
+
+    amplitude, latency = _channel_amplitude_and_latency(template_arr, fs)
+
+    fig, (ax_amp, ax_lat) = plt.subplots(1, 2, figsize=figsize)
+    try:
+        fig.patch.set_facecolor(background)
+        for ax, values, cmap, panel_label in (
+            (ax_amp, amplitude, "viridis", "Amplitude"),
+            (ax_lat, latency, "viridis_r", "Latency"),
+        ):
+            ax.set_facecolor(background)
+            ax.set_aspect("equal", adjustable="box")
+            scatter = ax.scatter(
+                locations_arr[:, 0], locations_arr[:, 1],
+                s=4.0, c=values, cmap=cmap, linewidths=0.0,
+            )
+            cbar = fig.colorbar(scatter, ax=ax, fraction=0.045, pad=0.03)
+            cbar.ax.tick_params(colors=text_color, labelsize=7)
+            if invert_y_axis:
+                ax.invert_yaxis()
+            ax.set_xlabel("x (um)", color=text_color, fontsize=8)
+            ax.set_ylabel("y (um)", color=text_color, fontsize=8)
+            ax.tick_params(colors=text_color, labelsize=7)
+            for spine in ax.spines.values():
+                spine.set_color(text_color)
+            ax.set_title(panel_label, color=text_color, fontsize=10)
+
+        n_channels = int(locations_arr.shape[0])
+        title = f"{n_channels} electrode(s)"
+        if unit_id is not None:
+            title = f"Unit {unit_id} — {title}"
+        fig.suptitle(title, color=text_color, fontsize=12)
+
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        fig.savefig(out_path, dpi=dpi, bbox_inches="tight", facecolor=fig.get_facecolor())
+        logger.info(
+            "wrote footprint diagnostic%s: %d electrode(s) -> %s",
+            f" for unit {unit_id}" if unit_id is not None else "", n_channels, out_path,
         )
     finally:
         plt.close(fig)
@@ -956,4 +1174,10 @@ __all__ = [
     "DEFAULT_MAX_RADIUS_PITCH_FRACTION",
     "DEFAULT_MIN_RADIUS_MAX_FRACTION",
     "DEFAULT_RADIUS_SCALING",
+    "plot_unit_footprint",
+    "FOOTPRINT_PLOT_FILENAME",
+    "plot_unit_footprint_diagnostic",
+    "FOOTPRINT_DIAGNOSTIC_PLOT_FILENAME",
+    "DEFAULT_FOOTPRINT_DIAGNOSTIC_FIGSIZE",
+    "DEFAULT_FOOTPRINT_DIAGNOSTIC_DPI",
 ]

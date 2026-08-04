@@ -29,7 +29,13 @@ from .axon_velocity_track import (
 from .plots import (
     DEFAULT_DPI,
     DEFAULT_FIGSIZE,
+    DEFAULT_FOOTPRINT_DPI,
+    DEFAULT_FOOTPRINT_FIGSIZE,
+    DEFAULT_MARKER_MAX_DIAMETER_PT,
+    DEFAULT_MARKER_MIN_DIAMETER_PT,
+    FOOTPRINT_RECONSTRUCTION_PLOT_FILENAME,
     RECONSTRUCTION_PLOT_FILENAME,
+    plot_unit_footprint_reconstruction,
     plot_unit_reconstruction,
 )
 
@@ -43,4 +49,10 @@ __all__ = [
     "RECONSTRUCTION_PLOT_FILENAME",
     "DEFAULT_FIGSIZE",
     "DEFAULT_DPI",
+    "plot_unit_footprint_reconstruction",
+    "FOOTPRINT_RECONSTRUCTION_PLOT_FILENAME",
+    "DEFAULT_FOOTPRINT_FIGSIZE",
+    "DEFAULT_FOOTPRINT_DPI",
+    "DEFAULT_MARKER_MIN_DIAMETER_PT",
+    "DEFAULT_MARKER_MAX_DIAMETER_PT",
 ]

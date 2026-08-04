@@ -6,6 +6,33 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 End-to-end pipeline for neuronal spike sorting and network burst analysis on **Maxwell Biosystems MEA** (Microelectrode Array) recordings. Built on [SpikeInterface](https://github.com/SpikeInterface/spikeinterface) with Kilosort4 as the default sorter.
 
+## Current active work lives in `mea_modules/`, not the legacy driver below
+
+Everything from here down documents the pre-rebuild two-tier driver
+(`run_pipeline_driver.py` / `mea_analysis_routine.py`), kept for reference —
+it is not what's under active development. Since 2026-07-28 (Adam), the real
+work is `mea_modules/` on branch `aw-axon-recon-dev` (currently @ `4b634f0`):
+a flat library of discrete MEA modules (`io`, `preprocessing`,
+`concatenation`, `spikesorting`, `registration`, `templates`, `reconstruction`,
+`postprocess`, `quality`, `diagnostics`) consumed as thin capsules by the
+sibling repo `~/dev/RBS-adamwea/projects/MEA-recon-pipeline` (its `CLAUDE.md`
++ `docs/PROJECT_CONTEXT.md` + `Plans.md` are the up-to-date status/topology
+docs for this whole system — read those first for anything reconstruction-
+related). `mea_modules/README.md`'s own module table is stale (lists only
+`io`); the `pyproject.toml`/directory listing above is the accurate one.
+
+**2026-08-04 consolidation validation** (scoped agent pass, no code changes
+here): the pipeline repo's Nextflow DAG (`pipeline/main.nf`) only wires
+stages 1-7 of the 13-capsule chain (through `register_segment`, itself off by
+default) — `merge_templates` through `plot_reconstructions` (stages 8-13,
+all implemented in `mea_modules/` and exercised for real via direct
+`axon-recon capsule.<name>` calls) have no Nextflow process block yet.
+Per-capsule `--resume` behavior was verified against a real completed run:
+12 of 13 capsules short-circuit correctly; `register_segment` has no early
+exit (it redoes the segment rebuild + sort registration on every call, only
+skipping the analyzer build itself). Full findings: pipeline repo's
+`Plans.md`, "Phase 3".
+
 ## Setup
 
 ```bash

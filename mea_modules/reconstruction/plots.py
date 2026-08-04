@@ -1088,9 +1088,26 @@ def plot_unit_footprint_diagnostic(template, locations, out_path, unit_id=None, 
     no scale circle, no legend — this is a sanity-check view, not a figure
     meant to stand alone.
 
+    **Amplitude color scale (Adam, 2026-08-04)**: amplitude is heavy-tailed
+    in real data (unit 154's own real values span 0.9-320.6, a ~356x
+    range) — under a LINEAR color scale, a handful of peak channels near
+    the axon soak up the whole colorbar and every other channel reads as
+    one flat, indistinguishable color (exactly what the first real render
+    of this panel showed). `amplitude_scaling="log"` (the default, per
+    Adam's own request; "linear" restores the old behavior, kept
+    available/optional for the future rather than hard-coded either way)
+    switches ONLY the amplitude panel to `matplotlib.colors.LogNorm` — the
+    latency panel stays linear regardless, since latency is signed/
+    zero-centered and a log color scale has no sensible meaning there.
+    Non-positive amplitude values (a channel with a literal zero
+    max-abs-sample -- degenerate but not impossible) are clipped to a small
+    positive floor before the log norm is built, since `LogNorm` cannot
+    represent zero or negative values.
+
     `kwargs`: `dpi` (default :data:`DEFAULT_FOOTPRINT_DIAGNOSTIC_DPI`),
     `figsize` (default :data:`DEFAULT_FOOTPRINT_DIAGNOSTIC_FIGSIZE`),
-    `invert_y_axis` (default `True`), `background` (default `"black"`).
+    `invert_y_axis` (default `True`), `background` (default `"black"`),
+    `amplitude_scaling` (`"log"`/`"linear"`, default `"log"`).
 
     Always closes the figure before returning (or raising). Returns
     `out_path` as a `Path`.
@@ -1098,6 +1115,7 @@ def plot_unit_footprint_diagnostic(template, locations, out_path, unit_id=None, 
     import matplotlib
 
     matplotlib.use("Agg", force=True)
+    import matplotlib.colors as mcolors
     import matplotlib.pyplot as plt
     import numpy as np
 
@@ -1115,22 +1133,34 @@ def plot_unit_footprint_diagnostic(template, locations, out_path, unit_id=None, 
     invert_y_axis = bool(kwargs.get("invert_y_axis", True))
     background = str(kwargs.get("background", "black"))
     text_color = "white" if background.strip().lower() in {"black", "k", "#000", "#000000"} else "black"
+    amplitude_scaling = str(kwargs.get("amplitude_scaling", "log")).strip().lower()
 
     amplitude, latency = _channel_amplitude_and_latency(template_arr, fs)
 
     fig, (ax_amp, ax_lat) = plt.subplots(1, 2, figsize=figsize)
     try:
         fig.patch.set_facecolor(background)
-        for ax, values, cmap, panel_label in (
-            (ax_amp, amplitude, "viridis", "Amplitude"),
-            (ax_lat, latency, "viridis_r", "Latency"),
+        for ax, values, cmap, panel_label, use_log in (
+            (ax_amp, amplitude, "viridis", "Amplitude", amplitude_scaling == "log"),
+            (ax_lat, latency, "viridis_r", "Latency", False),
         ):
             ax.set_facecolor(background)
             ax.set_aspect("equal", adjustable="box")
-            scatter = ax.scatter(
-                locations_arr[:, 0], locations_arr[:, 1],
-                s=4.0, c=values, cmap=cmap, linewidths=0.0,
-            )
+            if use_log:
+                positive = values[np.isfinite(values) & (values > 0)]
+                floor = float(np.min(positive)) if positive.size else 1e-3
+                plotted_values = np.clip(values, floor, None)
+                vmax = float(np.max(plotted_values)) if plotted_values.size else 1.0
+                norm = mcolors.LogNorm(vmin=max(floor, 1e-6), vmax=max(vmax, floor * 1.001))
+                scatter = ax.scatter(
+                    locations_arr[:, 0], locations_arr[:, 1],
+                    s=4.0, c=plotted_values, cmap=cmap, norm=norm, linewidths=0.0,
+                )
+            else:
+                scatter = ax.scatter(
+                    locations_arr[:, 0], locations_arr[:, 1],
+                    s=4.0, c=values, cmap=cmap, linewidths=0.0,
+                )
             cbar = fig.colorbar(scatter, ax=ax, fraction=0.045, pad=0.03)
             cbar.ax.tick_params(colors=text_color, labelsize=7)
             if invert_y_axis:

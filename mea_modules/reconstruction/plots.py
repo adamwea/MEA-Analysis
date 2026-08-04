@@ -112,24 +112,35 @@ FOOTPRINT_RECONSTRUCTION_PLOT_FILENAME = "footprint_reconstruction.png"
 DEFAULT_FOOTPRINT_FIGSIZE = (7.5, 6.5)
 DEFAULT_FOOTPRINT_DPI = 150.0
 
-# Old build's `TemplateCirclesPlotConfig`/`TemplatePlotTemplatesV2PhaseConfig`
-# defaults (`marker_min_size=8.0`, `marker_max_size=50.0` — circle DIAMETER in
-# points, not area). Carried over near-verbatim: this is the one visually
-# load-bearing knob here (too narrow a range makes every circle look the same
-# regardless of amplitude), not something worth reinventing.
-# The old build's own defaults (8-50pt) were tuned against a filtered,
-# spatially-local channel subset. This module deliberately plots the FULL
-# union array instead (every electrode any segment routed -- up to ~13k on
-# this scan), so an 8pt FLOOR means even background/off-axon electrodes stay
-# visibly large and, at Maxwell's 17.5um pitch, tile the whole canvas solid
-# -- exactly the "clunky" failure mode Adam flagged. `linear` min-max
-# normalization already sends genuinely low-amplitude channels toward the
-# floor; the fix is a much smaller floor so THEY actually recede, letting
-# real amplitude peaks (near the axon) stand out. `sqrt`/`log` scaling would
-# make this WORSE, not better -- both are saturating curves that boost
-# low-normalized values up, the opposite of what a sparse footprint needs.
+# SUPERSEDED (2026-08-04, second correction): a points^2 `scatter(s=...)`
+# size is fixed in the FIGURE's point space, not the axes' DATA space -- it
+# has no relationship to how many um apart two electrodes actually are, which
+# is exactly why an amplitude-scaled points-based circle could straddle past
+# its own electrode's neighbor and visually overlap it. Points-sizing was
+# already the wrong primitive even after the 8pt->1pt floor fix narrowed the
+# problem down to "less densely solid" rather than "not overlapping" (Adam's
+# real requirement: circles must NEVER overlap a neighbor, by construction,
+# not just look sparser on average). Kept here, unused, only as the record of
+# what was tried first -- see `_electrode_pitch_um`/`_marker_radii_um` for
+# the data-space replacement, which computes the max radius from the ACTUAL
+# electrode pitch (nearest-neighbor spacing) rather than a fixed points value.
 DEFAULT_MARKER_MIN_DIAMETER_PT = 1.0
 DEFAULT_MARKER_MAX_DIAMETER_PT = 45.0
+
+# Fraction of the detected electrode pitch used as the maximum circle RADIUS
+# (Adam: "cap the max circle diameter at the electrode pitch... so even the
+# largest-amplitude circle just fits within its electrode spacing and never
+# overlaps a neighbor"). 0.48 rather than the exact 0.5 boundary -- two
+# neighboring electrodes each at the true max (radius == pitch/2) would only
+# just TOUCH, not overlap, but float/render rounding at that exact seam can
+# still paint a 1px visual overlap; 0.48 leaves a small, deliberate margin.
+DEFAULT_MAX_RADIUS_PITCH_FRACTION = 0.48
+# Minimum circle radius as a fraction of the max radius (not of pitch
+# directly) -- "small floor" per Adam's "biggest and smallest amps set the
+# scale" framing: the smallest-amplitude channel should read as a small but
+# still-visible dot, not vanish, and this stays proportionate however large
+# or small the detected pitch turns out to be.
+DEFAULT_MIN_RADIUS_MAX_FRACTION = 0.06
 
 
 def _normalize_colorbar_limits(values: Any) -> tuple:
@@ -428,6 +439,92 @@ def _marker_areas_pt2(values, *, min_diameter_pt, max_diameter_pt, scaling="line
     return np.pi * np.square(np.maximum(diameters * 0.5, 0.0))
 
 
+def _electrode_pitch_um(locations):
+    """Nearest-neighbor electrode spacing, in the same units as `locations`.
+
+    Read from the geometry, never hard-coded — this module has no business
+    assuming 17.5um (MaxOne's pitch) is the pitch of whatever array a future
+    recording used. A KD-tree nearest-neighbor query (not a sorted-unique-
+    coordinate diff) is deliberate: it holds for any electrode LAYOUT, not
+    just an axis-aligned rectangular grid, and a per-electrode nearest
+    neighbor is exactly "how close can a circle centered here get to a
+    circle centered at its closest neighbor" -- the actual overlap
+    constraint. Takes the MEDIAN nearest-neighbor distance across all
+    electrodes (not the min) so one duplicated/degenerate coordinate pair
+    (distance ~0) cannot collapse the whole array's pitch estimate to zero.
+
+    Returns `float('inf')` for fewer than 2 locations (nothing to collide
+    with) rather than raising -- a caller sizing circles against this should
+    treat "no neighbor" as "no cap," not a crash.
+    """
+    import numpy as np
+    from scipy.spatial import cKDTree
+
+    locations = np.asarray(locations, dtype=float)
+    if locations.shape[0] < 2:
+        return float("inf")
+
+    tree = cKDTree(locations)
+    # k=2: each point's own coordinate (distance 0) plus its nearest actual
+    # neighbor.
+    distances, _ = tree.query(locations, k=2)
+    nearest = distances[:, 1]
+    finite = nearest[np.isfinite(nearest) & (nearest > 0)]
+    if finite.size == 0:
+        return float("inf")
+    return float(np.median(finite))
+
+
+def _marker_radii_um(
+    values, *, pitch_um,
+    max_radius_pitch_fraction=DEFAULT_MAX_RADIUS_PITCH_FRACTION,
+    min_radius_max_fraction=DEFAULT_MIN_RADIUS_MAX_FRACTION,
+):
+    """Per-channel circle RADIUS in DATA units (um), capped by electrode pitch.
+
+    Replaces :func:`_marker_areas_pt2` (points^2, figure-space) after Adam's
+    second correction: a points-sized `scatter` has no relationship to how
+    far apart two electrodes actually are in data space, so an
+    amplitude-scaled points circle could straddle past its own electrode's
+    neighbor -- exactly the overlap Adam flagged. This function instead maps
+    the amplitude data range DIRECTLY onto a radius range that is provably
+    bounded by geometry: `max_radius = pitch_um * max_radius_pitch_fraction`
+    (never exceeds roughly half the nearest-neighbor spacing, so even the
+    single largest-amplitude circle cannot reach past its neighbor's own
+    center) and `min_radius = max_radius * min_radius_max_fraction` (a small
+    but visible floor, proportionate to whatever the max radius turns out to
+    be). Per Adam's own framing -- "scaled so the biggest and smallest amps
+    set the scale" -- this is a plain linear min-max map of the amplitude
+    range onto `[min_radius, max_radius]`; no saturating `sqrt`/`log` curve
+    (those were the OLD points-based function's tool for a different problem
+    -- flattening outlier influence in a floor/ceiling that had no geometric
+    meaning -- not relevant once the ceiling is pitch-derived).
+
+    Returns an `(n_channels,)` float array of radii, safe to pass straight
+    into `matplotlib.collections.EllipseCollection(widths=2*radii,
+    heights=2*radii, ..., units="xy")`.
+    """
+    import numpy as np
+
+    values = np.abs(np.nan_to_num(np.asarray(values, dtype=float), nan=0.0, posinf=0.0, neginf=0.0))
+
+    if not np.isfinite(pitch_um) or pitch_um <= 0:
+        # No sensible neighbor distance (degenerate/single-electrode input) --
+        # fall back to a small fixed radius rather than an unbounded one.
+        max_radius = 1.0
+    else:
+        max_radius = float(pitch_um) * float(max_radius_pitch_fraction)
+    min_radius = max_radius * float(min_radius_max_fraction)
+
+    finite = values[np.isfinite(values)]
+    if finite.size == 0 or float(np.max(finite)) <= float(np.min(finite)):
+        return np.full(values.shape, max_radius, dtype=float)
+
+    vmin, vmax = float(np.min(finite)), float(np.max(finite))
+    normalized = np.clip((values - vmin) / (vmax - vmin), 0.0, 1.0)
+    return min_radius + (max_radius - min_radius) * normalized
+
+
 def _branch_channel_paths(gtr):
     """Each clean branch's electrode path, as a plain list of channel indices.
 
@@ -498,14 +595,23 @@ def plot_unit_footprint_reconstruction(
     for latency (`config.color_by == "latency"` always reverses in the old
     renderer — kept here as the default rather than a rarely-touched config
     flag); a black background with white text/colorbar (every relevant
-    old-build config class defaulted to `background="black"`); circle
-    DIAMETER (not area) normalized between a min/max in points with an
-    optional `linear`/`sqrt`/`log` saturating curve, matching the old
-    build's own `_template_plot_v2_marker_sizes_pt2` — see
-    :func:`_marker_areas_pt2` — at the SAME default 8-50pt diameter range;
-    branches drawn ON TOP (high `zorder`, above the base scatter) with one
-    distinct color per branch from a `tab20` palette, matching the old
-    build's branch-color convention.
+    old-build config class defaulted to `background="black"`); branches
+    drawn ON TOP (high `zorder`, above the base footprint) with one distinct
+    color per branch from a `tab20` palette, matching the old build's
+    branch-color convention.
+
+    **Circle sizing (second correction, 2026-08-04)**: circle RADIUS is
+    computed in DATA units (um) via :func:`_marker_radii_um`, capped by the
+    array's own electrode pitch (:func:`_electrode_pitch_um`, read from
+    `locations` — never hard-coded) so the largest-amplitude circle is
+    geometrically guaranteed not to overlap its nearest neighbor, and drawn
+    with `matplotlib.collections.EllipseCollection(..., units="xy")` rather
+    than `Axes.scatter(s=...)` — a points^2/figure-space size has no
+    relationship to um distance between electrodes, which is exactly why an
+    earlier points-based version could overlap. See those two functions'
+    docstrings for the full reasoning; this replaced the module's original
+    `_marker_areas_pt2`-based approach, kept in the source only as a record
+    of what was tried first.
 
     Simplified away, deliberately, per this task's explicit "kind of clunky,
     feel free to simplify" license: the entire `TemplateCirclesPlotConfig`/
@@ -529,12 +635,12 @@ def plot_unit_footprint_reconstruction(
     `kwargs`: `dpi` (default :data:`DEFAULT_FOOTPRINT_DPI`), `figsize`
     (default :data:`DEFAULT_FOOTPRINT_FIGSIZE`), `invert_y_axis` (default
     `True`, matching `plot_unit_reconstruction`'s MEA convention), `cmap`
-    (default `"viridis_r"`), `marker_min_diameter_pt`/
-    `marker_max_diameter_pt` (defaults :data:`DEFAULT_MARKER_MIN_DIAMETER_PT`/
-    :data:`DEFAULT_MARKER_MAX_DIAMETER_PT`), `marker_size_scaling`
-    (`"linear"`/`"sqrt"`/`"log"`, default `"linear"`), `fs` (override for
-    `gtr.fs`), `background` (default `"black"`). Unknown kwargs are ignored,
-    matching `plot_unit_reconstruction`'s own plotting-convenience contract.
+    (default `"viridis_r"`), `max_radius_pitch_fraction`/
+    `min_radius_max_fraction` (defaults :data:`DEFAULT_MAX_RADIUS_PITCH_FRACTION`/
+    :data:`DEFAULT_MIN_RADIUS_MAX_FRACTION` — see :func:`_marker_radii_um`),
+    `fs` (override for `gtr.fs`), `background` (default `"black"`). Unknown
+    kwargs are ignored, matching `plot_unit_reconstruction`'s own
+    plotting-convenience contract.
 
     Always closes the figure before returning (or raising) — same
     several-hundred-units-per-well memory concern as `plot_unit_reconstruction`.
@@ -545,6 +651,7 @@ def plot_unit_footprint_reconstruction(
     matplotlib.use("Agg", force=True)  # headless: no display on the box this runs on
     import matplotlib.pyplot as plt
     import numpy as np
+    from matplotlib.collections import EllipseCollection
 
     out_path = Path(out_path)
 
@@ -568,15 +675,21 @@ def plot_unit_footprint_reconstruction(
     figsize = tuple(kwargs.get("figsize", DEFAULT_FOOTPRINT_FIGSIZE))
     invert_y_axis = bool(kwargs.get("invert_y_axis", True))
     cmap_name = str(kwargs.get("cmap", "viridis_r"))
-    min_diameter_pt = float(kwargs.get("marker_min_diameter_pt", DEFAULT_MARKER_MIN_DIAMETER_PT))
-    max_diameter_pt = float(kwargs.get("marker_max_diameter_pt", DEFAULT_MARKER_MAX_DIAMETER_PT))
-    size_scaling = str(kwargs.get("marker_size_scaling", "linear"))
+    max_radius_pitch_fraction = float(
+        kwargs.get("max_radius_pitch_fraction", DEFAULT_MAX_RADIUS_PITCH_FRACTION)
+    )
+    min_radius_max_fraction = float(
+        kwargs.get("min_radius_max_fraction", DEFAULT_MIN_RADIUS_MAX_FRACTION)
+    )
     background = str(kwargs.get("background", "black"))
     text_color = "white" if background.strip().lower() in {"black", "k", "#000", "#000000"} else "black"
 
     amplitude, latency = _channel_amplitude_and_latency(template_arr, fs)
-    sizes_pt2 = _marker_areas_pt2(
-        amplitude, min_diameter_pt=min_diameter_pt, max_diameter_pt=max_diameter_pt, scaling=size_scaling,
+    pitch_um = _electrode_pitch_um(locations_arr)
+    radii_um = _marker_radii_um(
+        amplitude, pitch_um=pitch_um,
+        max_radius_pitch_fraction=max_radius_pitch_fraction,
+        min_radius_max_fraction=min_radius_max_fraction,
     )
 
     fig, ax = plt.subplots(figsize=figsize)
@@ -584,14 +697,24 @@ def plot_unit_footprint_reconstruction(
         fig.patch.set_facecolor(background)
         ax.set_facecolor(background)
         ax.set_aspect("equal", adjustable="box")
+        # Data limits must be set explicitly BEFORE adding the collection:
+        # an EllipseCollection with units="xy" does not participate in
+        # Axes.autoscale the way a scatter PathCollection does, so without
+        # this the axes can be left at their default (0, 1) view.
+        pad = float(np.max(radii_um)) if radii_um.size else 1.0
+        ax.set_xlim(locations_arr[:, 0].min() - pad, locations_arr[:, 0].max() + pad)
+        ax.set_ylim(locations_arr[:, 1].min() - pad, locations_arr[:, 1].max() + pad)
 
         vmin, vmax = _normalize_colorbar_limits(latency)
-        scatter = ax.scatter(
-            locations_arr[:, 0], locations_arr[:, 1],
-            s=sizes_pt2, c=latency, cmap=cmap_name,
-            vmin=vmin, vmax=vmax, alpha=0.6, linewidths=0.0, edgecolors="none",
+        diameters_um = 2.0 * radii_um
+        footprint = EllipseCollection(
+            diameters_um, diameters_um, np.zeros_like(diameters_um),
+            units="xy", offsets=locations_arr, offset_transform=ax.transData,
+            array=latency, cmap=cmap_name, clim=(vmin, vmax),
+            alpha=0.75, linewidths=0.0, edgecolors="none",
         )
-        cbar = fig.colorbar(scatter, ax=ax, fraction=0.045, pad=0.03)
+        ax.add_collection(footprint)
+        cbar = fig.colorbar(footprint, ax=ax, fraction=0.045, pad=0.03)
         cbar.set_label("Latency (ms)" if fs else "Latency (samples)", color=text_color)
         cbar.ax.tick_params(colors=text_color, labelsize=8)
         cbar.outline.set_edgecolor(text_color)
@@ -635,9 +758,10 @@ def plot_unit_footprint_reconstruction(
         n_channels = int(locations_arr.shape[0])
         amp_min = float(np.min(amplitude)) if amplitude.size else 0.0
         amp_max = float(np.max(amplitude)) if amplitude.size else 0.0
+        pitch_label = f"{pitch_um:.1f}um" if np.isfinite(pitch_um) else "n/a"
         title = (
             f"{n_branches} branch(es), {n_channels} electrode(s), "
-            f"amplitude {amp_min:.1f}-{amp_max:.1f}"
+            f"amplitude {amp_min:.1f}-{amp_max:.1f}, pitch {pitch_label}"
         )
         if unit_id is not None:
             title = f"Unit {unit_id} — {title}"
@@ -666,4 +790,6 @@ __all__ = [
     "DEFAULT_FOOTPRINT_DPI",
     "DEFAULT_MARKER_MIN_DIAMETER_PT",
     "DEFAULT_MARKER_MAX_DIAMETER_PT",
+    "DEFAULT_MAX_RADIUS_PITCH_FRACTION",
+    "DEFAULT_MIN_RADIUS_MAX_FRACTION",
 ]

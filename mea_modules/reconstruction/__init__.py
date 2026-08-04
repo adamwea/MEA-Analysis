@@ -6,6 +6,7 @@ Public API::
         default_params,
         track_unit_axon,
         save_reconstruction,
+        plot_unit_reconstruction,
     )
 
 Where this sits in the recovery path: `mea_modules.registration` puts a
@@ -13,9 +14,9 @@ segment-bound sort back onto the full electrode set it was sorted from, one
 segment at a time; a sibling stage merges those per-segment templates into one
 `(n_channels, n_samples)` template per unit covering the whole array. This
 package starts from THAT — a merged `(template, locations, fs)` for one unit —
-and runs `axon_velocity`'s graph-based tracker on it, then persists what it
-finds. Nothing here reads a segment, a sort, or a manifest; the merge stage's
-output is this package's entire input contract.
+and runs `axon_velocity`'s graph-based tracker on it, persists what it finds,
+and (via `plots`) renders it as a PNG. Nothing here reads a segment, a sort, or
+a manifest; the merge stage's output is this package's entire input contract.
 """
 
 from .axon_velocity_track import (
@@ -25,6 +26,12 @@ from .axon_velocity_track import (
     save_reconstruction,
     track_unit_axon,
 )
+from .plots import (
+    DEFAULT_DPI,
+    DEFAULT_FIGSIZE,
+    RECONSTRUCTION_PLOT_FILENAME,
+    plot_unit_reconstruction,
+)
 
 __all__ = [
     "default_params",
@@ -32,4 +39,8 @@ __all__ = [
     "save_reconstruction",
     "GTR_FILENAME",
     "SUMMARY_FILENAME",
+    "plot_unit_reconstruction",
+    "RECONSTRUCTION_PLOT_FILENAME",
+    "DEFAULT_FIGSIZE",
+    "DEFAULT_DPI",
 ]

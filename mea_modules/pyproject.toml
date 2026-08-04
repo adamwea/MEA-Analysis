@@ -9,6 +9,18 @@ dependencies = [
     "scipy",
     # diagnostics/ renders review-artifact plots; it is the only matplotlib user.
     "matplotlib",
+    # reconstruction/ is the only importer. Pinned to 0.1.2 to match what is
+    # actually validated in the axon_recon conda env tonight (editable-installed
+    # from ~/dev/RBS-adamwea/pkgs/pre-rebuild-28Jul2026/axon_velocity, which
+    # tracks upstream's 0.1.2 release exactly). PyPI's project name is
+    # "axon-velocity" (hyphenated) but the importable module is "axon_velocity"
+    # (underscored) — confirmed via `pip index versions axon-velocity` (0.1.0,
+    # 0.1.1, 0.1.2, 0.2.0 published) and `pip show axon_velocity`, both against
+    # this env. 0.2.0 exists on PyPI but is UNTESTED here — do not float this
+    # pin without re-validating `track_unit_axon` against it first, since a
+    # signature or default-params change would silently swap the tuned
+    # production params for whatever that release ships.
+    "axon-velocity==0.1.2",
 ]
 
 [build-system]
@@ -20,6 +32,12 @@ build-backend = "setuptools.build_meta"
 # auto-discovered — discovery over "." would expose io/ as a bare top-level
 # `io` package and shadow nothing good.
 [tool.setuptools]
+# NOTE: "registration" and "postprocess" (both present on disk, both installed
+# in this env only via the overnight task's PYTHONPATH override, not via `pip
+# install -e .`) are pre-existing omissions from this list, predating this
+# change — not introduced or fixed here, left as found. "reconstruction" is
+# added below since it is this change's own new package and would otherwise
+# repeat the same gap for a real editable install.
 packages = [
     "mea_modules",
     "mea_modules.io",
@@ -28,6 +46,7 @@ packages = [
     "mea_modules.concatenation",
     "mea_modules.spikesorting",
     "mea_modules.diagnostics",
+    "mea_modules.reconstruction",
 ]
 
 [tool.setuptools.package-dir]

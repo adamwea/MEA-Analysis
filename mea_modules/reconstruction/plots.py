@@ -117,8 +117,19 @@ DEFAULT_FOOTPRINT_DPI = 150.0
 # points, not area). Carried over near-verbatim: this is the one visually
 # load-bearing knob here (too narrow a range makes every circle look the same
 # regardless of amplitude), not something worth reinventing.
-DEFAULT_MARKER_MIN_DIAMETER_PT = 8.0
-DEFAULT_MARKER_MAX_DIAMETER_PT = 50.0
+# The old build's own defaults (8-50pt) were tuned against a filtered,
+# spatially-local channel subset. This module deliberately plots the FULL
+# union array instead (every electrode any segment routed -- up to ~13k on
+# this scan), so an 8pt FLOOR means even background/off-axon electrodes stay
+# visibly large and, at Maxwell's 17.5um pitch, tile the whole canvas solid
+# -- exactly the "clunky" failure mode Adam flagged. `linear` min-max
+# normalization already sends genuinely low-amplitude channels toward the
+# floor; the fix is a much smaller floor so THEY actually recede, letting
+# real amplitude peaks (near the axon) stand out. `sqrt`/`log` scaling would
+# make this WORSE, not better -- both are saturating curves that boost
+# low-normalized values up, the opposite of what a sparse footprint needs.
+DEFAULT_MARKER_MIN_DIAMETER_PT = 1.0
+DEFAULT_MARKER_MAX_DIAMETER_PT = 45.0
 
 
 def _normalize_colorbar_limits(values: Any) -> tuple:
@@ -578,7 +589,7 @@ def plot_unit_footprint_reconstruction(
         scatter = ax.scatter(
             locations_arr[:, 0], locations_arr[:, 1],
             s=sizes_pt2, c=latency, cmap=cmap_name,
-            vmin=vmin, vmax=vmax, alpha=0.92, linewidths=0.0, edgecolors="none",
+            vmin=vmin, vmax=vmax, alpha=0.6, linewidths=0.0, edgecolors="none",
         )
         cbar = fig.colorbar(scatter, ax=ax, fraction=0.045, pad=0.03)
         cbar.set_label("Latency (ms)" if fs else "Latency (samples)", color=text_color)

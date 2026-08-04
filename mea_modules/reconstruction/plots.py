@@ -600,6 +600,107 @@ def _branch_channel_paths(gtr):
     return paths
 
 
+def _nice_round_length(target):
+    """Round `target` UP to a visually clean 1/2/5 * 10^k value.
+
+    Ported concept from the old build's `_add_scale_bar` (there: a bare
+    `100.0 if span_x >= 180.0 else 50.0` two-value special case); this
+    generalizes it to any span via the standard "1-2-5 per decade" ladder
+    engineering scale bars/axis ticks conventionally use, so a scale bar
+    reads as a clean round number (e.g. "500 um") whatever the array's
+    actual physical extent turns out to be, not just the two hard-coded
+    values the old build's simpler version handled.
+    """
+    import math
+
+    target = float(max(1e-9, target))
+    exponent = math.floor(math.log10(target))
+    for mantissa in (1.0, 2.0, 5.0, 10.0):
+        candidate = mantissa * (10.0 ** exponent)
+        if candidate >= target:
+            return candidate
+    return 10.0 * (10.0 ** exponent)
+
+
+def _add_scale_bar_um(ax, *, color="white", fontsize=9):
+    """A spatial scale bar (a round-um-length line + label), bottom-right.
+
+    Simplified port of the old build's `_add_scale_bar` (`templates/core/
+    render.py`) — that version's config surface (independently configurable
+    alignment/offset/fontsize/considers-fontsize-padding/...) collapsed here
+    to one fixed, sensible placement, per the same "kind of clunky, simplify"
+    license this whole module already operates under. Bar length is picked
+    via :func:`_nice_round_length` at ~18% of the x-axis span. Drawn with a
+    blended transform (X in DATA units, so the bar's LENGTH is physically
+    correct; Y in AXES-fraction, so its on-screen position is stable
+    regardless of the data's y-range) — matching the old build's own
+    transform choice, the one part of its implementation with no simpler
+    honest alternative.
+    """
+    from matplotlib.transforms import blended_transform_factory
+
+    x0, x1 = ax.get_xlim()
+    span_x = abs(float(x1) - float(x0))
+    if span_x <= 0:
+        return
+    x_dir = 1.0 if x1 >= x0 else -1.0
+
+    bar_um = _nice_round_length(0.18 * span_x)
+    margin_frac = 0.04
+    x_right = float(x1) - x_dir * margin_frac * span_x
+    x_left = x_right - x_dir * bar_um
+    y_bar = margin_frac
+
+    transform = blended_transform_factory(ax.transData, ax.transAxes)
+    ax.plot([x_left, x_right], [y_bar, y_bar], color=color, lw=2.5, solid_capstyle="butt", transform=transform)
+    ax.text(
+        (x_left + x_right) / 2.0, y_bar + 0.015, f"{int(round(bar_um))} um",
+        transform=transform, color=color, ha="center", va="bottom", fontsize=fontsize,
+    )
+
+
+def _add_scale_circle_um(ax, *, radius_um, reference_value, color="white", fontsize=9):
+    """A reference circle (top-left) showing what the MAX amplitude circle
+    looks like, labeled with the uV value it represents.
+
+    Simplified port of the old build's `_add_scale_circle` (`templates/core/
+    render.py`) — same config-surface collapse as :func:`_add_scale_bar_um`.
+    That original converts a POINTS^2 scatter area into axes-fraction via
+    `fig.dpi`/the axes' pixel bbox; this version's circles are already sized
+    in DATA um (:func:`_marker_radii_um`), so the conversion is simpler and
+    more direct: `radius_um / axes_data_span` in each of x and y separately
+    (not assumed equal, even though `ax.set_aspect("equal")` should make
+    them so — cheap to be exactly correct rather than assume it holds).
+    References the plot's actual max-amplitude circle (not an arbitrary
+    round value) — the same "biggest amp sets the scale" honesty already
+    used for the size mapping itself.
+    """
+    from matplotlib.patches import Ellipse
+
+    x0, x1 = ax.get_xlim()
+    y0, y1 = ax.get_ylim()
+    span_x = abs(float(x1) - float(x0))
+    span_y = abs(float(y1) - float(y0))
+    if span_x <= 0 or span_y <= 0 or radius_um <= 0:
+        return
+
+    rx_axes = float(radius_um) / span_x
+    ry_axes = float(radius_um) / span_y
+    margin = 0.04
+    cx = margin + rx_axes
+    cy = 1.0 - margin - ry_axes
+
+    patch = Ellipse(
+        (cx, cy), width=2.0 * rx_axes, height=2.0 * ry_axes, transform=ax.transAxes,
+        fill=False, edgecolor=color, linewidth=1.8,
+    )
+    ax.add_patch(patch)
+    ax.text(
+        cx, cy - ry_axes - 0.02, f"{reference_value:.1f}",
+        transform=ax.transAxes, color=color, ha="center", va="top", fontsize=fontsize,
+    )
+
+
 def plot_unit_footprint_reconstruction(
     gtr, out_path, unit_id=None, template=None, locations=None, **kwargs,
 ) -> Path:
@@ -795,7 +896,10 @@ def plot_unit_footprint_reconstruction(
             spine.set_color(text_color)
 
         if show_legend:
-            legend = ax.legend(loc="best", fontsize=7, framealpha=0.85)
+            # Adam: branch legend must live in a fixed corner (top right) --
+            # "best" auto-placement had it landing dead-center on unit 154,
+            # on top of the very branches it was labeling.
+            legend = ax.legend(loc="upper right", fontsize=7, framealpha=0.85)
             if legend is not None:
                 legend.get_frame().set_facecolor(background)
                 for text in legend.get_texts():
@@ -804,6 +908,19 @@ def plot_unit_footprint_reconstruction(
         n_channels = int(locations_arr.shape[0])
         amp_min = float(np.min(amplitude)) if amplitude.size else 0.0
         amp_max = float(np.max(amplitude)) if amplitude.size else 0.0
+
+        # Scale circle (top left): the plot's own largest-amplitude circle,
+        # labeled with the uV value it represents -- an honest reference
+        # since it's the ACTUAL max radius drawn, not a separately
+        # recomputed one. Scale bar (bottom right): a clean round-um spatial
+        # reference. Both ASCII-simple ports of the old build's
+        # `_add_scale_circle`/`_add_scale_bar` (see those functions'
+        # docstrings for what was collapsed) -- placed in fixed opposite
+        # corners from the legend so none of the three ever compete.
+        max_radius_drawn = float(np.max(radii_um)) if radii_um.size else 0.0
+        _add_scale_circle_um(ax, radius_um=max_radius_drawn, reference_value=amp_max, color=text_color)
+        _add_scale_bar_um(ax, color=text_color)
+
         pitch_label = f"{pitch_um:.1f}um" if np.isfinite(pitch_um) else "n/a"
         title = (
             f"{n_branches} branch(es), {n_channels} electrode(s), "

@@ -40,6 +40,8 @@ from .load import (
     load_well_inputs,
 )
 from .merge import (
+    AVERAGING_METHODS,
+    DEFAULT_AVERAGING_METHOD,
     DEFAULT_MAX_SPIKES_PER_UNIT,
     DEFAULT_MS_AFTER,
     DEFAULT_MS_BEFORE,
@@ -56,6 +58,8 @@ __all__ = [
     "new_unit_accumulator",
     "accumulate_channel_contributions",
     "finalize_unit_accumulator",
+    "AVERAGING_METHODS",
+    "DEFAULT_AVERAGING_METHOD",
     "WEIGHTING_MODES",
     "DEFAULT_MS_BEFORE",
     "DEFAULT_MS_AFTER",

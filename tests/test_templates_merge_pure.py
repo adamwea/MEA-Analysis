@@ -77,8 +77,9 @@ def test_two_sources_average_by_construction_not_by_dividing_by_source_count():
 
 
 def test_uniform_weight_one_per_segment_reduces_to_plain_mean():
-    """weight=1.0 from every contributing segment (the `weighting="uniform"`
-    case in merge_segment_templates) is just an unweighted mean."""
+    """weight=1.0 from every contributing segment (the
+    `averaging_method="uniform"` case in merge_segment_templates) is just an
+    unweighted mean."""
     accumulator = new_unit_accumulator()
     accumulate_channel_contributions(
         accumulator, channel_ids=["a"], locations_xy=[[0.0, 0.0]],

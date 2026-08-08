@@ -70,6 +70,7 @@ silently.
 Pure library: no argparse, no printing, no ``__main__``.
 """
 
+import json
 import logging
 import math
 from pathlib import Path
@@ -93,7 +94,39 @@ DEFAULT_MS_AFTER = 2.0
 DEFAULT_MAX_SPIKES_PER_UNIT = 500
 DEFAULT_SEED = 0
 
-WEIGHTING_MODES = ("uniform", "spike_count")
+# Supported values for `averaging_method` — how contributions from segments
+# sharing a (unit, channel) pair are averaged. The parameter was named
+# `weighting` until Round 2; the rename is cosmetic, the arithmetic identical.
+#
+# "spike_count" is the DEFAULT (Round 2, plan §6 R14): weighting each
+# segment's contribution by its selected spike count makes the merged value
+# equal a re-derivation from the pooled spikes — which in turn is what makes
+# the downstream closed-form dense merge of curated units EXACT (capsule
+# `18 dense_merge_apply`: T_merged[c] = Σ tᵤ[c]·wᵤ[c] / Σ wᵤ[c] over the
+# stitched outputs — exact only when w IS the spike count). "uniform" (every
+# contributing segment counts equally — a plain mean) is kept for parity with
+# the published per-configuration protocol (Buccino et al. 2022) and with the
+# KCNT1 reference overnight run, whose manifest records `uniform`.
+#
+# Documented-but-NOT-implemented future methods, deliberately excluded from
+# this tuple so asking for one fails loudly instead of silently falling back:
+# "amplitude_max" (keep the largest-amplitude segment's waveform per channel,
+# no averaging) and "snr_weighted" (weight by per-segment SNR). A "plain
+# mean" is not a future method — it is exactly what "uniform" computes.
+AVERAGING_METHODS = ("spike_count", "uniform")
+DEFAULT_AVERAGING_METHOD = "spike_count"
+# Backward-compatible alias (the pre-Round-2 name); same tuple on purpose.
+WEIGHTING_MODES = AVERAGING_METHODS
+
+
+def _jsonable_id(value):
+    """A channel/unit id as something `json.dumps` accepts.
+
+    SpikeInterface hands ids back as numpy scalar types (`int64` / `str_`),
+    which `json.dumps` raises on; `.item()` unwraps those, and anything
+    already JSON-safe passes through untouched.
+    """
+    return value.item() if hasattr(value, "item") else value
 
 
 def _channel_sort_key(channel_id):
@@ -226,7 +259,9 @@ def merge_segment_templates(
     segment_analyzer_dirs,
     *,
     well=None,
-    weighting="uniform",
+    averaging_method=None,
+    weighting=None,
+    segment_retention_dir=None,
     ms_before=DEFAULT_MS_BEFORE,
     ms_after=DEFAULT_MS_AFTER,
     max_spikes_per_unit=DEFAULT_MAX_SPIKES_PER_UNIT,
@@ -246,22 +281,65 @@ def merge_segment_templates(
     regression back to collecting analyzers into a list before merging would
     have to remove it.
 
-    `weighting`:
+    `averaging_method` (`None` resolves to `DEFAULT_AVERAGING_METHOD`,
+    which is `"spike_count"`; see `AVERAGING_METHODS` for the rationale and
+    the documented-but-unimplemented future methods):
 
+    * `"spike_count"` — THE DEFAULT (Round 2, plan §6 R14). A segment's
+      contribution is weighted by how many of that unit's spikes actually
+      went into ITS template average there (the `random_spikes`-selected
+      count, read via `mea_modules.postprocess.unit_random_spike_count`), so
+      a segment that saw the unit fire 400 times counts for more than one
+      where it fired twice. Under this weighting the merged value equals a
+      re-derivation from the pooled selected spikes — the property that makes
+      the downstream closed-form dense merge of curated units exact.
     * `"uniform"` — every contributing segment counts equally (weight 1.0),
       i.e. a plain mean across segments that saw the unit on that channel.
-      This is also what the published per-configuration protocol this pipeline
+      This is what the published per-configuration protocol this pipeline
       otherwise follows uses (Buccino et al. 2022: per-config estimate, then
-      an UNWEIGHTED mean across configs) — the default here for that reason.
-    * `"spike_count"` — a segment's contribution is weighted by how many of
-      that unit's spikes actually went into ITS template average there (the
-      `random_spikes`-selected count, read via
-      `mea_modules.postprocess.unit_random_spike_count`), so a segment that
-      saw the unit fire 400 times counts for more than one where it fired
-      twice.
+      an UNWEIGHTED mean across configs), and what the KCNT1 reference
+      overnight run used — it was the default until Round 2 flipped it.
+
+    `weighting` is the DEPRECATED pre-Round-2 alias for `averaging_method`
+    (same values, same arithmetic). Passing both with different values
+    raises; passing `weighting` alone still works but logs a warning.
+
+    `segment_retention_dir` (default `None` = retain nothing, plan §6 R14②):
+    a directory to persist each segment's PER-UNIT template contribution into
+    as the merge streams, for `post_stitch_diagnostics`' cross-segment
+    consistency checks — without it those inputs die with the
+    `finally: del analyzer` below and can only be re-derived by re-opening
+    every segment analyzer a second time. Layout, all unit-axis-aligned to
+    the returned `unit_ids` (also written there as `unit_ids.json`):
+
+        <dir>/segments_index.json          [{index, dirname, analyzer_dir,
+                                             n_channels,
+                                             n_units_contributing}, ...]
+        <dir>/unit_ids.json
+        <dir>/segment_<NNN>/templates.npy      (n_units, n_channels_seg,
+                                                n_samples) float32; a unit
+                                                with no spikes in this
+                                                segment is an all-NaN row,
+                                                mirroring the merge's own
+                                                skip of that contribution
+        <dir>/segment_<NNN>/spike_counts.npy   (n_units,) int64 — the
+                                                selected counts, i.e. the
+                                                exact spike_count weights
+        <dir>/segment_<NNN>/channel_ids.json   this segment's own channels
+        <dir>/segment_<NNN>/locations_xy.npy   (n_channels_seg, 2) float64
+
+    Cost, documented so the flag is used knowingly: disk is
+    `n_units x n_channels_seg x n_samples x 4` bytes per segment (float32) —
+    on the KCNT1 reference well (780 units x ~1,000 ch x 60 samples x 21
+    segments) about 190 MB per segment, ~3.9 GB per well, roughly the same
+    footprint as the per-segment analyzers themselves. Peak memory is
+    unchanged in order: one transient float32 copy of the one open segment's
+    dense templates buffer (~190 MB there), made and released inside the
+    loop, so the streaming invariant (never more than one segment resident)
+    still holds.
 
     A unit with zero spikes in a given segment contributes NOTHING from that
-    segment, for ANY channel, regardless of `weighting` — the template row
+    segment, for ANY channel, regardless of `averaging_method` — the template row
     SpikeInterface would report there is not a real zero, it is "no
     measurement", and folding it in (even at weight 1.0) would pull every
     channel that segment routed toward zero for no reason. This is the same
@@ -287,7 +365,7 @@ def merge_segment_templates(
             "templates": (n_units, n_channels_union, n_samples) float64, NaN where uncovered
             "contributing_weight": (n_units, n_channels_union) float64, 0.0 where uncovered
             "n_segments": int,
-            "weighting": weighting,
+            "averaging_method": averaging_method,
             "ms_before": float,
             "ms_after": float,
             "sampling_frequency_hz": float,
@@ -311,12 +389,33 @@ def merge_segment_templates(
     segments disagree on `sampling_frequency_hz`, or if not one unit had a
     single spike across every segment given.
     """
-    if weighting not in WEIGHTING_MODES:
-        raise ValueError(f"weighting must be one of {WEIGHTING_MODES}, got {weighting!r}")
+    if weighting is not None:
+        if averaging_method is not None and averaging_method != weighting:
+            raise ValueError(
+                f"averaging_method={averaging_method!r} and its deprecated alias "
+                f"weighting={weighting!r} disagree; pass averaging_method only"
+            )
+        logger.warning(
+            "merge_segment_templates: `weighting=` is the deprecated pre-Round-2 "
+            "name; pass `averaging_method=` instead"
+        )
+        averaging_method = weighting
+    if averaging_method is None:
+        averaging_method = DEFAULT_AVERAGING_METHOD
+    if averaging_method not in AVERAGING_METHODS:
+        raise ValueError(
+            f"averaging_method must be one of {AVERAGING_METHODS}, got "
+            f"{averaging_method!r} (amplitude_max / snr_weighted are documented "
+            "future methods, not implemented)"
+        )
 
     segment_analyzer_dirs = [Path(p) for p in segment_analyzer_dirs]
     if not segment_analyzer_dirs:
         raise ValueError("merge_segment_templates: no segment analyzer directories given")
+    if segment_retention_dir is not None:
+        segment_retention_dir = Path(segment_retention_dir)
+        segment_retention_dir.mkdir(parents=True, exist_ok=True)
+    retained_segments = []
 
     # Deferred on purpose: this is the only function in the module that needs
     # SpikeInterface / mea_modules.postprocess. The pure accumulator functions
@@ -423,8 +522,10 @@ def merge_segment_templates(
                 channel_locations.setdefault(channel_id, xy)
 
             skipped = 0
+            unit_spike_counts = []  # aligned to these_unit_ids; retention reuses it
             for uid in these_unit_ids:
                 spike_count = unit_random_spike_count(analyzer, uid)
+                unit_spike_counts.append(int(spike_count))
                 if spike_count <= 0:
                     # No spikes here -> the stored template row is undefined,
                     # not a real zero. Skipping keeps the eventual per-channel
@@ -432,7 +533,7 @@ def merge_segment_templates(
                     # measured this unit here (see the module docstring).
                     skipped += 1
                     continue
-                weight = 1.0 if weighting == "uniform" else float(spike_count)
+                weight = 1.0 if averaging_method == "uniform" else float(spike_count)
                 template_ch_by_t = np.asarray(unit_template(analyzer, uid), dtype=np.float64).T
                 accumulate_channel_contributions(
                     unit_accumulators[uid],
@@ -440,6 +541,18 @@ def merge_segment_templates(
                     locations_xy=locations_xy,
                     template_ch_by_t=template_ch_by_t,
                     weight=weight,
+                )
+            if segment_retention_dir is not None:
+                retained_segments.append(
+                    _write_segment_contribution(
+                        segment_retention_dir,
+                        index=index - 1,
+                        seg_dir=seg_dir,
+                        analyzer=analyzer,
+                        spike_counts=unit_spike_counts,
+                        channel_ids=channel_ids,
+                        locations_xy=locations_xy,
+                    )
                 )
             logger.info(
                 "merge_segment_templates%s: %s contributed %d/%d unit(s) "
@@ -500,11 +613,26 @@ def merge_segment_templates(
             templates[u_idx, c_global, :] = template_ch_by_t[c_local, :]
             contributing_weight[u_idx, c_global] = weights[c_local]
 
+    if segment_retention_dir is not None:
+        # Written LAST, after every segment survived the loop: a complete
+        # segments_index.json is the marker that the retention set beside it
+        # is whole, so a killed run leaves no index rather than a lying one.
+        (segment_retention_dir / "unit_ids.json").write_text(
+            json.dumps([_jsonable_id(u) for u in seen_unit_ids], indent=2)
+        )
+        (segment_retention_dir / "segments_index.json").write_text(
+            json.dumps(retained_segments, indent=2)
+        )
+        logger.info(
+            "merge_segment_templates%s: retained %d segment contribution(s) "
+            "under %s", well_suffix, len(retained_segments), segment_retention_dir,
+        )
+
     logger.info(
         "merge_segment_templates%s: merged %d segment(s) -> %d unit(s) x "
-        "%d channel(s) union x %d sample(s) (weighting=%s)",
+        "%d channel(s) union x %d sample(s) (averaging_method=%s)",
         well_suffix, n_segments_used, len(seen_unit_ids), n_channels_union,
-        n_samples, weighting,
+        n_samples, averaging_method,
     )
 
     return {
@@ -515,14 +643,60 @@ def merge_segment_templates(
         "templates": templates,
         "contributing_weight": contributing_weight,
         "n_segments": n_segments_used,
-        "weighting": weighting,
+        "averaging_method": averaging_method,
         "ms_before": float(ms_before),
         "ms_after": float(ms_after),
         "sampling_frequency_hz": sampling_frequency_hz,
     }
 
 
+def _write_segment_contribution(
+    retention_dir, *, index, seg_dir, analyzer, spike_counts, channel_ids, locations_xy,
+):
+    """Persist ONE segment's per-unit template contribution (see
+    `merge_segment_templates`' `segment_retention_dir` docs for layout, cost,
+    and why: these arrays are otherwise dropped with the analyzer at the end
+    of each loop iteration, and cross-segment consistency diagnostics need
+    them back).
+
+    Reads the analyzer's dense `templates` buffer once — (n_units, n_samples,
+    n_channels) — transposes to the (n_units, n_channels, n_samples) axis
+    order every stitched artifact uses, casts to float32 (these are
+    diagnostic inputs; the merge itself keeps accumulating in float64), and
+    NaN-fills the rows of units with no spikes in this segment, mirroring the
+    merge's own skip of those contributions (their stored template rows are
+    undefined, not real zeros).
+
+    Returns this segment's `segments_index.json` entry.
+    """
+    seg_out = retention_dir / f"segment_{index:03d}"
+    seg_out.mkdir(parents=True, exist_ok=True)
+
+    dense = np.asarray(
+        analyzer.get_extension("templates").get_data(operator="average"), dtype=np.float32,
+    )
+    contribution = np.ascontiguousarray(np.transpose(dense, (0, 2, 1)))
+    counts = np.asarray(spike_counts, dtype=np.int64)
+    contribution[counts <= 0, :, :] = np.nan
+
+    np.save(seg_out / "templates.npy", contribution)
+    np.save(seg_out / "spike_counts.npy", counts)
+    np.save(seg_out / "locations_xy.npy", np.asarray(locations_xy, dtype=np.float64))
+    (seg_out / "channel_ids.json").write_text(
+        json.dumps([_jsonable_id(c) for c in channel_ids], indent=2)
+    )
+    return {
+        "index": int(index),
+        "dirname": seg_out.name,
+        "analyzer_dir": str(seg_dir),
+        "n_channels": len(channel_ids),
+        "n_units_contributing": int((counts > 0).sum()),
+    }
+
+
 __all__ = [
+    "AVERAGING_METHODS",
+    "DEFAULT_AVERAGING_METHOD",
     "WEIGHTING_MODES",
     "DEFAULT_MS_BEFORE",
     "DEFAULT_MS_AFTER",

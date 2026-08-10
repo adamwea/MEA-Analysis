@@ -58,12 +58,37 @@ def ensure_signed(recording):
     Guard, not a blanket cast: applying ``unsigned_to_signed`` to something that
     is already signed shifts the baseline by half the dynamic range. Only the
     ``uint*`` case is converted.
+
+    ``unsigned_to_signed`` shifts the DATA down by half the dtype's range
+    (2**15 counts for uint16) but copies ``offset_to_uV`` verbatim, which
+    silently breaks ``return_in_uV`` on the signed view: microvolts built from
+    the shifted counts land ~2**15 gains below what the unsigned recording
+    reported (~-203 mV on Maxwell data that should read ~0 µV). The cast here
+    compensates — the signed view's ``offset_to_uV`` is bumped by
+    ``2**(bits-1) * gain`` so ``gain*x + offset`` maps to the SAME microvolts
+    before and after the cast. Downstream filters still zero the offset (they
+    remove the DC it describes), so the preprocessed chain is unaffected.
     """
+    import numpy as np
     import spikeinterface.preprocessing as spre
 
-    if not _dtype_name(recording).startswith(_UNSIGNED_PREFIX):
+    dtype_name = _dtype_name(recording)
+    if not dtype_name.startswith(_UNSIGNED_PREFIX):
         return recording
-    return spre.unsigned_to_signed(recording)
+    signed = spre.unsigned_to_signed(recording)
+
+    gains = signed.get_property("gain_to_uV")
+    if gains is not None:
+        # Mirror unsigned_to_signed's own shift: bit_depth=None means it
+        # subtracts half the STORAGE dtype's range, whatever the ADC used.
+        shift_counts = float(2 ** (np.dtype(dtype_name).itemsize * 8 - 1))
+        gains = np.asarray(gains, dtype="float64")
+        offsets = signed.get_property("offset_to_uV")
+        offsets = (
+            np.zeros_like(gains) if offsets is None else np.asarray(offsets, dtype="float64")
+        )
+        signed.set_property("offset_to_uV", offsets + shift_counts * gains)
+    return signed
 
 
 def highpass(recording, freq_min=DEFAULT_FREQ_MIN, **filter_kwargs):

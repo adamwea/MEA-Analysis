@@ -17,6 +17,15 @@ dead recording.
 Reading traces is the point of this module, but every read is bounded — by a
 time window, by a channel count, and by a downsample step — so a review plot can
 never pull a multi-gigabyte recording into memory.
+
+Amplitudes default to MICROVOLTS (Adam's unit ruling, 2026-08-10): raw device
+counts around an arbitrary ADC mid-rail read as meaninglessly huge values in
+review, and a figure that does not name its units invites exactly that
+misreading. Callers wanting device units opt out with ``return_in_uV=False``;
+either way the figure states the units actually drawn (y label + title block),
+and a recording that cannot scale (`has_scaleable_traces()` False) downgrades
+to device units with a warning rather than failing — a review plot in ADC
+counts beats no plot.
 """
 
 import logging
@@ -53,9 +62,37 @@ _POINTS_WARN = 200_000
 # A trace plot is only readable at single-digit channel counts.
 _DEFAULT_MAX_CHANNELS = 8
 
+# Amplitude unit labels. Every figure states which one it drew; the µV/counts
+# decision is made once per figure by `_effective_uv` below.
+_UV_LABEL = "µV"
+_COUNTS_LABEL = "device counts (ADC)"
+
 # Default read window. None would mean "the whole recording", which on a
 # concatenated AxonTracking scan is tens of gigabytes.
 _DEFAULT_DURATION_S = 60.0
+
+
+def _effective_uv(recording, return_in_uV):
+    """True when traces can actually be returned in microvolts.
+
+    Honours the request but never fails on it: asking for µV from a recording
+    that carries no gain/offset (``has_scaleable_traces()`` False) downgrades
+    to device units with a warning, because a review plot in ADC counts beats
+    no plot. Callers label axes from THIS value, so a figure always states the
+    units it actually drew rather than the units that were requested.
+    """
+    if not return_in_uV:
+        return False
+    try:
+        scaleable = bool(recording.has_scaleable_traces())
+    except Exception:  # pragma: no cover - defensive; exotic recording objects
+        scaleable = False
+    if not scaleable:
+        logger.warning(
+            "return_in_uV requested but the recording carries no gain/offset; "
+            "falling back to device units (ADC counts)"
+        )
+    return scaleable
 
 
 def _shared_y_limits(parts_per_channel, margin=0.05):
@@ -163,7 +200,7 @@ def channel_activity_rms(
     seed=0,
     start_time_s=0.0,
     duration_s=None,
-    return_in_uV=False,
+    return_in_uV=True,
 ):
     """RMS amplitude per channel, sampled from a few random chunks.
 
@@ -171,6 +208,11 @@ def channel_activity_rms(
     Chunk starts are drawn from a seeded generator and shared by every channel,
     so the scores are comparable to each other and stable across runs — that is
     what makes them usable as a ranking key.
+
+    Scores are in microvolts by default (device units on explicit opt-out, or
+    automatically when the recording cannot scale). With a uniform gain the
+    RANKING is identical either way; the µV default exists so the scores read
+    in the same unit the trace figures draw.
 
     All channels are read together per chunk rather than one at a time: the
     samples, and therefore the scores, are identical, but a recording backed by
@@ -183,6 +225,8 @@ def channel_activity_rms(
     channel_ids = list(channel_ids)
     if not channel_ids:
         return np.asarray([], dtype=float)
+
+    return_in_uV = _effective_uv(recording, return_in_uV)
 
     window_start, window_end, _fs = _resolve_frame_window(recording, start_time_s, duration_s)
     span = int(window_end - window_start)
@@ -224,9 +268,14 @@ def select_representative_channels(
     seed=0,
     start_time_s=0.0,
     duration_s=None,
-    return_in_uV=False,
+    return_in_uV=True,
 ):
     """Pick the `n_channels` most active cluster representatives.
+
+    Activity RMS is scored in microvolts by default (see
+    :func:`channel_activity_rms`); with a uniform gain the selection is
+    identical in either unit, so flipping `return_in_uV` never changes which
+    channels a paired trace figure draws.
 
     One candidate is taken from each electrode cluster — the member nearest the
     cluster centroid — and the candidates are then ordered by activity RMS,
@@ -312,7 +361,7 @@ def plot_traces(
     max_points=_DEFAULT_MAX_POINTS,
     stitch_frames=(),
     title=None,
-    return_in_uV=False,
+    return_in_uV=True,
     block_frames=_DEFAULT_BLOCK_FRAMES,
     figsize=_TRACE_FIGSIZE,
     dpi=_TRACE_DPI,
@@ -334,6 +383,13 @@ def plot_traces(
     the recording carries a time vector with gaps at those boundaries, the line
     is broken with NaN so the plot does not draw a fake ramp across the gap.
 
+    Amplitudes are MICROVOLTS by default; pass ``return_in_uV=False`` for
+    device units, and a recording that cannot scale downgrades to device units
+    with a warning instead of failing. The figure states the units it actually
+    drew — a shared y label, and the title block (a ``[µV]`` / ``[device
+    counts (ADC)]`` suffix, skipped when the given title already names the
+    unit so callers can word it themselves).
+
     `time_gaps` chooses which timeline the x axis is. Left None it is the
     contiguous one — sample index over sampling rate, labelled ``time (s)`` —
     which is what every existing caller gets and what SpikeInterface believes.
@@ -352,11 +408,16 @@ def plot_traces(
     if total <= 0:
         raise ValueError("requested trace window contains no samples")
 
+    # Resolved once for the whole figure: selection, reads, and labels must
+    # all describe the same unit.
+    in_uv = _effective_uv(recording, return_in_uV)
+    unit_label = _UV_LABEL if in_uv else _COUNTS_LABEL
+
     if channel_ids is None:
         channel_ids = select_representative_channels(
             recording,
             n_channels=max_channels,
-            return_in_uV=return_in_uV,
+            return_in_uV=in_uv,
         )
     else:
         channel_ids = list(channel_ids)
@@ -405,7 +466,7 @@ def plot_traces(
     parts_per_channel = [[] for _ in channel_ids]
     for block_index, start in enumerate(range(window_start, window_end, block), start=1):
         end = min(window_end, start + block)
-        traces = _read_traces(recording, start, end, channel_ids, return_in_uV)
+        traces = _read_traces(recording, start, end, channel_ids, in_uv)
         # Keep the global decimation phase across block boundaries, otherwise
         # the sample grid shifts every block and the x axis drifts.
         offset = (window_start - start) % step
@@ -464,10 +525,20 @@ def plot_traces(
     if real_time:
         logger.info("plot traces: shaded %d gap spans of %d in window", shaded, len(spans))
     axes[-1].set_xlabel(_REAL_TIME_XLABEL if real_time else _CONTIGUOUS_XLABEL)
+
+    # The figure must state the units it drew (Adam, 2026-08-10): a shared
+    # amplitude label for every panel, and the unit named in the title block.
+    # A caller whose title already says the unit keeps its own wording.
+    fig.supylabel(f"amplitude ({unit_label})", fontsize="small")
     if title:
-        fig.suptitle(title)
+        stated = any(mark in title for mark in ("µV", "uV", "device counts"))
+        fig.suptitle(title if stated else f"{title} [{unit_label}]")
+    else:
+        fig.suptitle(f"amplitude in {unit_label}")
     fig.tight_layout()
 
     out_path = _save_and_release(fig, out_path)
-    logger.info("wrote traces: %s (%d channels)", out_path, len(channel_ids))
+    logger.info(
+        "wrote traces: %s (%d channels, %s)", out_path, len(channel_ids), unit_label
+    )
     return out_path

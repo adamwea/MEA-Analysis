@@ -239,3 +239,104 @@ def plot_unit_waveform(
         n_clipped,
     )
     return out_path
+
+
+_GRID_PANEL_SIZE = (3.0, 2.2)
+_GRID_DPI = 150
+
+# Fewer snippets per panel than the single-unit plot: a grid panel is a tenth
+# the area, and forty faint traces already read as a cloud at that size.
+_GRID_N_SPIKES = 40
+
+
+def plot_waveform_grid(
+    analyzer,
+    unit_ids,
+    out_path,
+    n_cols=4,
+    n_spikes=_GRID_N_SPIKES,
+    seed=0,
+    ylim_quantile=_DEFAULT_YLIM_QUANTILE,
+    title=None,
+    panel_size=_GRID_PANEL_SIZE,
+    dpi=_GRID_DPI,
+):
+    """Small multiples of :func:`plot_unit_waveform`; return `out_path`.
+
+    The contact-sheet view — the reviewer's scroll through fifty loose PNGs
+    compressed into a handful of figures, same content per panel: faint
+    snippets, template over them, extremum channel. The old driver's waveform
+    grid PDF did exactly this and it was the right instinct; this is that
+    artifact rebuilt on the analyzer, without pyplot, one figure per call.
+
+    Panels are per-unit scaled (each unit frames its own template — see
+    :func:`_robust_ylim`), so the grid reads SHAPE, not relative amplitude; the
+    per-unit summary table carries the amplitudes. A unit whose snippets cannot
+    be read gets an annotated empty panel rather than sinking the sheet.
+
+    Keep the unit count per call to a couple of dozen; chunk a larger sample
+    into several sheets.
+    """
+    import numpy as np
+    from matplotlib.collections import LineCollection
+
+    from .analyzer import template_nbefore
+
+    unit_ids = list(unit_ids)
+    if not unit_ids:
+        raise ValueError("no unit ids to plot")
+
+    n_cols = max(1, min(int(n_cols), len(unit_ids)))
+    n_rows = int(np.ceil(len(unit_ids) / n_cols))
+    fig = _new_figure((panel_size[0] * n_cols, panel_size[1] * n_rows), dpi)
+    axes = np.atleast_1d(fig.subplots(n_rows, n_cols, squeeze=False)).ravel()
+
+    fs = float(analyzer.sampling_frequency)
+    nbefore = template_nbefore(analyzer)
+
+    drawn = failed = 0
+    for ax, unit_id in zip(axes, unit_ids):
+        try:
+            snippets, template, channel_id = unit_waveforms(
+                analyzer, unit_id, n_spikes=n_spikes, seed=seed
+            )
+            time_ms, _zero = _trough_aligned_time_ms(template, fs, nbefore)
+
+            if snippets.shape[0]:
+                segments = [np.column_stack((time_ms, snippet)) for snippet in snippets]
+                ax.add_collection(
+                    LineCollection(segments, colors=_SPIKE_COLOR, linewidths=0.3, alpha=0.15)
+                )
+            ax.plot(time_ms, template, color=_TEMPLATE_COLOR, lw=1.2, zorder=3)
+            ax.axvline(0.0, color="#999999", lw=0.5, ls=":", zorder=1)
+
+            ax.set_xlim(float(time_ms[0]), float(time_ms[-1]))
+            ylim = _robust_ylim(snippets, template, ylim_quantile)
+            if ylim is not None:
+                ax.set_ylim(*ylim)
+
+            ax.set_title(f"unit {unit_id} - ch {channel_id}", fontsize=8)
+            drawn += 1
+        except Exception as exc:  # one unit must not sink the sheet
+            failed += 1
+            logger.warning("waveform grid panel failed for unit %s: %s", unit_id, exc)
+            ax.text(
+                0.5, 0.5, f"unit {unit_id}\nfailed", transform=ax.transAxes,
+                ha="center", va="center", fontsize=8, color="#999999",
+            )
+        ax.set_xticks([])
+        ax.set_yticks([])
+
+    for ax in axes[len(unit_ids):]:
+        ax.set_visible(False)
+
+    if title:
+        fig.suptitle(title)
+    fig.tight_layout()
+
+    out_path = _save_and_release(fig, out_path)
+    logger.info(
+        "wrote waveform grid: %s (%d units, %d drawn, %d failed)",
+        out_path, len(unit_ids), drawn, failed,
+    )
+    return out_path

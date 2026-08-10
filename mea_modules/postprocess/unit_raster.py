@@ -177,4 +177,82 @@ def plot_unit_raster(
     return _save_and_release(fig, out_path)
 
 
-__all__ = ["plot_unit_raster", "unit_firing_rates"]
+_HIST_FIGSIZE = (8.0, 5.0)
+_HIST_DPI = 180
+_HIST_BINS = 40
+
+
+def plot_firing_rate_histogram(
+    sorting,
+    out_path,
+    duration_s=None,
+    bins=_HIST_BINS,
+    title=None,
+    figsize=_HIST_FIGSIZE,
+    dpi=_HIST_DPI,
+):
+    """The raster's ordering key drawn as its own figure; return `out_path`.
+
+    The raster shows the yield unit by unit; this shows its SHAPE — one
+    histogram of :func:`unit_firing_rates`, which is what "a healthy sort has a
+    smooth spread from a few fast units to a long slow tail" looks like as a
+    distribution. A spike at the very bottom is a pile of near-empty units, and
+    a second bump at the top is usually clustered noise.
+
+    Bins are log-spaced because sorted rates span three to four decades — a
+    linear axis puts every unit in the first bar. Zero-spike units cannot sit on
+    a log axis at all, so they are counted in the corner label instead of being
+    silently dropped. `duration_s` should be the recording's own duration for
+    the same reason it should be on the raster: the sorting alone only knows
+    when its last spike was.
+    """
+    import numpy as np
+
+    rates = unit_firing_rates(sorting, duration_s=duration_s)
+    values = np.asarray(list(rates.values()), dtype=float)
+    if values.size == 0:
+        raise ValueError("sorting contains no units")
+
+    positive = values[values > 0.0]
+    n_zero = int(values.size - positive.size)
+
+    fig = _new_figure(figsize, dpi)
+    ax = fig.subplots()
+
+    if positive.size:
+        low = float(positive.min())
+        high = float(positive.max())
+        if high <= low:
+            high = low * 1.1 + 1e-9
+        edges = np.logspace(np.log10(low), np.log10(high), max(2, int(bins)) + 1)
+        ax.hist(positive, bins=edges, color="#4a6fa5", edgecolor="white", linewidth=0.3)
+        ax.set_xscale("log")
+
+        median = float(np.median(positive))
+        ax.axvline(median, color="#c0392b", lw=1.2, ls="--")
+        ax.text(
+            median, 0.97, f" median {median:.2f} Hz",
+            transform=ax.get_xaxis_transform(),
+            ha="left", va="top", fontsize=8, color="#c0392b",
+        )
+
+    ax.set_xlabel("firing rate (Hz, log)")
+    ax.set_ylabel("units")
+    ax.set_title(title or f"firing-rate distribution - {values.size} units")
+    if n_zero:
+        ax.text(
+            0.99, 0.97, f"{n_zero} unit(s) with zero spikes not shown",
+            transform=ax.transAxes, ha="right", va="top", fontsize=8, color="#666666",
+        )
+    fig.tight_layout()
+
+    out_path = _save_and_release(fig, out_path)
+    logger.info(
+        "wrote firing-rate histogram: %s (%d units, %d zero-rate, median %.3f Hz)",
+        out_path, values.size, n_zero,
+        float(np.median(positive)) if positive.size else float("nan"),
+    )
+    return out_path
+
+
+__all__ = ["plot_unit_raster", "unit_firing_rates", "plot_firing_rate_histogram"]

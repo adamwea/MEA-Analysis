@@ -451,14 +451,29 @@ def merge_segment_templates(
                     "a sparsity mask would silently hide channels this merge needs "
                     "to see"
                 )
-            if not analyzer.has_extension("random_spikes"):
+            needs_random = not analyzer.has_extension("random_spikes")
+            needs_templates = not analyzer.has_extension("templates")
+            if needs_random or needs_templates:
+                # Compute on an IN-MEMORY copy, never the folder-backed
+                # source: a folder-backed SortingAnalyzer PERSISTS every
+                # computed extension into its own folder, so computing here
+                # used to silently write random_spikes + templates into
+                # capsule 08's deliverable during the stitch — contradicting
+                # 08's documented bare-analyzer contract (consolidation
+                # register item 11). Same in-memory pattern capsule 09 uses
+                # (`save_as(format="memory")`); the copy is cheap for 08's
+                # bare analyzers (sorting + recording refs, no extension
+                # payloads yet), and everything read below (unit_template,
+                # unit_random_spike_count) reads the copy identically.
+                analyzer = analyzer.save_as(format="memory")
+            if needs_random:
                 analyzer.compute(
                     "random_spikes",
                     method="uniform",
                     max_spikes_per_unit=int(max_spikes_per_unit),
                     seed=int(random_spikes_seed),
                 )
-            if not analyzer.has_extension("templates"):
+            if needs_templates:
                 # No `waveforms` extension requested: SpikeInterface then
                 # accumulates the average template in place instead of keeping
                 # every snippet (see mea_modules.postprocess.analyzer's own

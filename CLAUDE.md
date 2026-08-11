@@ -67,6 +67,43 @@ rules, Pass-2 review protocol). This file carries the repo-specific rules;
 when they conflict: Adam's live rulings > the ops file's protocol > this
 file (and flag the conflict).
 
+## graphify — LIVE (reinstalled 2026-08-11)
+
+graphify is installed again on awDesktop after the 2026-08-07 rebuild:
+**`graphifyy` 0.9.40 from PyPI in its own conda env `graphify`**
+(`~/miniforge3/envs/graphify`), symlinked to `~/.local/bin/graphify` so the CLI
+is on PATH in interactive shells with nothing to activate. It is deliberately
+NOT installed into `mea_recon_pipeline` (that env's spikeinterface / numpy /
+zarr pins are load-bearing). In a non-interactive script call
+`~/.local/bin/graphify` by absolute path — `~/.bashrc` returns early for
+non-interactive shells. Reinstall from scratch:
+
+```bash
+conda create -y -n graphify python=3.12
+conda run -n graphify pip install graphifyy
+mkdir -p ~/.local/bin && ln -sf ~/miniforge3/envs/graphify/bin/graphify ~/.local/bin/graphify
+```
+
+Prefer `graphify query "<question>"` / `graphify explain "<name>"` /
+`graphify path "<A>" "<B>"` over raw grep for structural questions; they return
+a scoped subgraph instead of a wall of matches. Run `graphify update .` after
+editing code to keep the graph current (AST-only, no LLM, no API cost).
+`query` truncates at a ~2000-token budget — raise it with `--budget` before
+concluding something is absent.
+
+**`graphify-out/` is gitignored** (`.gitignore` L53–55) — the graph is a
+per-worktree build artifact, never committed. A fresh worktree has no graph;
+build it with `graphify update .` (~40 s for this repo). This worktree's graph
+was built 2026-08-11: 1533 nodes / 2964 edges / 76 communities. This repo has
+no `.graphifyignore`, so the graph also covers the legacy `dashboards/`,
+`UnitMatch/` and `helper_functions.py` — per the repo boundary above, those
+nodes are read-only context, never edit targets.
+
+For anything spanning this repo and the pipeline repo, use the **merged**
+graph built on the MRP side (MRP `CLAUDE.md` → "Cross-repo graph") — a
+question about, say, `stitch_templates` calling into `mea_modules` is empty in
+either single-repo graph.
+
 ## Setup
 
 ```bash

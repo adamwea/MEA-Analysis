@@ -23,12 +23,27 @@ Descriptive only: nothing here filters or scores a unit.
 
 import logging
 
-from ..diagnostics.channel_layout import _new_figure, _save_and_release
+from ..diagnostics.channel_layout import (
+    _add_caption,
+    _fold_caption,
+    _legend_line,
+    _legend_patch,
+    _new_figure,
+    _save_and_release,
+)
+from ..diagnostics.figure_text import PER_SEGMENT_ONLY, PROXY_NOT_MODEL
 
 logger = logging.getLogger(__name__)
 
 _FIGSIZE = (14.0, 9.0)
 _DPI = 180
+
+# Legend/caption defaults, matched to the diagnostics figures.
+_LEGEND_FONTSIZE = 7
+_LEGEND_FRAMEALPHA = 0.85
+
+_BAR_COLOR = "#4a6fa5"
+_UNITS_COLOR = "#c0392b"
 
 
 def _segment_of(sample_indices, segment_bounds):
@@ -132,6 +147,7 @@ def plot_spikes_per_segment(
     title=None,
     figsize=_FIGSIZE,
     dpi=_DPI,
+    caption_extra=None,
 ):
     """Heatmap of unit x segment counts over a per-segment roll-up; return `out_path`.
 
@@ -143,6 +159,20 @@ def plot_spikes_per_segment(
     The lower panel restates the columns as numbers: spikes per segment as bars,
     units-active per segment as a line on its own axis, which is the difference
     between "one loud unit" and "everyone was there".
+
+    Both lower-panel encodings carry legend keys, the colour bar names its
+    quantity and its scale, and every axis states its unit (Adam, 2026-08-11) —
+    a bar height and a line height are both counts on this figure, of two
+    completely different things, and only labels keep them apart.
+
+    `caption_extra` appends one more caption sentence, which is where a caller
+    names the sibling artifacts written beside this figure by their real emitted
+    filenames, e.g.::
+
+        caption_extra=(
+            "The same counts as arrays: spikes_per_segment.npy (drawn here) and "
+            "template_spikes_per_segment.npy (only the spikes the templates used)."
+        )
     """
     import numpy as np
 
@@ -151,9 +181,22 @@ def plot_spikes_per_segment(
         raise ValueError("no counts to plot")
 
     fig = _new_figure(figsize, dpi)
-    ax_heat, ax_bars = fig.subplots(
-        2, 1, sharex=True, height_ratios=[3.0, 1.0], gridspec_kw={"hspace": 0.08}
-    )
+    # The colour bar is a subplot of the SAME gridspec as the two panels rather
+    # than space stolen from the heatmap by fig.colorbar(ax=...): the stolen
+    # form puts the heatmap in a gridspec of its own, which the tight_layout
+    # `_add_caption` re-runs cannot lay out — the bar's label ends up off the
+    # page and the caption ends up on the bars.
+    # No hspace/wspace here on purpose: setting them locally makes the whole
+    # gridspec opaque to tight_layout (`locally_modified_subplot_params`), which
+    # silently drops the caption on top of the segment labels. tight_layout
+    # picks the spacing instead.
+    grid = fig.add_gridspec(2, 2, height_ratios=[3.0, 1.0], width_ratios=[60.0, 1.0])
+    ax_heat = fig.add_subplot(grid[0, 0])
+    ax_bars = fig.add_subplot(grid[1, 0], sharex=ax_heat)
+    cax = fig.add_subplot(grid[0, 1])
+    # sharex alone does not hide the upper panel's tick labels the way
+    # fig.subplots(sharex=True) does.
+    ax_heat.tick_params(labelbottom=False)
 
     image = ax_heat.imshow(
         np.log10(1.0 + counts.astype(float)),
@@ -163,8 +206,13 @@ def plot_spikes_per_segment(
         origin="upper",
         extent=(-0.5, counts.shape[1] - 0.5, counts.shape[0] - 0.5, -0.5),
     )
-    bar = fig.colorbar(image, ax=ax_heat, fraction=0.03, pad=0.01)
-    bar.set_label("log10(1 + spikes)")
+    bar = fig.colorbar(image, cax=cax)
+    # Name the quantity AND the scale. What a step of the bar MEANS in spikes is
+    # the half nobody reads off "log10", so it is spelled out in the caption.
+    bar.set_label(
+        "spikes in this unit × segment cell (count), log10(1 + count) scale",
+        fontsize=8,
+    )
     ax_heat.set_ylabel(f"unit (sorter order, {counts.shape[0]} units)")
     ax_heat.set_title(
         title
@@ -175,16 +223,44 @@ def plot_spikes_per_segment(
     )
 
     columns = np.arange(counts.shape[1])
-    ax_bars.bar(columns, counts.sum(axis=0), color="#4a6fa5", width=0.8)
-    ax_bars.set_ylabel("spikes", color="#4a6fa5")
-    ax_bars.set_xlabel("segment")
+    ax_bars.bar(columns, counts.sum(axis=0), color=_BAR_COLOR, width=0.8)
+    ax_bars.set_ylabel("spikes in this segment (count)", color=_BAR_COLOR)
+    ax_bars.set_xlabel("segment (one recording configuration, in file order)")
     ax_bars.set_xticks(columns)
     ax_bars.set_xticklabels([str(label) for label in segment_labels], rotation=90, fontsize=7)
 
     ax_units = ax_bars.twinx()
-    ax_units.plot(columns, (counts > 0).sum(axis=0), color="#c0392b", lw=1.2, marker=".")
-    ax_units.set_ylabel("units active", color="#c0392b")
+    ax_units.plot(columns, (counts > 0).sum(axis=0), color=_UNITS_COLOR, lw=1.2, marker=".")
+    ax_units.set_ylabel("units firing at least once (count)", color=_UNITS_COLOR)
     ax_units.set_ylim(bottom=0)
+
+    # The legend lives in the lower panel: the heatmap above is dense by design
+    # and any box on it hides units, while the bars leave headroom. Its colour
+    # is explained by the colour bar rather than by a key.
+    ax_bars.legend(
+        handles=[
+            _legend_patch(_BAR_COLOR, "spikes per segment, all units (left axis)"),
+            _legend_line(
+                _UNITS_COLOR, "units firing at least once (right axis)", lw=1.2
+            ),
+        ],
+        loc="best",
+        fontsize=_LEGEND_FONTSIZE,
+        framealpha=_LEGEND_FRAMEALPHA,
+        labelspacing=0.7,
+    )
+
+    caption_parts = [
+        "One row per sorted unit, one column per segment; a cell is how many "
+        "spikes that unit fired in that segment, coloured on a log10(1 + count) "
+        "scale — one step up the colour bar is ten times as many spikes. A fully "
+        "dark COLUMN is a segment the sort found nothing in, and a row lit in one "
+        "column only is a unit seen in a single recording configuration.",
+        PER_SEGMENT_ONLY,
+        PROXY_NOT_MODEL,
+        caption_extra,
+    ]
+    _add_caption(fig, _fold_caption(caption_parts))
 
     out_path = _save_and_release(fig, out_path)
     logger.info(

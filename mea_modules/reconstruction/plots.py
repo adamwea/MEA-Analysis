@@ -654,7 +654,7 @@ def _add_scale_bar_um(ax, *, color="white", fontsize=9):
     transform = blended_transform_factory(ax.transData, ax.transAxes)
     ax.plot([x_left, x_right], [y_bar, y_bar], color=color, lw=2.5, solid_capstyle="butt", transform=transform)
     ax.text(
-        (x_left + x_right) / 2.0, y_bar + 0.015, f"{int(round(bar_um))} um",
+        (x_left + x_right) / 2.0, y_bar + 0.015, f"{int(round(bar_um))} µm",
         transform=transform, color=color, ha="center", va="bottom", fontsize=fontsize,
     )
 
@@ -695,9 +695,14 @@ def _add_scale_circle_um(ax, *, radius_um, reference_value, color="white", fonts
         fill=False, edgecolor=color, linewidth=1.8,
     )
     ax.add_patch(patch)
+    # The circle is a SIZE legend, and a bare number is not one: without the
+    # unit and without saying that size means amplitude, a reader has a ring
+    # with a float under it (Adam, 2026-08-11).
     ax.text(
-        cx, cy - ry_axes - 0.02, f"{reference_value:.1f}",
+        cx, cy - ry_axes - 0.02,
+        f"circle size = peak amplitude\nlargest drawn: {reference_value:.1f} µV",
         transform=ax.transAxes, color=color, ha="center", va="top", fontsize=fontsize,
+        linespacing=1.25,
     )
 
 
@@ -766,14 +771,18 @@ def _render_footprint_core(
     )
     ax.add_collection(footprint)
     cbar = fig.colorbar(footprint, ax=ax, fraction=0.045, pad=0.03)
-    cbar.set_label("Latency (ms)" if fs else "Latency (samples)", color=text_color)
+    cbar.set_label(
+        "Latency: peak time relative to the largest electrode "
+        + ("(ms)" if fs else "(samples — no sampling rate supplied)"),
+        color=text_color,
+    )
     cbar.ax.tick_params(colors=text_color, labelsize=8)
     cbar.outline.set_edgecolor(text_color)
 
     if invert_y_axis:
         ax.invert_yaxis()
-    ax.set_xlabel("x (um)", color=text_color)
-    ax.set_ylabel("y (um)", color=text_color)
+    ax.set_xlabel("x (µm)", color=text_color)
+    ax.set_ylabel("y (µm)", color=text_color)
     ax.tick_params(colors=text_color, labelsize=8)
     for spine in ax.spines.values():
         spine.set_color(text_color)
@@ -1084,9 +1093,15 @@ def plot_unit_footprint_diagnostic(template, locations, out_path, unit_id=None, 
     (no per-channel size encoding, no pitch/overlap math): LEFT = amplitude
     (`viridis`), RIGHT = latency (`viridis_r`) — the same two underlying
     per-channel metrics `_channel_amplitude_and_latency` already computes
-    for the presentation plot, just rendered the cheap way. No scale bar,
-    no scale circle, no legend — this is a sanity-check view, not a figure
-    meant to stand alone.
+    for the presentation plot, just rendered the cheap way. No scale bar and
+    no scale circle — this is a sanity-check view, not a presentation figure.
+
+    It does, however, state its own scales (Adam, 2026-08-11): both colorbars
+    carry a label with units (µV for amplitude; milliseconds for latency, or
+    samples when no `fs` was supplied), and a caption says what one dot is and
+    what latency is measured relative to. An unlabelled colorbar shows a range
+    without saying what is ranged, which is exactly the misreading the unit
+    ruling exists to prevent.
 
     **Amplitude color scale (Adam, 2026-08-04)**: amplitude is heavy-tailed
     in real data (unit 154's own real values span 0.9-320.6, a ~356x
@@ -1139,10 +1154,31 @@ def plot_unit_footprint_diagnostic(template, locations, out_path, unit_id=None, 
 
     fig, (ax_amp, ax_lat) = plt.subplots(1, 2, figsize=figsize)
     try:
+        # Colorbars must carry a labelled scale WITH UNITS (Adam, 2026-08-11):
+        # an unlabelled colorbar states a range without saying what is ranged,
+        # so "Amplitude"/"Latency" alone left a reader unable to tell µV from
+        # device counts, or milliseconds from samples. Latency is honest about
+        # the fs-missing case rather than asserting ms it did not compute.
+        latency_unit = "ms" if fs else "samples"
         fig.patch.set_facecolor(background)
-        for ax, values, cmap, panel_label, use_log in (
-            (ax_amp, amplitude, "viridis", "Amplitude", amplitude_scaling == "log"),
-            (ax_lat, latency, "viridis_r", "Latency", False),
+        for ax, values, cmap, panel_label, cbar_label, use_log in (
+            (
+                ax_amp,
+                amplitude,
+                "viridis",
+                "Amplitude",
+                "peak |amplitude| (µV)"
+                + (", log colour scale" if amplitude_scaling == "log" else ""),
+                amplitude_scaling == "log",
+            ),
+            (
+                ax_lat,
+                latency,
+                "viridis_r",
+                "Latency",
+                f"peak time relative to the largest channel ({latency_unit})",
+                False,
+            ),
         ):
             ax.set_facecolor(background)
             ax.set_aspect("equal", adjustable="box")
@@ -1163,10 +1199,11 @@ def plot_unit_footprint_diagnostic(template, locations, out_path, unit_id=None, 
                 )
             cbar = fig.colorbar(scatter, ax=ax, fraction=0.045, pad=0.03)
             cbar.ax.tick_params(colors=text_color, labelsize=7)
+            cbar.set_label(cbar_label, color=text_color, fontsize=7)
             if invert_y_axis:
                 ax.invert_yaxis()
-            ax.set_xlabel("x (um)", color=text_color, fontsize=8)
-            ax.set_ylabel("y (um)", color=text_color, fontsize=8)
+            ax.set_xlabel("x (µm)", color=text_color, fontsize=8)
+            ax.set_ylabel("y (µm)", color=text_color, fontsize=8)
             ax.tick_params(colors=text_color, labelsize=7)
             for spine in ax.spines.values():
                 spine.set_color(text_color)
@@ -1177,6 +1214,20 @@ def plot_unit_footprint_diagnostic(template, locations, out_path, unit_id=None, 
         if unit_id is not None:
             title = f"Unit {unit_id} — {title}"
         fig.suptitle(title, color=text_color, fontsize=12)
+
+        # One caption for both panels: what a dot is, and what latency zero
+        # means. Fixed position, so the render stays deterministic.
+        fig.text(
+            0.5,
+            0.005,
+            "One dot per electrode, at its position on the array. "
+            "Latency 0 is the peak time of the largest-amplitude electrode, so "
+            "negative means earlier than that electrode and positive means later.",
+            ha="center",
+            va="bottom",
+            color=text_color,
+            fontsize=7,
+        )
 
         out_path.parent.mkdir(parents=True, exist_ok=True)
         fig.savefig(out_path, dpi=dpi, bbox_inches="tight", facecolor=fig.get_facecolor())

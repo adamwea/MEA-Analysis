@@ -30,10 +30,16 @@ very different from one covering two clumps in the middle.
 import logging
 
 from ..diagnostics.channel_layout import (
+    _add_caption,
+    _fold_caption,
+    _legend_dot,
+    _legend_line,
     _new_figure,
     _save_and_release,
+    _wrap_label,
     estimate_electrode_pitch,
 )
+from ..diagnostics.figure_text import PROXY_NOT_MODEL, acronym_note
 
 logger = logging.getLogger(__name__)
 
@@ -54,6 +60,67 @@ _AMPLITUDE_CMAP = "viridis"
 
 # Room around the drawn channels when zooming to the unit, again in pitches.
 _ZOOM_MARGIN_PITCHES = 4.0
+
+# Legend/caption defaults, matched to the diagnostics figures.
+_LEGEND_FONTSIZE = 7
+_LEGEND_FRAMEALPHA = 0.85
+
+# Mid-viridis: the legend key for the coloured traces has to be a colour that
+# actually occurs in the colormap, or the key points at nothing on the figure.
+_CMAP_MID_COLOR = "#21918c"
+
+
+def _legend_ring(color, label, size=8.0, lw=1.2):
+    """Legend key for a HOLLOW ring marker.
+
+    The shared handle set in :mod:`mea_modules.diagnostics.channel_layout` has a
+    filled dot and a line; the extremum marker on this figure is an open ring
+    drawn over the electrode, and a filled key beside the filled grey electrode
+    dots would read as a third population rather than as the same ring.
+    """
+    from matplotlib.lines import Line2D
+
+    return Line2D(
+        [],
+        [],
+        linestyle="none",
+        marker="o",
+        markersize=float(size),
+        markerfacecolor="none",
+        markeredgecolor=color,
+        markeredgewidth=float(lw),
+        label=_wrap_label(label),
+    )
+
+
+def _hang_legend_below_axes(fig, handles, gap=0.015):
+    """Put a figure legend in the band between the panels and the caption.
+
+    Same helper as in :mod:`mea_modules.postprocess.waveforms`, and for the same
+    reason: on a small-multiple sheet every panel is data, and a legend pinned
+    to the figure bottom lands on the caption :func:`_add_caption` writes there.
+    Anchoring to the lowest panel edge puts it in the margin ``_add_caption``
+    already reserved. Call it AFTER ``_add_caption``.
+
+    (This belongs beside the other legend helpers in
+    ``mea_modules.diagnostics.channel_layout``; it is duplicated here only
+    because that module was out of scope for this change.)
+    """
+    if not handles:
+        return None
+    visible = [ax.get_position().y0 for ax in fig.axes if ax.get_visible()]
+    bottom = min(visible) if visible else 0.15
+    n_cols = max(1, min(len(handles), int(fig.get_figwidth() // 2.6)))
+    legend = fig.legend(
+        handles=handles,
+        loc="upper center",
+        bbox_to_anchor=(0.5, max(0.0, bottom - float(gap))),
+        ncol=n_cols,
+        fontsize=_LEGEND_FONTSIZE,
+        framealpha=_LEGEND_FRAMEALPHA,
+    )
+    legend.set_in_layout(False)
+    return legend
 
 
 def _layout(analyzer):
@@ -192,6 +259,9 @@ def _add_scale_bar(ax, width_um, height_um, duration_ms, amplitude_scale, normal
     no way to tell how big either actually is. Under per-channel normalisation
     the height has no single microvolt value, and saying so is the point — a
     number there would be a lie.
+
+    Returns the height label it drew, so the legend key can quote the same words
+    the bar itself carries instead of recomputing them.
     """
     x_min, x_max = ax.get_xlim()
     y_min, y_max = ax.get_ylim()
@@ -205,10 +275,10 @@ def _add_scale_bar(ax, width_um, height_um, duration_ms, amplitude_scale, normal
         ha="center", va="top", fontsize=7, zorder=4,
     )
     if normalize == "per_channel":
-        uv_label = "per-channel"
+        uv_label = "each trace's own peak"
     else:
         uv = (height_um / amplitude_scale) if amplitude_scale > 0 else float("nan")
-        uv_label = f"{uv:.0f} uV"
+        uv_label = f"{uv:.0f} µV"
     ax.text(
         # Offset in trace widths, not axis fractions: the vertical bar is drawn
         # in data units, so an axis-fraction pad collides with it whenever the
@@ -216,6 +286,7 @@ def _add_scale_bar(ax, width_um, height_um, duration_ms, amplitude_scale, normal
         x0 - 0.6 * width_um, y0 + height_um / 2.0, uv_label,
         ha="center", va="center", fontsize=7, rotation=90, zorder=4,
     )
+    return uv_label
 
 
 def plot_unit_footprint(
@@ -233,6 +304,8 @@ def plot_unit_footprint(
     zoom=True,
     figsize=_FOOTPRINT_FIGSIZE,
     dpi=_FOOTPRINT_DPI,
+    extremum_label=None,
+    caption=None,
 ):
     """Draw one unit's template across its electrodes at true positions; return `out_path`.
 
@@ -264,6 +337,18 @@ def plot_unit_footprint(
     only be as wide as the sparsity radius the analyzer was built with. If axons
     look truncated at a suspiciously round distance, raise
     ``sparsity radius`` in :func:`mea_modules.postprocess.analyzer.build_analyzer`.
+
+    Every encoding is legended and the colour bar names its quantity and unit
+    (Adam, 2026-08-11). The red ring in particular is only fully meaningful once
+    you know *which other figure* that electrode was drawn into, so
+    `extremum_label` should name the sibling artifact by its real emitted
+    filename, e.g.::
+
+        extremum_label="loudest electrode — its waveform is waveforms/unit_7.png"
+
+    This module cannot know that name; only the capsule that writes both files
+    can, so it passes it in rather than this module guessing. `caption` appends
+    one more caption sentence for anything a legend key is too short to hold.
     """
     _channel_ids, locations = _layout(analyzer)
     pitch = estimate_electrode_pitch(locations[:, 0], locations[:, 1]) or 1.0
@@ -292,7 +377,7 @@ def plot_unit_footprint(
         ax.set_xlim(float(locations[:, 0].min()) - margin, float(locations[:, 0].max()) + margin)
         ax.set_ylim(float(locations[:, 1].min()) - margin, float(locations[:, 1].max()) + margin)
 
-    _add_scale_bar(
+    uv_label = _add_scale_bar(
         ax,
         width_um,
         height_um,
@@ -303,19 +388,92 @@ def plot_unit_footprint(
 
     if show_colorbar:
         bar = fig.colorbar(stats["collection"], ax=ax, fraction=0.04, pad=0.02)
-        bar.set_label("peak-to-peak amplitude (uV)")
+        bar.set_label("peak-to-peak (PTP) amplitude of that electrode's trace (µV)")
 
-    ax.set_xlabel("x (um)")
-    ax.set_ylabel("y (um)")
+    ax.set_xlabel("x (µm)")
+    ax.set_ylabel("y (µm)")
     ax.set_title(
         title
         or (
             f"unit {unit_id} footprint - {stats['n_channels']} channels - "
-            f"{stats['extent_x_um']:.0f} x {stats['extent_y_um']:.0f} um - "
-            f"peak {stats['peak_amplitude_uV']:.0f} uV"
+            f"{stats['extent_x_um']:.0f} x {stats['extent_y_um']:.0f} µm - "
+            f"peak {stats['peak_amplitude_uV']:.0f} µV"
         )
     )
-    fig.tight_layout()
+
+    # Every encoding gets a legend key (Adam, 2026-08-11): grey dots, coloured
+    # squiggles, a red ring and a black corner bracket are four different
+    # statements and only the colour has a bar to explain it.
+    colour_key = "one miniature copy of this unit's average waveform per electrode"
+    colour_key += (
+        ", coloured by that trace's peak-to-peak (PTP) amplitude — see the colour bar"
+        if show_colorbar
+        else ", coloured by that trace's peak-to-peak (PTP) amplitude in microvolts (µV)"
+    )
+    handles = [_legend_line(_CMAP_MID_COLOR, colour_key, lw=1.4)]
+    if show_all_electrodes:
+        handles.append(
+            _legend_dot(
+                _CONTEXT_COLOR,
+                "every other electrode on the array, drawn for position only",
+            )
+        )
+    if mark_extremum:
+        handles.append(
+            _legend_ring(
+                _EXTREMUM_COLOR,
+                extremum_label
+                or (
+                    f"electrode where this unit's signal is largest "
+                    f"(channel {stats['extremum_channel']})"
+                ),
+            )
+        )
+    if normalize == "per_channel":
+        scale_key = (
+            f"scale bar: one trace box spans {stats['duration_ms']:.1f} ms across; "
+            "its height is each trace's own peak, so heights are not comparable "
+            "between electrodes"
+        )
+    else:
+        scale_key = (
+            f"scale bar: one trace box spans {stats['duration_ms']:.1f} ms across "
+            f"and {uv_label} top to bottom"
+        )
+    handles.append(_legend_line("black", scale_key, lw=1.2))
+    ax.legend(
+        handles=handles,
+        loc="best",
+        fontsize=_LEGEND_FONTSIZE,
+        framealpha=_LEGEND_FRAMEALPHA,
+        labelspacing=0.7,
+    )
+
+    caption_parts = [
+        "Each electrode that this unit reaches carries a miniature copy of the "
+        "unit's average waveform, drawn at that electrode's real position on the "
+        "array (axes are micrometres, µm); how far those traces spread IS the "
+        "footprint.",
+        acronym_note("PTP"),
+    ]
+    if normalize == "per_channel":
+        caption_parts.append(
+            "Trace HEIGHT is scaled electrode by electrode so small, distant "
+            "deflections stay visible; colour still carries the true amplitude in "
+            "microvolts (µV), so the two together give the real numbers."
+        )
+    else:
+        caption_parts.append(
+            "Every trace is drawn on one shared microvolt (µV) scale, so trace "
+            "heights are directly comparable between electrodes."
+        )
+    caption_parts.append(
+        "Only the electrodes stored for this unit are drawn, so the footprint "
+        "cannot extend past that stored neighbourhood."
+    )
+    caption_parts.append(PROXY_NOT_MODEL)
+    caption_parts.append(caption)
+    _add_caption(fig, _fold_caption(caption_parts))
 
     out_path = _save_and_release(fig, out_path)
     logger.info(
@@ -344,6 +502,7 @@ def plot_footprint_grid(
     zoom=False,
     panel_size=_GRID_PANEL_SIZE,
     dpi=_GRID_DPI,
+    caption=None,
 ):
     """Small multiples of several footprints in one figure; return `out_path`.
 
@@ -354,8 +513,24 @@ def plot_footprint_grid(
 
     Keep the unit count small (a couple of dozen); past that the panels are too
     small to read and the per-unit PNGs are the better artifact.
+
+    Panel ticks are omitted, so the legend (below the panels, where it cannot
+    cover a footprint), the colour bar and the caption are the only place the
+    encodings are named (Adam, 2026-08-11). The colour bar is deliberately
+    RELATIVE: :func:`_draw_footprint` normalises colour to each unit's own
+    largest trace, so one shared microvolt scale across panels would be a lie —
+    each panel's real peak is printed in its own title instead.
+
+    `caption` appends one more caption sentence, which is where a caller names
+    the per-unit figures this sheet summarises by their real emitted filenames,
+    e.g.::
+
+        caption="Each panel has its own full-size figure at footprints/unit_<id>.png."
     """
     import numpy as np
+    from matplotlib import colormaps
+    from matplotlib.cm import ScalarMappable
+    from matplotlib.colors import Normalize
 
     unit_ids = list(unit_ids)
     if not unit_ids:
@@ -368,8 +543,26 @@ def plot_footprint_grid(
 
     n_cols = max(1, min(int(n_cols), len(unit_ids)))
     n_rows = int(np.ceil(len(unit_ids) / n_cols))
-    fig = _new_figure((panel_size[0] * n_cols, panel_size[1] * n_rows), dpi)
-    axes = np.atleast_1d(fig.subplots(n_rows, n_cols, squeeze=False)).ravel()
+    # One extra, narrow gridspec column carries the colour bar. Building it as a
+    # subplot of the SAME gridspec as the panels — rather than letting
+    # fig.colorbar(ax=...) steal space from them — is what keeps the figure
+    # compatible with the tight_layout `_add_caption` re-runs; the stolen-space
+    # form leaves the bar's label running off the edge of the page.
+    _CBAR_WIDTH_RATIO = 0.05
+    fig = _new_figure(
+        (panel_size[0] * (n_cols + _CBAR_WIDTH_RATIO * 4.0), panel_size[1] * n_rows), dpi
+    )
+    grid = fig.add_gridspec(
+        n_rows, n_cols + 1, width_ratios=[1.0] * n_cols + [_CBAR_WIDTH_RATIO]
+    )
+    axes = np.asarray(
+        [
+            fig.add_subplot(grid[row, column])
+            for row in range(n_rows)
+            for column in range(n_cols)
+        ]
+    )
+    cax = fig.add_subplot(grid[:, n_cols])
 
     margin = _ZOOM_MARGIN_PITCHES * pitch
     for ax, unit_id in zip(axes, unit_ids):
@@ -391,7 +584,8 @@ def plot_footprint_grid(
             ax.set_xlim(float(locations[:, 0].min()) - margin, float(locations[:, 0].max()) + margin)
             ax.set_ylim(float(locations[:, 1].min()) - margin, float(locations[:, 1].max()) + margin)
         ax.set_title(
-            f"unit {unit_id} - {stats['n_channels']} ch - {stats['peak_amplitude_uV']:.0f} uV",
+            f"unit {unit_id} - {stats['n_channels']} electrodes - "
+            f"peak {stats['peak_amplitude_uV']:.0f} µV",
             fontsize=8,
         )
         ax.set_xticks([])
@@ -403,7 +597,54 @@ def plot_footprint_grid(
 
     if title:
         fig.suptitle(title)
-    fig.tight_layout()
+
+    # One colour bar for the sheet, on the RELATIVE scale the panels actually
+    # use: each panel is normalised to its own largest trace, so a shared
+    # microvolt axis here would claim a comparability the drawing does not have.
+    mappable = ScalarMappable(
+        norm=Normalize(vmin=0.0, vmax=1.0), cmap=colormaps[_AMPLITUDE_CMAP]
+    )
+    bar = fig.colorbar(mappable, cax=cax)
+    # Short enough to fit the bar's height: the caption carries the sentence.
+    bar.set_label("peak-to-peak (PTP) amplitude ÷ that panel's largest", fontsize=8)
+
+    frame_text = (
+        "Each panel frames its own unit, so panels are NOT positionally comparable."
+        if zoom
+        else "Every panel frames the whole array, so a unit's position in one panel "
+        "is the same position in every other."
+    )
+    caption_parts = [
+        "Every electrode a unit reaches carries a miniature copy of that unit's "
+        "average waveform, drawn at the electrode's real position; panel axes are "
+        "the array's own geometry in micrometres (µm), with ticks omitted because "
+        "they are unreadable at this size. " + frame_text,
+        acronym_note("PTP"),
+        "Colour is relative WITHIN a panel — the colour bar reads as a fraction of "
+        "the largest trace in the SAME panel, so it is comparable inside a panel "
+        "and not between panels; each panel's own peak amplitude in microvolts "
+        "(µV) is printed in its title.",
+    ]
+    if normalize == "per_channel":
+        caption_parts.append(
+            "Trace height is scaled electrode by electrode so small, distant "
+            "deflections stay visible; colour still carries the true amplitude."
+        )
+    caption_parts.append(PROXY_NOT_MODEL)
+    caption_parts.append(caption)
+    _add_caption(fig, _fold_caption(caption_parts))
+
+    # Terse keys — the caption above carries the sentences. Hung below the
+    # panels, where it can cover neither a footprint nor the caption.
+    handles = [
+        _legend_line(_CMAP_MID_COLOR, "one trace per electrode reached", lw=1.4)
+    ]
+    if show_all_electrodes:
+        handles.append(_legend_dot(_CONTEXT_COLOR, "every other electrode"))
+    handles.append(
+        _legend_ring(_EXTREMUM_COLOR, "largest-signal electrode", size=7.0)
+    )
+    _hang_legend_below_axes(fig, handles)
 
     out_path = _save_and_release(fig, out_path)
     logger.info("wrote footprint grid: %s (%d units)", out_path, len(unit_ids))

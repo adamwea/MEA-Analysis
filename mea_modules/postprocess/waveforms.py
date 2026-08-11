@@ -25,12 +25,28 @@ this runs in a loop over hundreds of units.
 
 import logging
 
-from ..diagnostics.channel_layout import _new_figure, _save_and_release
+from ..diagnostics.channel_layout import (
+    _add_caption,
+    _fold_caption,
+    _legend_line,
+    _new_figure,
+    _save_and_release,
+)
+from ..diagnostics.figure_text import PROXY_NOT_MODEL
 
 logger = logging.getLogger(__name__)
 
 _WAVEFORM_FIGSIZE = (6.5, 4.5)
 _WAVEFORM_DPI = 180
+
+# Legend/caption defaults, matched to the diagnostics figures.
+_LEGEND_FONTSIZE = 7
+_LEGEND_FRAMEALPHA = 0.85
+
+# Amplitude unit. The analyzer these snippets come from is always built with
+# ``return_in_uV=True`` (see mea_modules.postprocess.analyzer.build_analyzer),
+# so the stored waveforms are microvolts and the figure says so.
+_AMPLITUDE_UNIT = "µV"
 
 # A hundred traces reads as a cloud with visible outliers; a thousand reads as a
 # filled block that hides exactly the spread it is supposed to show.
@@ -43,6 +59,38 @@ _DEFAULT_YLIM_QUANTILE = 0.02
 
 _SPIKE_COLOR = "#4a4a4a"
 _TEMPLATE_COLOR = "#c0392b"
+
+
+def _hang_legend_below_axes(fig, handles, gap=0.015):
+    """Put a figure legend in the band between the panels and the caption.
+
+    Small-multiple sheets have nowhere safe for an in-axes legend — every panel
+    is data — and a legend pinned to the figure bottom lands on the caption
+    :func:`_add_caption` writes there. Anchoring to the lowest panel edge puts
+    it in the margin that ``_add_caption``'s ``tight_layout`` already reserved,
+    so it can cover neither. Call it AFTER ``_add_caption``, when the panel
+    positions are final.
+
+    Column count is derived from the figure width so the row cannot run off the
+    edge of a narrow sheet. (This belongs beside the other legend helpers in
+    ``mea_modules.diagnostics.channel_layout``; it lives here, and in
+    ``footprints``, only because that module was out of scope for this change.)
+    """
+    if not handles:
+        return None
+    visible = [ax.get_position().y0 for ax in fig.axes if ax.get_visible()]
+    bottom = min(visible) if visible else 0.15
+    n_cols = max(1, min(len(handles), int(fig.get_figwidth() // 2.6)))
+    legend = fig.legend(
+        handles=handles,
+        loc="upper center",
+        bbox_to_anchor=(0.5, max(0.0, bottom - float(gap))),
+        ncol=n_cols,
+        fontsize=_LEGEND_FONTSIZE,
+        framealpha=_LEGEND_FRAMEALPHA,
+    )
+    legend.set_in_layout(False)
+    return legend
 
 
 def unit_waveforms(analyzer, unit_id, channel_id=None, n_spikes=_DEFAULT_N_SPIKES, seed=0):
@@ -161,6 +209,7 @@ def plot_unit_waveform(
     ylim_quantile=_DEFAULT_YLIM_QUANTILE,
     figsize=_WAVEFORM_FIGSIZE,
     dpi=_WAVEFORM_DPI,
+    caption_extra=None,
 ):
     """Draw one unit's spikes and template on its extremum channel; return `out_path`.
 
@@ -176,6 +225,19 @@ def plot_unit_waveform(
     `ylim_quantile` trims the y range to the bulk of the snippets so one artifact
     spike cannot flatten the template — see :func:`_robust_ylim`, and pass 0 for
     literal min/max. The count of snippets that leave the frame is logged.
+
+    Both line colours carry legend keys and the caption states both units
+    (Adam, 2026-08-11): faint grey and one red line mean nothing on their own,
+    and the difference between "the spikes drawn" and "the spikes the template
+    was averaged from" is the single thing most often misread off this figure.
+
+    `caption_extra` appends one more caption sentence, which is where a caller
+    names this unit's sibling figures by their real emitted filenames, e.g.::
+
+        caption_extra=(
+            "Same unit elsewhere: footprints/unit_7.png (where on the array), "
+            "traces/unit_7.png (these spikes in the raw trace)."
+        )
     """
     import numpy as np
     from matplotlib.collections import LineCollection
@@ -219,13 +281,72 @@ def plot_unit_waveform(
                 )
             )
 
-    ax.set_xlabel("time (ms, relative to trough)")
-    ax.set_ylabel("amplitude (uV)")
+    ax.set_xlabel("time (ms, relative to the template's deepest trough)")
+    ax.set_ylabel(f"amplitude ({_AMPLITUDE_UNIT})")
     ax.set_title(
         title
         or f"unit {unit_id} - channel {channel_id} - {n_drawn}/{n_kept} spikes"
     )
-    fig.tight_layout()
+
+    # Every drawn encoding gets a legend key (Adam, 2026-08-11). The one thing
+    # readers get wrong on this figure is what the red line averages over, so
+    # the key says it in words rather than leaving it to the title's "n/m".
+    handles = []
+    if n_drawn:
+        handles.append(
+            _legend_line(
+                _SPIKE_COLOR,
+                f"one recorded spike, drawn faintly ({n_drawn} of the {n_kept} "
+                "spikes stored for this unit are drawn)",
+                lw=0.9,
+            )
+        )
+    handles.append(
+        _legend_line(
+            _TEMPLATE_COLOR,
+            f"template: the average of all {n_kept} stored spikes, not only the "
+            f"{n_drawn} drawn",
+            lw=1.8,
+        )
+    )
+    handles.append(
+        _legend_line(
+            "#999999",
+            f"zero amplitude (horizontal) and time zero, the template's trough "
+            "(vertical)",
+            lw=0.9,
+            linestyle=":",
+        )
+    )
+    ax.legend(
+        handles=handles,
+        loc="best",
+        fontsize=_LEGEND_FONTSIZE,
+        framealpha=_LEGEND_FRAMEALPHA,
+        labelspacing=0.7,
+    )
+
+    caption_parts = [
+        f"Amplitude is microvolts ({_AMPLITUDE_UNIT}); time is milliseconds (ms) "
+        f"measured from the deepest trough of the template on channel {channel_id}, "
+        "the electrode on which this unit's signal is largest.",
+    ]
+    quantile = float(ylim_quantile or 0.0)
+    if quantile > 0.0:
+        central = 100.0 * (1.0 - 2.0 * quantile)
+        trim = (
+            f"The vertical range frames the central {central:.0f}% of the recorded "
+            "spike values, so one artifact spike cannot flatten the template."
+        )
+        if n_clipped:
+            trim += (
+                f" {n_clipped} of the drawn spikes run outside that range and are "
+                "cut off by the frame rather than removed."
+            )
+        caption_parts.append(trim)
+    caption_parts.append(PROXY_NOT_MODEL)
+    caption_parts.append(caption_extra)
+    _add_caption(fig, _fold_caption(caption_parts))
 
     out_path = _save_and_release(fig, out_path)
     logger.info(
@@ -260,6 +381,7 @@ def plot_waveform_grid(
     title=None,
     panel_size=_GRID_PANEL_SIZE,
     dpi=_GRID_DPI,
+    caption=None,
 ):
     """Small multiples of :func:`plot_unit_waveform`; return `out_path`.
 
@@ -276,6 +398,18 @@ def plot_waveform_grid(
 
     Keep the unit count per call to a couple of dozen; chunk a larger sample
     into several sheets.
+
+    Panel ticks are omitted (they would be unreadable at this size), so the
+    LEGEND and caption are the only place the axes are named: the legend sits
+    below the panels, where it cannot cover a waveform, and the caption states
+    that x is milliseconds and y is microvolts on each panel's own scale
+    (Adam, 2026-08-11).
+
+    `caption` appends one more caption sentence, which is where a caller names
+    the per-unit figures this sheet is a contact sheet of, by their real emitted
+    filenames, e.g.::
+
+        caption="Each panel has its own full-size figure at waveforms/unit_<id>.png."
     """
     import numpy as np
     from matplotlib.collections import LineCollection
@@ -315,7 +449,7 @@ def plot_waveform_grid(
             if ylim is not None:
                 ax.set_ylim(*ylim)
 
-            ax.set_title(f"unit {unit_id} - ch {channel_id}", fontsize=8)
+            ax.set_title(f"unit {unit_id} - electrode {channel_id}", fontsize=8)
             drawn += 1
         except Exception as exc:  # one unit must not sink the sheet
             failed += 1
@@ -332,7 +466,40 @@ def plot_waveform_grid(
 
     if title:
         fig.suptitle(title)
-    fig.tight_layout()
+
+    n_per_panel = (
+        "Every stored spike is drawn in each panel"
+        if not n_spikes or int(n_spikes) <= 0
+        else f"Up to {int(n_spikes)} spikes are drawn in each panel"
+    )
+    caption_parts = [
+        f"Ticks are omitted because every panel is scaled to its own unit: across "
+        f"a panel is time in milliseconds (ms) over the same stored window, and up "
+        f"a panel is amplitude in microvolts ({_AMPLITUDE_UNIT}) framed on that "
+        f"unit's own range. Panels are therefore comparable in SHAPE, not in size — "
+        f"a tall waveform here is not a large one.",
+        f"{n_per_panel}, and the template over them is the average of EVERY spike "
+        f"stored for that unit, not only the drawn ones.",
+    ]
+    if failed:
+        caption_parts.append(
+            f"{failed} panel(s) could not be drawn and are labelled 'failed' in place."
+        )
+    caption_parts.append(PROXY_NOT_MODEL)
+    caption_parts.append(caption)
+    _add_caption(fig, _fold_caption(caption_parts))
+
+    # The legend goes on the FIGURE, hung off the bottom of the panels: an
+    # in-axes legend would cover one unit's waveform, and one pinned to the
+    # figure bottom would land on the caption. Placed after `_add_caption` so
+    # the panel positions it anchors to are the final ones. Keys are terse
+    # because the caption above carries the full sentence.
+    handles = [
+        _legend_line(_SPIKE_COLOR, "one recorded spike, drawn faintly", lw=0.9),
+        _legend_line(_TEMPLATE_COLOR, "template: mean of all stored spikes", lw=1.4),
+        _legend_line("#999999", "time zero: the template's trough", lw=0.9, linestyle=":"),
+    ]
+    _hang_legend_below_axes(fig, handles)
 
     out_path = _save_and_release(fig, out_path)
     logger.info(

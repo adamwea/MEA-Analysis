@@ -56,12 +56,88 @@ from pathlib import Path
 
 import numpy as np
 
-from .channel_layout import _new_figure, _save_and_release
+from .channel_layout import (
+    _add_caption,
+    _fold_caption,
+    _legend_dot,
+    _legend_line,
+    _legend_patch,
+    _new_figure,
+    _save_and_release,
+)
+from .figure_text import DENSE_STITCH, PROXY_NOT_MODEL
 
 logger = logging.getLogger(__name__)
 
 RETENTION_INDEX_FILENAME = "segments_index.json"
 RETENTION_UNIT_IDS_FILENAME = "unit_ids.json"
+
+# Matched to channel_layout's, so a capsule's figures read as one family.
+_LEGEND_FONTSIZE = 7
+_LEGEND_FRAMEALPHA = 0.85
+_AXIS_NOTE_FONTSIZE = 8
+_COLORBAR_LABEL_FONTSIZE = 8
+
+# --------------------------------------------------------------------------- #
+# Reader-facing wording
+# --------------------------------------------------------------------------- #
+#
+# Same discipline as `figure_text` and `recovery`: one name per quantity, a unit
+# on every one of them, and no term of art without its gloss (Adam, 2026-08-11).
+
+UNITS_PER_ELECTRODE_COLORBAR_LABEL = (
+    "units with a measurement on this electrode\n(count of units, 0 = measured for none)"
+)
+
+#: The stitch's `contributing_weight` is a spike count under `spike_count`
+#: weighting and a SEGMENT count under `uniform` — the same array either way, so
+#: the default wording refuses to pick one. Callers that know pass `weight_label`.
+STITCH_WEIGHT_LABEL = (
+    "data behind this cell in the {label} stitch\n"
+    "(count: spikes averaged in, or contributing segments under uniform weighting)"
+)
+
+COVERED_CHANNELS_AXIS_LABEL = "electrodes with a measurement, per unit (count)"
+
+ZERO_COVERAGE_LEGEND_LABEL = "units with no measurement on any electrode"
+
+# Colour-bar labels are drawn rotated, so their LENGTH is vertical: a long one
+# runs off the end of its bar and off the figure.
+DIFF_FRACTION_COLORBAR_LABEL = (
+    "|difference| as a fraction of the cell's own peak\n"
+    "(dimensionless, 0 = identical; scale clipped at 2)"
+)
+
+DIFF_AXIS_LABEL = (
+    "|difference| between the two passes, per unit-electrode cell\n"
+    "(µV; anything below 1e-4 µV is drawn AT 1e-4 µV so it stays on a log axis)"
+)
+
+SINGLE_COVERAGE_LEGEND_LABEL = (
+    "cells only ONE segment measured — nothing to weight, so the two passes must "
+    "agree exactly here"
+)
+
+MULTI_COVERAGE_LEGEND_LABEL = (
+    "cells SEVERAL segments measured — the two passes are allowed to differ here, "
+    "and the size of the difference is what the weighting choice costs"
+)
+
+SUBSAMPLE_NOTE = (
+    "The scatter draws at most 200,000 of the multi-segment cells, chosen with a "
+    "fixed random seed so the same inputs always give the same figure; the "
+    "histogram on the left counts every cell."
+)
+
+
+def _caption_width(figsize):
+    """Characters per caption line for a figure this wide.
+
+    Same reasoning as :func:`mea_modules.diagnostics.recovery._caption_width`:
+    ``_fold_caption``'s default is tuned for a much narrower figure, and its
+    line COUNT is what :func:`_add_caption` reserves vertical space by.
+    """
+    return max(60, int(float(figsize[0]) * 13))
 
 
 def nbefore_from_manifest(manifest):
@@ -287,15 +363,26 @@ def nan_coverage_summary(contributing_weight, unit_ids=None, n_segments=None):
 
 
 def plot_nan_coverage_summary(contributing_weight, positions, out_path,
-                              title=None, figsize=(15.0, 5.2), dpi=170):
+                              title=None, figsize=(15.0, 5.2), dpi=170,
+                              highlight_label=None, caption=None):
     """The coverage mask drawn: where units were measured, and how many channels each got.
 
     Left — every electrode coloured by how many UNITS carry a measurement
-    there (the per-channel view; the backbone lights up at n_units). Right —
-    the per-unit covered-channel histogram (the per-unit view; a unit at the
-    left edge is a candidate for the zero/low-coverage report). Together they
-    are the honest picture of what the stitch did NOT measure — the mask
-    capsule 15's label x footprint-extent cross-tab later reads.
+    there (the per-channel view; the electrodes routed in every segment light up
+    at n_units). Right — the per-unit covered-channel histogram (the per-unit
+    view; a unit at the left edge is a candidate for the zero/low-coverage
+    report). Together they are the honest picture of what the stitch did NOT
+    measure — the mask capsule 15's label x footprint-extent cross-tab later
+    reads.
+
+    The units with no measurement anywhere are called out with a rule at zero,
+    and they are the ones a sibling JSON enumerates by id — so `highlight_label`
+    names that sibling by its real emitted filename::
+
+        highlight_label="units with no measurement on any electrode — listed by "
+                        "id in nan_coverage.json"
+
+    `caption` appends a line under the axes.
     """
     weight = np.asarray(contributing_weight)
     positions = np.asarray(positions, dtype=float)[:, :2]
@@ -311,26 +398,50 @@ def plot_nan_coverage_summary(contributing_weight, positions, out_path,
         cmap="viridis", linewidths=0, rasterized=True,
     )
     left.set_aspect("equal")
-    left.set_xlabel("x (um)")
-    left.set_ylabel("y (um)")
+    left.set_ylabel("y (µm)")
+    left.set_xlabel("x (µm)")
     left.set_title("units with a measurement, per electrode")
-    fig.colorbar(scatter, ax=left, label="units covered", shrink=0.85)
+    cbar = fig.colorbar(scatter, ax=left, shrink=0.85)
+    cbar.set_label(UNITS_PER_ELECTRODE_COLORBAR_LABEL, fontsize=_COLORBAR_LABEL_FONTSIZE)
 
     right.hist(per_unit, bins=40, color="0.35")
     right.set_yscale("log")
-    right.set_xlabel("covered channels per unit")
-    right.set_ylabel("units (log)")
-    right.set_title("per-unit covered-channel distribution")
+    right.set_xlabel(COVERED_CHANNELS_AXIS_LABEL)
+    right.set_ylabel("units (count, logarithmic axis)")
+    right.set_title("how many electrodes each unit was measured on")
+
+    n_zero = int((per_unit == 0).sum())
+    handles = [_legend_patch("0.35", "units whose electrode count falls in this bin")]
+    if n_zero:
+        # A rule on the zero bin, because that bin is the one a reader is meant
+        # to act on and a 1-pixel bar at the left edge is easy to miss.
+        right.axvline(0.0, color="red", ls=":", lw=1.0)
+        handles.append(_legend_line(
+            "red", f"{highlight_label or ZERO_COVERAGE_LEGEND_LABEL} (n={n_zero})",
+            lw=1.0, linestyle=":",
+        ))
+    right.legend(handles=handles, loc="best", fontsize=_LEGEND_FONTSIZE,
+                 framealpha=_LEGEND_FRAMEALPHA)
     right.text(
-        0.03, 0.95,
+        0.03, 0.62,
         f"median {int(np.median(per_unit))}\nmin {int(per_unit.min())}\n"
-        f"zero-coverage units: {int((per_unit == 0).sum())}",
+        f"units measured nowhere: {n_zero}",
         transform=right.transAxes, ha="left", va="top", fontsize=8,
     )
 
     if title:
         fig.suptitle(title)
-    fig.tight_layout()
+
+    caption_parts = [
+        DENSE_STITCH,
+        "One square marker on the left is one electrode. A cell is one (unit, "
+        "electrode) pair: it is covered when at least one segment measured that "
+        "unit on that electrode, and empty otherwise. Both panels count cells — "
+        "neither carries an amplitude.",
+    ]
+    if caption:
+        caption_parts.append(caption)
+    _add_caption(fig, _fold_caption(caption_parts, width=_caption_width(figsize)))
     return _save_and_release(fig, out_path)
 
 
@@ -429,7 +540,8 @@ def compare_stitches(well_inputs_a, well_inputs_b, labels=("a", "b")):
 
 
 def plot_stitch_comparison(summary, arrays, weight_first, out_path, title=None,
-                           figsize=(15.0, 5.2), dpi=170):
+                           figsize=(15.0, 5.2), dpi=170,
+                           weight_label=None, caption=None):
     """Where and how much two stitch passes disagree.
 
     Left — |diff| distribution, single- vs multi-coverage cells (single must
@@ -437,27 +549,45 @@ def plot_stitch_comparison(summary, arrays, weight_first, out_path, title=None,
     per-cell |diff| against the first stitch's weight, the direct view of
     "the more segments disagree about a cell, the more the weighting rule
     decides", with the diff as a fraction of that cell's own peak on colour.
+
+    `weight_label` overrides the x-axis wording for the weight quantity, which
+    is a spike count under `spike_count` weighting and a segment count under
+    `uniform`; `caption` appends a line under the axes.
     """
     max_abs = arrays["max_abs"]
     covered = arrays["covered"]
     single = arrays["single"]
     multi = covered & ~single
     weight = np.asarray(weight_first, dtype=float)
+    pass_labels = list(summary.get("labels") or ("first pass", "second pass"))
+    first_label = str(pass_labels[0]) if pass_labels else "first pass"
 
     fig = _new_figure(figsize, dpi)
     left, right = fig.subplots(1, 2)
 
     bins = np.logspace(-4, np.log10(max(max_abs[covered].max(), 1e-3)), 60)
-    left.hist(np.maximum(max_abs[multi], 1e-4), bins=bins, color="#c05621",
-              alpha=0.7, label=f"multi-coverage ({int(multi.sum()):,} cells)")
-    left.hist(np.maximum(max_abs[single], 1e-4), bins=bins, color="#2b6cb0",
-              alpha=0.7, label=f"single-coverage ({int(single.sum()):,} cells)")
+    left.hist(np.maximum(max_abs[multi], 1e-4), bins=bins, color="#c05621", alpha=0.7)
+    left.hist(np.maximum(max_abs[single], 1e-4), bins=bins, color="#2b6cb0", alpha=0.7)
     left.set_xscale("log")
     left.set_yscale("log")
-    left.set_xlabel("|difference| per unit-channel cell (uV, floored at 1e-4)")
-    left.set_ylabel("cells (log)")
-    left.set_title("single-coverage must agree; multi-coverage is the method's effect")
-    left.legend(fontsize=8)
+    left.set_xlabel(DIFF_AXIS_LABEL, fontsize=_AXIS_NOTE_FONTSIZE)
+    left.set_ylabel("unit-electrode cells (count, logarithmic axis)")
+    left.set_title("cells measured once must agree;\ncells measured several times show the weighting choice")
+    left.legend(
+        handles=[
+            _legend_patch(
+                "#c05621",
+                f"{MULTI_COVERAGE_LEGEND_LABEL} ({int(multi.sum()):,} cells)",
+                alpha=0.7,
+            ),
+            _legend_patch(
+                "#2b6cb0",
+                f"{SINGLE_COVERAGE_LEGEND_LABEL} ({int(single.sum()):,} cells)",
+                alpha=0.7,
+            ),
+        ],
+        loc="best", fontsize=_LEGEND_FONTSIZE, framealpha=_LEGEND_FRAMEALPHA,
+    )
 
     if multi.any():
         # Subsample for the scatter; the histogram already carries the totals.
@@ -473,16 +603,50 @@ def plot_stitch_comparison(summary, arrays, weight_first, out_path, title=None,
         sc = right.scatter(flat_w, np.maximum(flat_diff, 1e-4), s=2,
                            c=np.clip(rel, 0, 2), cmap="magma", linewidths=0,
                            rasterized=True)
-        fig.colorbar(sc, ax=right, label="|diff| / cell's own peak", shrink=0.85)
+        cbar = fig.colorbar(sc, ax=right, shrink=0.85)
+        cbar.set_label(DIFF_FRACTION_COLORBAR_LABEL, fontsize=_COLORBAR_LABEL_FONTSIZE)
         right.set_xscale("log")
         right.set_yscale("log")
-        right.set_xlabel("contributing weight (first stitch)")
-        right.set_ylabel("|difference| (uV)")
+        # `{label}` is opt-in: a caller-supplied label is used verbatim unless it
+        # asks for the pass name, so a stray brace in it can never raise here.
+        weight_axis = weight_label or STITCH_WEIGHT_LABEL
+        if "{label}" in weight_axis:
+            weight_axis = weight_axis.replace("{label}", first_label)
+        right.set_xlabel(weight_axis, fontsize=_AXIS_NOTE_FONTSIZE)
+        right.set_ylabel(
+            "|difference| between the two passes (µV,\nfloored at 1e-4 µV for the log axis)",
+            fontsize=_AXIS_NOTE_FONTSIZE,
+        )
         right.set_title("difference against how much data backs the cell")
+        right.legend(
+            handles=[_legend_dot(
+                "0.45",
+                "one unit-electrode cell measured by several segments; its colour "
+                "is read off the colour bar",
+                size=4.0,
+            )],
+            loc="best", fontsize=_LEGEND_FONTSIZE, framealpha=_LEGEND_FRAMEALPHA,
+        )
 
     if title:
         fig.suptitle(title)
-    fig.tight_layout()
+
+    caption_parts = [
+        DENSE_STITCH,
+        "A cell is one (unit, electrode) pair. The two passes stitch the SAME "
+        "recording with different averaging rules, so a difference is the rule's "
+        "effect, not a difference between cells.",
+    ]
+    if multi.any():
+        caption_parts.append(SUBSAMPLE_NOTE)
+        caption_parts.append(
+            "The colour bar is clipped at 2, so any cell whose difference exceeds "
+            "twice its own peak is drawn at the top colour."
+        )
+    caption_parts.append(PROXY_NOT_MODEL)
+    if caption:
+        caption_parts.append(caption)
+    _add_caption(fig, _fold_caption(caption_parts, width=_caption_width(figsize)))
     return _save_and_release(fig, out_path)
 
 
@@ -498,4 +662,15 @@ __all__ = [
     "plot_stitch_comparison",
     "RETENTION_INDEX_FILENAME",
     "RETENTION_UNIT_IDS_FILENAME",
+    # Reader-facing wording, exported so a caller (or a test) can assert on the
+    # exact string a figure prints instead of re-typing it.
+    "COVERED_CHANNELS_AXIS_LABEL",
+    "DIFF_AXIS_LABEL",
+    "DIFF_FRACTION_COLORBAR_LABEL",
+    "MULTI_COVERAGE_LEGEND_LABEL",
+    "SINGLE_COVERAGE_LEGEND_LABEL",
+    "STITCH_WEIGHT_LABEL",
+    "SUBSAMPLE_NOTE",
+    "UNITS_PER_ELECTRODE_COLORBAR_LABEL",
+    "ZERO_COVERAGE_LEGEND_LABEL",
 ]

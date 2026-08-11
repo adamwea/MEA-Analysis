@@ -14,8 +14,30 @@ together than the refractory period are collapsed to the first.
 
 import logging
 
-from .channel_layout import _new_figure, _save_and_release
-from .timebase import _shade_gap_spans, gap_spans, resolve_time_gaps, sample_times
+from .channel_layout import (
+    _add_caption,
+    _fold_caption,
+    _legend_dot,
+    _legend_line,
+    _legend_patch,
+    _new_figure,
+    _save_and_release,
+)
+from .figure_text import (
+    CONTIGUOUS_AXIS,
+    NO_DATA_SHADING,
+    REAL_ELAPSED_AXIS,
+    SEAM,
+    acronym_note,
+)
+from .timebase import (
+    _GAP_SHADE_ALPHA,
+    _GAP_SHADE_COLOR,
+    _shade_gap_spans,
+    gap_spans,
+    resolve_time_gaps,
+    sample_times,
+)
 from .traces import (
     _CONTIGUOUS_XLABEL,
     _REAL_TIME_XLABEL,
@@ -23,6 +45,7 @@ from .traces import (
     _has_time_vector,
     _read_traces,
     _resolve_frame_window,
+    resolve_plot_quality,
 )
 
 logger = logging.getLogger(__name__)
@@ -308,6 +331,7 @@ def plot_raster_threshold(
     figsize=_RASTER_FIGSIZE,
     dpi=_RASTER_DPI,
     time_gaps=None,
+    quality=None,
 ):
     """Write a threshold-crossing raster to `out_path`; return the path.
 
@@ -330,8 +354,19 @@ def plot_raster_threshold(
     spike train, a raster on the contiguous axis quietly closes up every break,
     so inter-event intervals across one are wrong. `segment_boundaries` are
     positions on the same axis and are mapped with it.
+
+    `quality` picks a render preset (:data:`mea_modules.diagnostics.traces.
+    PLOT_QUALITY_PRESETS`): ``"draft"`` (the default, and what this development
+    pass ships) or ``"high"``, which raises the dots-per-inch so a dense raster
+    survives zooming instead of collapsing into a block. An explicit `dpi`
+    argument still wins over the preset.
     """
     import numpy as np
+
+    # Only the dpi half of the preset applies here: a raster draws detected
+    # events, not decimated samples, so there is no point budget to raise.
+    if dpi == _RASTER_DPI:
+        dpi = resolve_plot_quality(quality)["dpi"]
 
     channel_ids = _select_channels(recording, channel_ids, max_channels)
     if not channel_ids:
@@ -353,6 +388,7 @@ def plot_raster_threshold(
     real_time = time_gaps is not None
     window_start, window_end, fs = _resolve_frame_window(recording, start_time_s, duration_s)
     spans = ()
+    shaded = 0
     if real_time:
         # Events come back as seconds on whichever timeline the detector used;
         # re-index them to samples so the gap offsets can be applied.
@@ -419,7 +455,36 @@ def plot_raster_threshold(
     ax.set_ylabel("electrode id")
     ax.set_title(title or "Threshold raster")
     ax.grid(False)
-    fig.tight_layout()
+
+    # Legend every encoding (Adam, 2026-08-11). A raster is three different
+    # marks — dots, dotted rules, grey bands — and none of them is self-evident:
+    # a reader cannot otherwise tell a segment join from a dead stretch, or
+    # "nothing recorded" from "nothing fired".
+    handles = [
+        _legend_dot(
+            "black",
+            f"threshold crossing ({float(threshold_factor):g} × MAD-sigma, "
+            f"{float(refractory_period_ms):g} ms refractory)",
+            size=4.0,
+        )
+    ]
+    if boundary_times:
+        handles.append(_legend_line("red", "segment join", lw=0.9, linestyle=":"))
+    if real_time and shaded:
+        handles.append(_legend_patch(_GAP_SHADE_COLOR, "no data recorded", alpha=_GAP_SHADE_ALPHA))
+    ax.legend(handles=handles, loc="best", fontsize=7, framealpha=0.85, labelspacing=0.7)
+
+    caption_parts = [acronym_note("MAD")]
+    if boundary_times:
+        caption_parts.append(SEAM)
+    caption_parts.append(REAL_ELAPSED_AXIS if real_time else CONTIGUOUS_AXIS)
+    if real_time and shaded:
+        caption_parts.append(NO_DATA_SHADING)
+    caption_parts.append(
+        "Detection is a threshold crossing count, not spike sorting: one dot is one "
+        "downward crossing on one electrode, not one identified neuron."
+    )
+    _add_caption(fig, _fold_caption(caption_parts))
 
     out_path = _save_and_release(fig, out_path)
     logger.info(

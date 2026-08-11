@@ -17,13 +17,42 @@ the recording it came from.
 
 import logging
 
-from ..diagnostics.channel_layout import _new_figure, _save_and_release
-from ..diagnostics.timebase import _shade_gap_spans, gap_spans, resolve_time_gaps, sample_times
+from ..diagnostics.channel_layout import (
+    _add_caption,
+    _fold_caption,
+    _legend_dot,
+    _legend_line,
+    _legend_patch,
+    _new_figure,
+    _save_and_release,
+)
+from ..diagnostics.figure_text import (
+    CONTIGUOUS_AXIS,
+    NO_DATA_SHADING,
+    PROXY_NOT_MODEL,
+    REAL_ELAPSED_AXIS,
+    SEAM,
+    acronym_note,
+)
+from ..diagnostics.timebase import (
+    _GAP_SHADE_ALPHA,
+    _GAP_SHADE_COLOR,
+    _shade_gap_spans,
+    gap_spans,
+    resolve_time_gaps,
+    sample_times,
+)
+from ..diagnostics.traces import _CONTIGUOUS_XLABEL, _REAL_TIME_XLABEL
 
 logger = logging.getLogger(__name__)
 
 DEFAULT_FIGSIZE = (16.0, 9.0)
 DEFAULT_DPI = 180
+
+# Legend/caption defaults, matched to the diagnostics figures so a reviewer
+# reading a whole review folder sees one house style.
+_LEGEND_FONTSIZE = 7
+_LEGEND_FRAMEALPHA = 0.85
 
 
 def unit_firing_rates(sorting, duration_s=None):
@@ -57,6 +86,7 @@ def plot_unit_raster(
     marker_size=0.5,
     figsize=DEFAULT_FIGSIZE,
     dpi=DEFAULT_DPI,
+    caption_extra=None,
 ):
     """Draw one row per unit, ordered by firing rate; return `out_path`.
 
@@ -74,6 +104,20 @@ def plot_unit_raster(
     never on the stretched one. On the reference scan a 3247 s recording covers
     6765 s of wall clock, so clipping real elapsed times against the recording's
     own duration would silently discard half the sort.
+
+    The figure always carries a LEGEND naming every mark it drew (Adam,
+    2026-08-11) — black ticks, dotted red rules and grey bands are three
+    different statements and none of them is self-evident — plus a caption
+    defining the acronyms it prints and saying which timeline the x axis is.
+
+    `caption_extra` appends one more caption sentence, which is where a caller
+    names the sibling artifacts this figure belongs with by their real emitted
+    filenames, e.g.::
+
+        caption_extra="The same spikes on the other timeline: unit_raster_realtime.png"
+
+    The plot function cannot know those names; only the capsule that writes them
+    can, so it passes them in rather than this module guessing.
     """
     import numpy as np
 
@@ -155,6 +199,7 @@ def plot_unit_raster(
     if float(edges[1]) > float(edges[0]):
         ax.set_xlim(float(edges[0]), float(edges[1]))
 
+    shaded = 0
     if real_time:
         # Shaded after the limits are set, so the bands cover what is on screen
         # and no more. _shade_gap_spans merges and caps them — a full well is
@@ -164,11 +209,62 @@ def plot_unit_raster(
         shaded = _shade_gap_spans(ax, spans, x_min=x_lower, x_max=x_upper)
         logger.info("unit raster: shaded %d gap span(s) of %d in window", shaded, len(spans))
 
-    ax.set_xlabel("time (s, real elapsed)" if real_time else "time (s)")
-    ax.set_ylabel(f"unit (ordered by firing rate, {'fastest' if descending else 'slowest'} first)")
+    fastest_first = bool(descending)
+    ax.set_xlabel(_REAL_TIME_XLABEL if real_time else _CONTIGUOUS_XLABEL)
+    ax.set_ylabel(
+        "unit (one row per sorted unit, ordered by firing rate in events / s, "
+        f"{'fastest' if fastest_first else 'slowest'} first)"
+    )
     ax.set_ylim(-1, len(order))
     if title:
         ax.set_title(title)
+
+    # Every drawn encoding gets a legend key (Adam, 2026-08-11). Counts ride in
+    # the labels so a reader never has to open a JSON to size the figure.
+    handles = [
+        _legend_dot(
+            "black",
+            f"one spike from one sorted unit ({len(order)} unit rows, {n_events} spikes drawn)",
+            size=4.0,
+        )
+    ]
+    if boundary_times:
+        handles.append(_legend_line("red", "segment join", lw=0.9, linestyle=":"))
+    if real_time and shaded:
+        handles.append(_legend_patch(_GAP_SHADE_COLOR, "no data recorded", alpha=_GAP_SHADE_ALPHA))
+    ax.legend(
+        handles=handles,
+        loc="best",
+        fontsize=_LEGEND_FONTSIZE,
+        framealpha=_LEGEND_FRAMEALPHA,
+        labelspacing=0.7,
+    )
+
+    n_hidden = int(len(rates) - len(order))
+    caption_parts = []
+    if n_hidden > 0:
+        caption_parts.append(
+            f"Drawn: the {len(order)} fastest-firing of {len(rates)} sorted units; "
+            f"the other {n_hidden} unit(s) fire more slowly and are not drawn."
+        )
+    if boundary_times:
+        caption_parts.append(SEAM)
+        caption_parts.append(
+            "The time between the last spike before a segment join and the first "
+            "spike after it is not a real ISI."
+        )
+        caption_parts.append(acronym_note("ISI"))
+    caption_parts.append(REAL_ELAPSED_AXIS if real_time else CONTIGUOUS_AXIS)
+    if real_time and shaded:
+        caption_parts.append(NO_DATA_SHADING)
+    caption_parts.append(
+        "Rows are ordered by each unit's firing rate in events per second (Hz), "
+        f"{'fastest' if fastest_first else 'slowest'} at the top; the spacing "
+        "between rows carries no meaning."
+    )
+    caption_parts.append(PROXY_NOT_MODEL)
+    caption_parts.append(caption_extra)
+    _add_caption(fig, _fold_caption(caption_parts))
 
     logger.info(
         "unit raster: %d unit(s), %d event(s), rates %.2f-%.2f Hz -> %s",
@@ -190,6 +286,7 @@ def plot_firing_rate_histogram(
     title=None,
     figsize=_HIST_FIGSIZE,
     dpi=_HIST_DPI,
+    caption_extra=None,
 ):
     """The raster's ordering key drawn as its own figure; return `out_path`.
 
@@ -205,6 +302,11 @@ def plot_firing_rate_histogram(
     silently dropped. `duration_s` should be the recording's own duration for
     the same reason it should be on the raster: the sorting alone only knows
     when its last spike was.
+
+    Both drawn encodings — the bars and the dashed median rule — carry legend
+    keys, and the caption states the unit the rate is in (Adam, 2026-08-11).
+    `caption_extra` appends one more caption sentence, e.g. naming the raster
+    this distribution is the ordering key of (``unit_raster.png``).
     """
     import numpy as np
 
@@ -219,16 +321,17 @@ def plot_firing_rate_histogram(
     fig = _new_figure(figsize, dpi)
     ax = fig.subplots()
 
+    n_bins = max(2, int(bins))
+    median = float(np.median(positive)) if positive.size else float("nan")
     if positive.size:
         low = float(positive.min())
         high = float(positive.max())
         if high <= low:
             high = low * 1.1 + 1e-9
-        edges = np.logspace(np.log10(low), np.log10(high), max(2, int(bins)) + 1)
+        edges = np.logspace(np.log10(low), np.log10(high), n_bins + 1)
         ax.hist(positive, bins=edges, color="#4a6fa5", edgecolor="white", linewidth=0.3)
         ax.set_xscale("log")
 
-        median = float(np.median(positive))
         ax.axvline(median, color="#c0392b", lw=1.2, ls="--")
         ax.text(
             median, 0.97, f" median {median:.2f} Hz",
@@ -236,15 +339,52 @@ def plot_firing_rate_histogram(
             ha="left", va="top", fontsize=8, color="#c0392b",
         )
 
-    ax.set_xlabel("firing rate (Hz, log)")
-    ax.set_ylabel("units")
+    # Units on both axes: a bar height is a count of units, a bar position is a
+    # rate, and "Hz" alone leaves a reader guessing which quantity is per second.
+    ax.set_xlabel("firing rate (Hz, i.e. events / s) — logarithmic axis")
+    ax.set_ylabel("sorted units in this bin (count)")
     ax.set_title(title or f"firing-rate distribution - {values.size} units")
-    if n_zero:
-        ax.text(
-            0.99, 0.97, f"{n_zero} unit(s) with zero spikes not shown",
-            transform=ax.transAxes, ha="right", va="top", fontsize=8, color="#666666",
+    # The zero-spike count used to be a corner annotation; it now rides the
+    # caption in full, where it cannot collide with the median label when the
+    # median happens to sit near the right edge.
+
+    handles = []
+    if positive.size:
+        handles.append(
+            _legend_patch(
+                "#4a6fa5",
+                f"sorted units per firing-rate bin ({n_bins} bins, equally spaced "
+                "on the logarithmic axis)",
+            )
         )
-    fig.tight_layout()
+        handles.append(
+            _legend_line(
+                "#c0392b",
+                f"median firing rate of the units shown: {median:.2f} events / s (Hz)",
+                lw=1.2,
+                linestyle="--",
+            )
+        )
+        ax.legend(
+            handles=handles,
+            loc="best",
+            fontsize=_LEGEND_FONTSIZE,
+            framealpha=_LEGEND_FRAMEALPHA,
+            labelspacing=0.7,
+        )
+
+    caption_parts = [
+        "Firing rate is a unit's spike count divided by the recording duration "
+        "used, in events per second (Hz).",
+    ]
+    if n_zero:
+        caption_parts.append(
+            f"{n_zero} unit(s) fired no spikes at all; a logarithmic rate axis has "
+            "no zero, so they are counted in the corner rather than drawn."
+        )
+    caption_parts.append(PROXY_NOT_MODEL)
+    caption_parts.append(caption_extra)
+    _add_caption(fig, _fold_caption(caption_parts))
 
     out_path = _save_and_release(fig, out_path)
     logger.info(

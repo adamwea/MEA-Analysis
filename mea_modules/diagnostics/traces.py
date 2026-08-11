@@ -31,13 +31,32 @@ counts beats no plot.
 import logging
 
 from .channel_layout import (
+    _add_caption,
     _channel_xy,
+    _fold_caption,
+    _legend_line,
+    _legend_patch,
     _new_figure,
     _pick_cluster_representative,
     _save_and_release,
     detect_electrode_clusters,
 )
-from .timebase import _shade_gap_spans, gap_spans, resolve_time_gaps, sample_times
+from .figure_text import (
+    CONTIGUOUS_AXIS,
+    NO_DATA_SHADING,
+    REAL_ELAPSED_AXIS,
+    REPRESENTATIVE_CHANNELS,
+    SEAM,
+    acronym_note,
+)
+from .timebase import (
+    _GAP_SHADE_ALPHA,
+    _GAP_SHADE_COLOR,
+    _shade_gap_spans,
+    gap_spans,
+    resolve_time_gaps,
+    sample_times,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -57,10 +76,51 @@ _DEFAULT_ACTIVITY_CHUNKS = 4
 _DEFAULT_ACTIVITY_CHUNK_FRAMES = 4_000
 
 # Above this the figure takes minutes to rasterize and reads as a solid smear.
-_POINTS_WARN = 200_000
+# Only reachable when a caller raises `max_points` itself: the decimation step
+# rounds UP (see `_resolve_downsample_step`), so the default budget is a real
+# ceiling and the default configuration cannot trip this (Adam, 2026-08-11 —
+# the warning was firing on every segment, which made it noise).
+_POINTS_WARN = 750_000
 
-# A trace plot is only readable at single-digit channel counts.
-_DEFAULT_MAX_CHANNELS = 8
+# A trace plot is only readable at single-digit channel counts. Lowered from 8
+# to 6 (Adam, 2026-08-11): fewer stacked panels means each one is taller, and
+# detail in an individual trace is what these figures are reviewed for. This is
+# a knob everywhere it matters — nothing may hardcode the count, least of all
+# legend text, since `channel_layout.png`'s highlighted set is exactly this many.
+_DEFAULT_MAX_CHANNELS = 6
+
+# --- Figure quality presets (Adam, 2026-08-11) ----------------------------
+#
+# "draft" is the default and stays the current low-resolution render: this
+# development pass wants fast turnaround over pixel fidelity. "high" raises the
+# dots-per-inch and the point budget together, so a reviewer can zoom into a
+# trace or a raster and still see individual deflections rather than a smear.
+# Raising dpi alone would not help — the decimation, not the raster size, is
+# what destroys fine detail.
+PLOT_QUALITY_PRESETS = {
+    "draft": {"dpi": _TRACE_DPI, "max_points": _DEFAULT_MAX_POINTS},
+    "high": {"dpi": 320, "max_points": 900_000},
+}
+DEFAULT_PLOT_QUALITY = "draft"
+
+
+def resolve_plot_quality(quality=None):
+    """Return the ``{"dpi", "max_points"}`` preset for `quality`.
+
+    Unknown names fall back to the default with a warning rather than raising:
+    a review figure rendered at draft quality beats a capsule that died on a
+    typo in a command-line flag.
+    """
+    name = str(quality or DEFAULT_PLOT_QUALITY).strip().lower()
+    if name not in PLOT_QUALITY_PRESETS:
+        logger.warning(
+            "unknown plot quality %r; falling back to %r (known: %s)",
+            quality,
+            DEFAULT_PLOT_QUALITY,
+            ", ".join(sorted(PLOT_QUALITY_PRESETS)),
+        )
+        name = DEFAULT_PLOT_QUALITY
+    return dict(PLOT_QUALITY_PRESETS[name])
 
 # Amplitude unit labels. Every figure states which one it drew; the µV/counts
 # decision is made once per figure by `_effective_uv` below.
@@ -262,7 +322,6 @@ def select_representative_channels(
     recording,
     n_channels=_DEFAULT_MAX_CHANNELS,
     eps=None,
-    max_cluster_size_warn=9,
     num_chunks=_DEFAULT_ACTIVITY_CHUNKS,
     chunk_frames=_DEFAULT_ACTIVITY_CHUNK_FRAMES,
     seed=0,
@@ -295,7 +354,7 @@ def select_representative_channels(
         logger.warning("no usable channel locations; falling back to recording channel order")
         return list(channel_ids) if n_channels <= 0 else list(channel_ids[: max(1, int(n_channels))])
 
-    clusters = detect_electrode_clusters(xs, ys, eps=eps, max_cluster_size_warn=max_cluster_size_warn)
+    clusters = detect_electrode_clusters(xs, ys, eps=eps)
     candidates = [channel_ids[_pick_cluster_representative(xs, ys, cluster)] for cluster in clusters]
     if not candidates:
         candidates = list(channel_ids)
@@ -336,7 +395,14 @@ def _resolve_downsample_step(total_frames, fs, target_hz, max_points):
         step_by_points = 1
     else:
         # Below ~1k points the plot stops being a trace, so never cap harder.
-        step_by_points = max(1, total_frames // max(1000, parsed_max_points))
+        budget = max(1000, parsed_max_points)
+        # Round UP. Floor division made `max_points` a suggestion rather than a
+        # cap: a window of 250k frames against a 150k budget gave step 1 and
+        # drew all 250k points, which is what tripped the "too many points"
+        # warning at default settings (Adam, 2026-08-11). Ceiling division makes
+        # the budget true, so the warning below now only fires for a caller who
+        # deliberately raised it.
+        step_by_points = max(1, -(-int(total_frames) // budget))
 
     step_by_rate = 1
     if target_hz is not None:
@@ -366,6 +432,8 @@ def plot_traces(
     figsize=_TRACE_FIGSIZE,
     dpi=_TRACE_DPI,
     time_gaps=None,
+    caption_extra=None,
+    quality=None,
 ):
     """Stack representative channel traces into one figure; return `out_path`.
 
@@ -400,8 +468,30 @@ def plot_traces(
     label says ``time (s, real elapsed)`` so the two can never be confused. The
     supplied structure wins over any time vector on the recording, since the two
     would otherwise both correct for the same gaps.
+
+    The figure explains itself (Adam, 2026-08-11): a legend keys every drawn
+    encoding — the stacked traces, the red segment-join rules, the shaded
+    stretches where nothing was recorded — and a caption states, in plain
+    language, what a segment join is and which timeline the x axis is. A caller
+    that picked the channels itself passes `caption_extra` to say how, ideally
+    naming the sibling figure those channels are marked on, e.g.
+    ``"These are the channels marked red in channel_layout.png."``
+
+    `quality` picks a render preset (:data:`PLOT_QUALITY_PRESETS`): ``"draft"``
+    (the default, and what this development pass ships) or ``"high"``, which
+    raises the dots-per-inch AND the point budget together so a reviewer can
+    zoom in on a deflection instead of a smear. An explicit `dpi` or
+    `max_points` argument still wins over the preset.
     """
     import numpy as np
+
+    preset = resolve_plot_quality(quality)
+    # The preset fills only what the caller left at the module default, so an
+    # explicit argument is never silently overridden by a quality flag.
+    if dpi == _TRACE_DPI:
+        dpi = preset["dpi"]
+    if max_points == _DEFAULT_MAX_POINTS:
+        max_points = preset["max_points"]
 
     window_start, window_end, fs = _resolve_frame_window(recording, start_time_s, duration_s)
     total = int(window_end - window_start)
@@ -413,6 +503,10 @@ def plot_traces(
     in_uv = _effective_uv(recording, return_in_uV)
     unit_label = _UV_LABEL if in_uv else _COUNTS_LABEL
 
+    # Tracked so the caption only explains the representative-channel rule when
+    # this figure actually applied it; a caller passing its own channel list
+    # gets no claim it did not make.
+    channel_ids_were_selected = channel_ids is None
     if channel_ids is None:
         channel_ids = select_representative_channels(
             recording,
@@ -535,7 +629,47 @@ def plot_traces(
         fig.suptitle(title if stated else f"{title} [{unit_label}]")
     else:
         fig.suptitle(f"amplitude in {unit_label}")
-    fig.tight_layout()
+
+    # Every drawn encoding gets a legend key (Adam, 2026-08-11). Without one the
+    # red rules and the grey bands are unexplained marks: a reader cannot tell a
+    # segment join from an artifact, or "not recorded" from "silent".
+    handles = [
+        _legend_line(
+            "black",
+            f"one row per channel — amplitude in {unit_label}, same y range on every row",
+            lw=0.9,
+        )
+    ]
+    if stitch_seconds:
+        handles.append(_legend_line("red", "segment join", lw=0.9))
+    if real_time and shaded:
+        handles.append(_legend_patch(_GAP_SHADE_COLOR, "no data recorded", alpha=_GAP_SHADE_ALPHA))
+    # Placed on the figure, below the stacked panels: a legend inside any single
+    # panel would cover that channel's trace, and the keys describe the whole
+    # stack rather than one row.
+    legend = fig.legend(
+        handles=handles,
+        loc="lower center",
+        bbox_to_anchor=(0.5, 0.0),
+        ncol=len(handles),
+        fontsize=7,
+        framealpha=0.85,
+    )
+    legend.set_in_layout(False)
+
+    caption_parts = []
+    if channel_ids_were_selected:
+        caption_parts.append(REPRESENTATIVE_CHANNELS)
+    if caption_extra:
+        caption_parts.append(caption_extra)
+    if stitch_seconds:
+        caption_parts.append(SEAM)
+    caption_parts.append(REAL_ELAPSED_AXIS if real_time else CONTIGUOUS_AXIS)
+    if real_time and shaded:
+        caption_parts.append(NO_DATA_SHADING)
+    if not in_uv:
+        caption_parts.append(acronym_note("ADC"))
+    _add_caption(fig, _fold_caption(caption_parts))
 
     out_path = _save_and_release(fig, out_path)
     logger.info(

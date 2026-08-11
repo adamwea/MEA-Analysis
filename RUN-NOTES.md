@@ -66,3 +66,34 @@ integration worktree.
   when `apply_reference=False`. Full suite: **62 passed**.
 - Pipeline-side twin + the 🅿 retroactive descriptor annotation:
   `worktrees/RUN-NOTES-cmr-logging.md`.
+
+## Device geometry measurement + setup survey (2026-08-11, Adam ruling)
+
+New `mea_modules/io/device.py` — measure, don't assume (the ruling behind
+it: ingest should measure actual electrode pitch and verify as much
+device/setup information as possible; a diagnostics warning had assumed a
+fixed electrode-cluster size when the real size is the GUI's `neighbors`
+setting).
+
+- `measure_electrode_geometry(x, y, electrode_ids=None)`: NN-distance
+  distribution (modal = EFFECTIVE routed pitch: every-other routing on a
+  17.5 µm array honestly measures 35 µm), per-axis modal spacing, bounding
+  box + density, and the PHYSICAL grid pitch derived from the
+  electrode-id↔coordinate relation (ids count skipped electrodes, so
+  17.5 µm is recovered even under sparse routing).
+- `survey_well_device(h5, well, rec_names=None)`: device model/family
+  (MaxOne/MaxTwo), plate id/variant, mxw/hdf/format versions, assay ids +
+  GUI properties (incl. `neighbors`), per-well plate annotations,
+  environment temperature coverage/stats, per-rec amplifier settings
+  consensus, ADC bit depth derived from lsb×gain (stated as derived, 3.3 V
+  assumption recorded), pitch sanity (modal NN vs physical pitch integer
+  multiple — oddities flagged, never fatal). Per-fact h5-path `provenance`;
+  facts sought but not found land in `absent` — never invented. Never
+  raises on a missing group; traces never read.
+- Consumed by MRP capsule 01 (additive `device` + `routing` blocks in the
+  layout-3 manifests); details + h5 field inventory:
+  `worktrees/RUN-NOTES-ingest-device-info.md`.
+- Tests: `tests/test_device_geometry_pure.py` (7) — synthetic grids (dense /
+  partial-random / every-other), degenerate inputs, synthetic Maxwell h5
+  survey end-to-end, checkerboard √2 oddity flag, bare-file absent-facts.
+  Full suite green.

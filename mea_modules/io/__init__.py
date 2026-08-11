@@ -12,6 +12,7 @@ much time it is missing, both inside a segment and between segments. Its output
 feeds :mod:`mea_modules.diagnostics.timebase`.
 """
 
+from .device import measure_electrode_geometry, survey_well_device
 from .gaps import concatenated_gaps, frame_gaps, segment_time_bounds, well_gap_summary
 from .hdf5_plugin import find_plugin_dir, is_plugin_dir, plugin_lib_name, set_plugin_path
 from .load import (
@@ -50,6 +51,9 @@ __all__ = [
     "extract_metadata",
     "save_metadata",
     "find_common_electrodes",
+    # device/setup facts measured from the file, never assumed
+    "measure_electrode_geometry",
+    "survey_well_device",
     # hdf5 plugin
     "set_plugin_path",
     "find_plugin_dir",

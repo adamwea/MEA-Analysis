@@ -6,32 +6,66 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 End-to-end pipeline for neuronal spike sorting and network burst analysis on **Maxwell Biosystems MEA** (Microelectrode Array) recordings. Built on [SpikeInterface](https://github.com/SpikeInterface/spikeinterface) with Kilosort4 as the default sorter.
 
+## THE REPO BOUNDARY — read this before touching ANY file (Adam, 2026-08-11, BINDING)
+
+**Everything in this repo OUTSIDE `mea_modules/` is the lab's SHARED legacy
+pipeline** — root-level `mea_*.py`, `run_pipeline_driver.py`,
+`helper_functions.py`, `dashboards/`, `workbooks/`, `UnitMatch/`, the GUI,
+the notebooks. It is NOT "kept for reference" — **lab members still run it
+for their own analyses today**. Other people's running work depends on it.
+
+- **Never edit it, even to fix a confirmed bug.** If our code needs logic
+  that lives there, COPY the logic into `mea_modules/` and fix the copy.
+- If you find a bug there, note it in your run notes for Adam to raise with
+  the lab — do not patch it.
+- Precedent: the 2026-08-11 local-CMR fix briefly touched
+  `mea_preprocessing.py` and was reverted for exactly this reason
+  (commit `59909ef`). The fixed logic lives in
+  `mea_modules/preprocessing/filters.py` instead.
+
+Our work happens **only inside `mea_modules/`**.
+
 ## Current active work lives in `mea_modules/`, not the legacy driver below
 
-Everything from here down documents the pre-rebuild two-tier driver
-(`run_pipeline_driver.py` / `mea_analysis_routine.py`), kept for reference —
-it is not what's under active development. Since 2026-07-28 (Adam), the real
-work is `mea_modules/` on branch `aw-axon-recon-dev` (currently @ `4b634f0`):
-a flat library of discrete MEA modules (`io`, `preprocessing`,
-`concatenation`, `spikesorting`, `registration`, `templates`, `reconstruction`,
-`postprocess`, `quality`, `diagnostics`) consumed as thin capsules by the
-sibling repo `~/dev/RBS-adamwea/projects/MEA-recon-pipeline` (its `CLAUDE.md`
-+ `docs/PROJECT_CONTEXT.md` + `Plans.md` are the up-to-date status/topology
+Everything from the Setup section down documents the pre-rebuild two-tier
+driver (`run_pipeline_driver.py` / `mea_analysis_routine.py`) — still run by
+the lab (see the boundary above), not under our development. Since
+2026-07-28 (Adam), the real work is `mea_modules/`: a flat library of
+discrete MEA modules (`io`, `preprocessing`, `concatenation`, `spikesorting`,
+`registration`, `templates`, `reconstruction`, `postprocess`, `quality`,
+`curation`, `diagnostics`) consumed as thin capsules by the sibling repo
+`~/dev/RBS-adamwea/projects/MEA-recon-pipeline` (its `CLAUDE.md` +
+`docs/PROJECT_CONTEXT.md` + `Plans.md` are the up-to-date status/topology
 docs for this whole system — read those first for anything reconstruction-
 related). `mea_modules/README.md`'s own module table is stale (lists only
-`io`); the `pyproject.toml`/directory listing above is the accurate one.
+`io`); the directory listing is the accurate one.
 
-**2026-08-04 consolidation validation** (scoped agent pass, no code changes
-here): the pipeline repo's Nextflow DAG (`pipeline/main.nf`) only wires
-stages 1-7 of the 13-capsule chain (through `register_segment`, itself off by
-default) — `merge_templates` through `plot_reconstructions` (stages 8-13,
-all implemented in `mea_modules/` and exercised for real via direct
-`axon-recon capsule.<name>` calls) have no Nextflow process block yet.
-Per-capsule `--resume` behavior was verified against a real completed run:
-12 of 13 capsules short-circuit correctly; `register_segment` has no early
-exit (it redoes the segment rebuild + sort registration on every call, only
-skipping the analyzer build itself). Full findings: pipeline repo's
-`Plans.md`, "Phase 3".
+**Round-2 status (2026-08-11).** All round-2 work — in this repo AND the
+pipeline repo — lives on branch **`integration/round2-wave1`** (worktree
+`~/dev/RBS-adamwea/worktrees/mea-a-integration-round2-wave1`; the old
+"`aw-axon-recon-dev` @ `4b634f0`" state is the wave-1 BASE, long superseded).
+Consolidation to main is GATED on Adam's Pass-2 capsule-by-capsule output
+review, tracked vault-side in
+`/mnt/c/Users/adamm/second-brain/wiki/projects/MEA-recon-pipeline/round2-consolidation-register.md`.
+The pipeline repo's DAG is now a **25-capsule registry-driven Nextflow DAG**
+(`mea_recon_pipeline/stages.json`, generic segment/well capsule processes,
+`--from`/`--up-to`) which **executed end-to-end on real data 2026-08-10**
+(the P005843 review run) — any note here or in the vault claiming "only
+stages 1-7 are wired" describes 2026-08-04 and is obsolete.
+
+Notable current rulings that live in THIS repo's code:
+- **CMR (Adam, 2026-08-11):** `mea_modules/preprocessing/filters.py` —
+  `DEFAULT_LOCAL_RADIUS = (0, 250)` is a genuine local common-median
+  reference (commit `f655945`). The historical `(250, 250)` zero-width
+  annulus meant every pre-ruling run effectively used a global median;
+  descriptors now record requested/effective/fallback, and
+  `LEGACY_ZERO_WIDTH_RADIUS` exists for byte-faithful replays.
+
+**Agents working across these repos follow the binding ops file
+`~/dev/RBS-adamwea/worktrees/WAVE1-AGENT-NOTES.md`** (harness quirks, git
+rules, Pass-2 review protocol). This file carries the repo-specific rules;
+when they conflict: Adam's live rulings > the ops file's protocol > this
+file (and flag the conflict).
 
 ## Setup
 

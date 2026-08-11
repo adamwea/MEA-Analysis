@@ -64,11 +64,18 @@ class PreprocessingMixin:
 
         rec = spre.highpass_filter(rec, freq_min=300)
 
-        # NOTE: local_radius=(250, 250) creates an annulus — inner radius 250 µm excluded.
-        # If intent is all channels within 250 µm use (0, 250). Kept as-is to preserve
-        # existing behaviour pending confirmation.
+        # NOTE (updated per Adam's ruling, 2026-08-11): SpikeInterface reads
+        # local_radius as (exclude, include) — the reference set is the annulus
+        # exclude < distance <= include. This line historically shipped
+        # local_radius=(250, 250): a zero-width, EMPTY annulus, so
+        # common_reference('local') always raised and the except-branch global
+        # CMR is what actually ran on every recording this file ever processed
+        # before 2026-08-11. Ruled fixed to (0, 250) — a genuine local median
+        # over all channels within 250 µm (same fix as
+        # mea_modules/preprocessing/filters.py DEFAULT_LOCAL_RADIUS). Results
+        # legitimately differ from pre-ruling runs.
         try:
-            rec = spre.common_reference(rec, reference='local', operator='median', local_radius=(250, 250))
+            rec = spre.common_reference(rec, reference='local', operator='median', local_radius=(0, 250))
         except:
             self.logger.warning("Local CMR failed (missing locations?), using Global CMR.")
             rec = spre.common_reference(rec, reference='global', operator='median')

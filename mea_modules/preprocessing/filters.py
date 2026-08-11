@@ -23,19 +23,35 @@ DEFAULT_FREQ_MIN = 300.0
 DEFAULT_FREQ_MAX = 6000.0
 DEFAULT_DTYPE = "float32"
 
-# Carried over verbatim from the older build -- and it is a trap. SpikeInterface
-# reads local_radius as (exclude, include): the reference set is the annulus
-# `exclude < distance <= include`. With both bounds at 250 um that annulus is
-# empty for every channel on every geometry, so common_reference always raises
-# and the global-median fallback below is what actually ran on every segment of
-# every scan the older build processed.
+# SpikeInterface reads local_radius as (exclude, include): the reference set is
+# the annulus `exclude < distance <= include` micrometres. (0, 250) is a genuine
+# local reference -- for each channel, the median over ALL neighbours within
+# 250 um.
 #
-# It is kept as the default so this chain reproduces those results exactly.
-# A real local reference wants an inner bound below the outer one --
-# LOCAL_RADIUS_250UM is that corrected value -- but switching to it changes
-# output, so it is opt-in rather than silently applied.
-DEFAULT_LOCAL_RADIUS = (250.0, 250.0)
-LOCAL_RADIUS_250UM = (0.0, 250.0)
+# HISTORY (keep documented; do not re-simplify). The older build shipped
+# (250, 250) -- a zero-width annulus, empty for every channel on every
+# geometry -- so common_reference('local') always raised and the global-median
+# fallback below is what actually ran on every segment of every scan that
+# build processed. That trap was carried into this port verbatim (as
+# DEFAULT_LOCAL_RADIUS) to reproduce those results exactly, until Adam's
+# 2026-08-11 ruling: genuine local CMR becomes the default. Every run built
+# before 2026-08-11 was therefore EFFECTIVELY GLOBAL-median referenced no
+# matter what "local" its config recorded; preprocessed traces from this
+# default onward legitimately differ from every prior run.
+# LEGACY_ZERO_WIDTH_RADIUS reproduces the old (effectively global) behaviour
+# for anyone who needs a byte-faithful replay of a pre-ruling chain.
+DEFAULT_LOCAL_RADIUS = (0.0, 250.0)
+LOCAL_RADIUS_250UM = (0.0, 250.0)  # pre-ruling opt-in name; now equals the default
+LEGACY_ZERO_WIDTH_RADIUS = (250.0, 250.0)
+
+# Annotation keys `common_median_reference` stamps on the recording it returns,
+# recording what ACTUALLY ran (honest provenance -- Adam ruling R-B,
+# 2026-08-11). Read them back with :func:`reference_provenance`.
+REFERENCE_ANNOTATIONS = (
+    "reference_requested",
+    "reference_effective",
+    "reference_fallback",
+)
 
 # The old loader centred each segment before filtering, using a chunk one shy of
 # 10k samples. Kept as a default so `center` reproduces that behaviour.
@@ -114,6 +130,32 @@ def bandpass(recording, freq_min=DEFAULT_FREQ_MIN, freq_max=DEFAULT_FREQ_MAX, **
     )
 
 
+def _annotate_reference(recording, requested, effective, fallback):
+    """Stamp the honest-provenance annotations; advisory, never fatal."""
+    try:
+        recording.annotate(
+            reference_requested=requested,
+            reference_effective=effective,
+            reference_fallback=bool(fallback),
+        )
+    except Exception:  # pragma: no cover - annotation is advisory only
+        logger.debug("Could not annotate reference provenance on %r", type(recording).__name__)
+
+
+def reference_provenance(recording):
+    """What :func:`common_median_reference` actually did, read off `recording`.
+
+    Returns ``{"reference_requested": ..., "reference_effective": ...,
+    "reference_fallback": ...}`` with ``None`` for any key the recording does
+    not carry (e.g. a chain built with ``apply_reference=False``, or a
+    recording that never went through this module). Capsules record these
+    fields into their descriptors so what a run REPORTS is what actually ran
+    (Adam ruling R-B, 2026-08-11).
+    """
+    annotations = getattr(recording, "_annotations", None) or {}
+    return {key: annotations.get(key) for key in REFERENCE_ANNOTATIONS}
+
+
 def common_median_reference(
     recording,
     reference="local",
@@ -130,19 +172,27 @@ def common_median_reference(
     neighbouring electrodes, whereas a local one removes only the noise those
     neighbours share.
 
-    Note the default `local_radius` is a zero-width annulus and therefore always
-    fails into the global-median fallback — see ``DEFAULT_LOCAL_RADIUS`` above
-    for why that is deliberate. Pass ``LOCAL_RADIUS_250UM`` for a genuine local
-    reference, accepting that results will differ from the older build.
+    The default ``local_radius`` is a GENUINE local reference since Adam's
+    2026-08-11 ruling: ``(0, 250)`` — all neighbours within 250 um. (Before
+    that ruling the default was the older build's zero-width ``(250, 250)``
+    annulus, which always failed into the global fallback — see
+    ``DEFAULT_LOCAL_RADIUS`` / ``LEGACY_ZERO_WIDTH_RADIUS`` above for the full
+    history. With a working default, the fallback firing is now a REAL
+    anomaly, not the normal path.)
 
     The fallback exists because a global median reference is far better than no
     referencing at all; the failure is logged at WARNING and the chain continues.
     Set `fallback_to_global` False to surface the failure instead.
+
+    Honest provenance (ruling R-B): the returned recording is annotated with
+    ``reference_requested`` / ``reference_effective`` / ``reference_fallback``
+    recording what ACTUALLY ran — read them back via
+    :func:`reference_provenance`.
     """
     import spikeinterface.preprocessing as spre
 
     try:
-        return spre.common_reference(
+        referenced = spre.common_reference(
             recording,
             reference=reference,
             operator=operator,
@@ -152,10 +202,17 @@ def common_median_reference(
         if not fallback_to_global or reference == "global":
             raise
         logger.warning(
-            "Local common_reference failed; falling back to global median reference (%s)",
+            "Local common_reference FAILED; falling back to global median reference "
+            "— with the (0, 250) default radius this is a real anomaly, not the "
+            "expected path (%s)",
             exc,
         )
-        return spre.common_reference(recording, reference="global", operator=operator)
+        referenced = spre.common_reference(recording, reference="global", operator=operator)
+        _annotate_reference(referenced, requested=reference, effective="global", fallback=True)
+        return referenced
+
+    _annotate_reference(referenced, requested=reference, effective=reference, fallback=False)
+    return referenced
 
 
 def center(recording, chunk_size=DEFAULT_CENTER_CHUNK_SIZE):
@@ -249,11 +306,20 @@ def preprocess_segment(
        build did this in its loader, not in the chain),
     2. :func:`ensure_signed` — only when the dtype is ``uint*``,
     3. :func:`highpass` at `freq_min` (300 Hz),
-    4. :func:`common_median_reference` — nominally a local median, but with the
-       ported default radius this always resolves to the global-median fallback,
-       which is what the older build actually produced,
+    4. :func:`common_median_reference` — a GENUINE local median by default
+       since Adam's 2026-08-11 ruling ((0, 250) um: all neighbours within
+       250 um). Before that ruling the ported default radius was the older
+       build's empty (250, 250) annulus, so every pre-ruling run actually got
+       the global-median fallback — see ``DEFAULT_LOCAL_RADIUS``'s history
+       note; traces from this default onward differ from those runs,
     5. ``annotate(is_filtered=True)``,
     6. :func:`to_float32`.
+
+    The returned recording carries the honest-provenance reference annotations
+    (``reference_requested`` / ``reference_effective`` / ``reference_fallback``,
+    re-stamped onto the final wrapper so a cast cannot drop them) — read them
+    with :func:`reference_provenance`. A chain built with
+    ``apply_reference=False`` carries none.
 
     Steps 2 and 3 are the pairing that must not be reordered: high-passing
     unsigned traces wraps at zero. Referencing comes after the high-pass so the
@@ -280,6 +346,7 @@ def preprocess_segment(
     processed = ensure_signed(processed)
     processed = highpass(processed, freq_min=freq_min)
 
+    reference_info = None
     if apply_reference:
         processed = common_median_reference(
             processed,
@@ -288,6 +355,11 @@ def preprocess_segment(
             local_radius=local_radius,
             fallback_to_global=fallback_to_global,
         )
+        # Read the provenance straight off the wrapper that was just
+        # annotated, so it can be re-stamped on the FINAL recording below —
+        # annotations do not reliably survive later lazy wrappers (same class
+        # of problem as is_filtered).
+        reference_info = reference_provenance(processed)
 
     # Sorters warn (or refuse) when handed a recording they cannot tell has been
     # filtered; the filter step does not always propagate the flag through the
@@ -297,4 +369,12 @@ def preprocess_segment(
     except Exception:  # pragma: no cover - annotation is advisory only
         logger.debug("Could not annotate is_filtered on %r", type(processed).__name__)
 
-    return to_float32(processed, dtype=dtype)
+    final = to_float32(processed, dtype=dtype)
+    if reference_info is not None and reference_info.get("reference_effective") is not None:
+        _annotate_reference(
+            final,
+            requested=reference_info["reference_requested"],
+            effective=reference_info["reference_effective"],
+            fallback=reference_info["reference_fallback"],
+        )
+    return final

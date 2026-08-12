@@ -273,7 +273,15 @@ def plot_all_reconstructions(records, out_path, *, locations=None,
     `n_drawn <=` `max_legend_units`; `True`/`False` force it),
     `max_legend_units` (:data:`DEFAULT_MAX_LEGEND_UNITS`),
     `invert_y_axis` (default `True`, the package's MEA convention),
-    `background` (default `"black"`, matching the per-unit figures).
+    `background` (default `"black"`, matching the per-unit figures),
+    `style` (`"diagnostic"` default / `"presentation"`; presentation gives the
+    deck-ready cut — the multi-line prose caption and the outside-right
+    per-unit-id legend are dropped, a small inline `"soma (initiation site)"`
+    diamond key replaces them, and the title is the standard
+    `"All reconstructions"` with no per-well stats; the diamonds,
+    one-color-per-neuron, scale bar and clean µm axes all stay. Adam,
+    2026-08-12: the diagnostic default is unchanged — the team still wants the
+    verbose review figure).
 
     Deterministic: Agg backend, unit-id-sorted color assignment, no RNG.
     Always closes the figure before returning (or raising).
@@ -305,6 +313,18 @@ def plot_all_reconstructions(records, out_path, *, locations=None,
     background = str(kwargs.get("background", "black"))
     text_color = "white" if background.strip().lower() in {"black", "k", "#000", "#000000"} else "black"
     electrode_color = "#3c3c3c" if text_color == "white" else "#c8c8c8"
+    # style="presentation" (Adam, 2026-08-12): the deck-ready cut of this same
+    # overlay — drop the multi-line prose caption and the outside-right
+    # per-unit-id legend (43 ids is clutter on a poster; identity + the
+    # "43 units, 110 branches" stats go on the slide text), keep only a small
+    # inline "diamond = soma" key, and give it a standard title. The diamonds
+    # and one-color-per-neuron (the things Adam loves) stay untouched, as do
+    # the clean µm axes and the scale bar. The diagnostic default is
+    # unchanged — the team still wants the verbose review figure. `background`
+    # stays its own exposed knob (default black), so presentation keeps the
+    # look Adam likes unless a caller passes background="white".
+    style = str(kwargs.get("style", "diagnostic")).strip().lower()
+    presentation = style == "presentation"
 
     ordered = sorted(records, key=lambda record: _unit_sort_key(record.get("unit_id")))
     drawn = [record for record in ordered if record.get("branch_paths")]
@@ -385,40 +405,76 @@ def plot_all_reconstructions(records, out_path, *, locations=None,
 
         _add_scale_bar_um(ax, color=text_color, fontsize=10)
 
-        show_legend = (unit_legend is True) or (
-            str(unit_legend).strip().lower() == "auto"
-            and 0 < len(drawn) <= max_legend_units
-        )
-        if show_legend and drawn:
-            handles = [
-                Line2D([0], [0], color=entry["color"], linewidth=max(2.0, linewidth),
-                       label=f"unit {entry['unit_id']}")
-                for entry in manifest_units
-            ]
-            # AXES legend anchored OUTSIDE the axes to the right — never over
-            # the data (the same fixed-placement policy the per-unit figure
-            # adopted after "best" auto-placement landed a legend on top of
-            # its own branches), and deliberately NOT a figure-level legend:
-            # `_add_caption` (diagnostics/channel_layout) is the sole owner of
-            # figure-level bottom matter repo-wide (guarded by
-            # test_no_emitter_pins_its_own_figure_legend), and its fixed
-            # white-background styling does not fit this black-canvas figure.
-            # An axes legend through `ax.legend` is that contract's own
-            # sanctioned path; bbox_inches="tight" grows the canvas around it.
+        # Legend / key. Diagnostic keeps the full outside-right per-unit-id
+        # legend (an identity lookup for the review figure). Presentation
+        # drops it entirely — 43 ids is clutter on a poster and per-unit
+        # identity belongs on the slide (Adam, 2026-08-12) — and instead
+        # carries only a SMALL inline key for the one encoding a viewer cannot
+        # guess: the diamond means soma. The diamonds and one-color-per-neuron
+        # are untouched either way.
+        unit_legend_shown = False
+        soma_key_shown = False
+        if not presentation:
+            show_legend = (unit_legend is True) or (
+                str(unit_legend).strip().lower() == "auto"
+                and 0 < len(drawn) <= max_legend_units
+            )
+            if show_legend and drawn:
+                handles = [
+                    Line2D([0], [0], color=entry["color"], linewidth=max(2.0, linewidth),
+                           label=f"unit {entry['unit_id']}")
+                    for entry in manifest_units
+                ]
+                # AXES legend anchored OUTSIDE the axes to the right — never over
+                # the data (the same fixed-placement policy the per-unit figure
+                # adopted after "best" auto-placement landed a legend on top of
+                # its own branches), and deliberately NOT a figure-level legend:
+                # `_add_caption` (diagnostics/channel_layout) is the sole owner of
+                # figure-level bottom matter repo-wide (guarded by
+                # test_no_emitter_pins_its_own_figure_legend), and its fixed
+                # white-background styling does not fit this black-canvas figure.
+                # An axes legend through `ax.legend` is that contract's own
+                # sanctioned path; bbox_inches="tight" grows the canvas around it.
+                legend = ax.legend(
+                    handles=handles, loc="center left",
+                    bbox_to_anchor=(1.01, 0.5), ncol=max(1, (len(handles) + 29) // 30),
+                    fontsize=7, framealpha=0.85, title="neuron identity",
+                    title_fontsize=8,
+                )
+                legend.get_frame().set_facecolor(background)
+                legend.get_title().set_color(text_color)
+                for text in legend.get_texts():
+                    text.set_color(text_color)
+                unit_legend_shown = True
+        elif any(entry["has_init_marker"] for entry in manifest_units):
+            # Presentation: one compact inline key. The DIAMOND SHAPE is the
+            # meaning (per-neuron colour is not), so a neutral diamond handle.
+            # ax.legend, never fig.legend — channel_layout owns figure-level
+            # bottom matter repo-wide (test_no_emitter_pins_its_own_figure_legend).
+            soma_handle = Line2D(
+                [0], [0], marker="D", ls="",
+                markerfacecolor=text_color, markeredgecolor=text_color,
+                markersize=max(6.0, soma_markersize * 0.8),
+                label="soma (initiation site)",
+            )
             legend = ax.legend(
-                handles=handles, loc="center left",
-                bbox_to_anchor=(1.01, 0.5), ncol=max(1, (len(handles) + 29) // 30),
-                fontsize=7, framealpha=0.85, title="neuron identity",
-                title_fontsize=8,
+                handles=[soma_handle], loc="lower left", fontsize=8,
+                framealpha=0.6, borderpad=0.5, handletextpad=0.5,
             )
             legend.get_frame().set_facecolor(background)
-            legend.get_title().set_color(text_color)
+            legend.get_frame().set_edgecolor(text_color)
             for text in legend.get_texts():
                 text.set_color(text_color)
+            soma_key_shown = True
 
-        title = f"All reconstructed axon arbors — {len(drawn)} neuron(s), {n_branches_drawn} branch(es)"
-        if well_label:
-            title = f"{title} — {well_label}"
+        if presentation:
+            # Standard title only — no "43 units, 110 branches" stats baked in
+            # (those go on the slide, Adam 2026-08-12).
+            title = "All reconstructions"
+        else:
+            title = f"All reconstructed axon arbors — {len(drawn)} neuron(s), {n_branches_drawn} branch(es)"
+            if well_label:
+                title = f"{title} — {well_label}"
         ax.set_title(title, color=text_color, fontsize=14, pad=12)
 
         # Caption at the bottom edge — the figure explains itself (Adam's
@@ -426,8 +482,13 @@ def plot_all_reconstructions(records, out_path, *, locations=None,
         # bbox_inches="tight" expands the saved frame to include it, and
         # nothing else lives down there — a caption placed INSIDE the canvas
         # at y~0 landed on the x-axis label on the first real render.
-        fig.text(0.5, -0.012, caption, ha="center", va="top",
-                 color=text_color, fontsize=8, linespacing=1.35)
+        # Presentation drops this multi-line prose block outright (the worst
+        # poster offender); the manifest keeps the text as provenance
+        # regardless (`caption_shown` records whether it was drawn).
+        caption_shown = (not presentation) and bool(caption)
+        if caption_shown:
+            fig.text(0.5, -0.012, caption, ha="center", va="top",
+                     color=text_color, fontsize=8, linespacing=1.35)
 
         out_path.parent.mkdir(parents=True, exist_ok=True)
         fig.savefig(out_path, dpi=dpi, bbox_inches="tight", facecolor=fig.get_facecolor())
@@ -463,12 +524,15 @@ def plot_all_reconstructions(records, out_path, *, locations=None,
         ),
         "units": manifest_units,
         "caption": caption,
+        "caption_shown": caption_shown,
+        "unit_legend_shown": unit_legend_shown,
+        "soma_key_shown": soma_key_shown,
         "params": {
             "dpi": dpi, "figsize": list(figsize), "linewidth": linewidth,
             "alpha": alpha, "soma_markersize": soma_markersize,
             "electrode_dot_size": electrode_dot_size,
             "unit_legend": str(unit_legend), "background": background,
-            "invert_y_axis": invert_y_axis,
+            "invert_y_axis": invert_y_axis, "style": style,
         },
         "files": written,
     }

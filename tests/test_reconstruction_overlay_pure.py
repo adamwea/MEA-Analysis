@@ -174,5 +174,99 @@ def test_dpi_and_style_knobs_are_honored(tmp_path):
     assert (tmp_path / "big.png").stat().st_size > (tmp_path / "small.png").stat().st_size
 
 
+# --------------------------------------------------------------------------
+# style="presentation" — the deck-ready cut (Adam, 2026-08-12)
+# --------------------------------------------------------------------------
+#
+# Same capture trick the per-unit footprint's presentation tests use
+# (test_core_figure_legends._render_recon_capturing): this family saves with
+# `fig.savefig` + `plt.close`, so patch `plt.close` to snapshot the figure
+# before its artists are cleared. Assertions run on the REAL figure — title,
+# legend texts, figure-level caption texts, and the drawn diamond markers.
+
+
+def _render_overlay_capturing(tmp_path, records, style, **kwargs):
+    import matplotlib.pyplot as plt
+
+    cap = {}
+    real_close = plt.close
+
+    def spy(fig):
+        ax = fig.axes[0]
+        cap["title"] = _norm(ax.get_title())
+        legend = ax.get_legend()
+        cap["legend"] = (
+            [_norm(t.get_text()) for t in legend.get_texts()]
+            if legend is not None else []
+        )
+        # The multi-line prose caption is a FIGURE-level text (fig.text); the
+        # title and scale-bar label are axes-level, so they never show here.
+        cap["fig_texts"] = [_norm(t.get_text()) for t in fig.texts if _norm(t.get_text())]
+        # The soma markers are ax.plot(marker="D") lines; branch polylines and
+        # the scale bar carry no marker. A legend handle's diamond is NOT in
+        # ax.lines, so this counts only real drawn somas.
+        cap["n_diamonds"] = sum(1 for line in ax.lines if line.get_marker() == "D")
+        return real_close(fig)
+
+    plt.close = spy
+    try:
+        manifest = ov.plot_all_reconstructions(
+            records, tmp_path / f"overlay_{style}.png", style=style, **kwargs)
+    finally:
+        plt.close = real_close
+    return cap, manifest
+
+
+def test_overlay_presentation_drops_caption_and_big_legend_keeps_diamonds(tmp_path):
+    """Presentation: no prose caption, no 43-id legend, a standard title with
+    no per-well stats — but the diamonds and one-color-per-neuron stay."""
+    locations = _grid_locations()
+    records = _three_unit_records(locations)  # all three carry an init marker
+    cap, manifest = _render_overlay_capturing(
+        tmp_path, records, "presentation", locations=locations, well_label="well000")
+
+    # Standard title only — none of the per-well stats baked in.
+    assert cap["title"] == "All reconstructions", cap["title"]
+    for banned in ("neuron(s)", "branch(es)", "well000"):
+        assert banned not in cap["title"], cap["title"]
+    # The multi-line prose caption is gone.
+    assert cap["fig_texts"] == [], cap["fig_texts"]
+    # The outside-right per-unit-id legend is gone; only the compact soma key
+    # remains (one entry), and it is not a unit-id list.
+    assert len(cap["legend"]) == 1, cap["legend"]
+    assert "soma" in cap["legend"][0].lower(), cap["legend"]
+    assert not any(t.lower().startswith("unit ") for t in cap["legend"]), cap["legend"]
+    # The diamonds Adam loves still draw — one soma marker per drawn neuron.
+    assert cap["n_diamonds"] == 3, cap["n_diamonds"]
+    # The manifest records the cut, honestly.
+    assert manifest["params"]["style"] == "presentation"
+    assert manifest["caption_shown"] is False
+    assert manifest["unit_legend_shown"] is False
+    assert manifest["soma_key_shown"] is True
+    assert (tmp_path / "overlay_presentation.png").stat().st_size > 1000
+
+
+def test_overlay_diagnostic_default_is_unchanged(tmp_path):
+    """The diagnostic default keeps the verbose review figure verbatim: the
+    stats title with the well label, the prose caption, and the per-unit-id
+    legend all stay — and so do the diamonds."""
+    locations = _grid_locations()
+    records = _three_unit_records(locations)
+    cap, manifest = _render_overlay_capturing(
+        tmp_path, records, "diagnostic", locations=locations, well_label="well000")
+
+    assert "neuron(s)" in cap["title"] and "branch(es)" in cap["title"], cap["title"]
+    assert "well000" in cap["title"], cap["title"]
+    # The self-documenting caption is on the figure.
+    assert cap["fig_texts"] and any("axonal branch" in t for t in cap["fig_texts"]), cap["fig_texts"]
+    # The per-unit-id legend is present (3 units, under the auto cap).
+    assert any(t.lower().startswith("unit ") for t in cap["legend"]), cap["legend"]
+    assert cap["n_diamonds"] == 3, cap["n_diamonds"]
+    assert manifest["caption_shown"] is True
+    assert manifest["unit_legend_shown"] is True
+    assert manifest["soma_key_shown"] is False
+    assert manifest["params"]["style"] == "diagnostic"
+
+
 if __name__ == "__main__":
     raise SystemExit(pytest.main([__file__, "-v"]))

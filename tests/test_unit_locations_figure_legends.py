@@ -148,6 +148,55 @@ def test_misaligned_or_empty_inputs_raise():
         )
 
 
+def test_presentation_drops_caption_shrinks_legend_keeps_both_methods(tmp_path, figure_text):
+    """style="presentation" (Adam, 2026-08-12): no prose caption, a compact
+    2-entry key (red = monopolar fit, blue ring = CoM), and a standard title
+    with no per-well unit-count stat. Both methods are still drawn."""
+    blob = figure_text(lambda: unit_locations.plot_unit_locations(
+        CHANNELS, tmp_path / "unit_locations_pres.png",
+        monopolar=MONOPOLAR, com=COM,
+        title="toy well — recomputed unit locations",
+        n_zero_coverage=1, n_low_local_coverage=1,
+        style="presentation",
+    ))
+    # Both method keys survive (both methods drawn), plus the standard title.
+    _assert_says(blob, "monopolar fit", "centre of mass (CoM)", "Unit locations")
+    # The multi-line prose caption is gone.
+    assert "one sorted unit's estimated position" not in blob
+    assert "triangulation fit places a point source" not in blob
+    # The legend shrank: the electrode and connector keys are dropped.
+    assert "recording electrodes on the array" not in blob
+    assert "line joining" not in blob
+    # No per-well unit-count stat baked into the title...
+    assert "recomputed unit locations" not in blob.lower()
+    # ...and no n-of-N counts on the compact key.
+    assert "of 10 units" not in blob
+    assert f"n={N_UNITS}" not in blob
+
+
+def test_presentation_single_method_keeps_only_its_key(tmp_path, figure_text):
+    """A one-method presentation render carries only the key it actually drew."""
+    blob = figure_text(lambda: unit_locations.plot_unit_locations(
+        CHANNELS, tmp_path / "com_only_pres.png",
+        monopolar=MONOPOLAR, com=COM, methods=("com",), style="presentation",
+    ))
+    _assert_says(blob, "centre of mass (CoM)")
+    assert "monopolar fit" not in blob
+    # still no caption
+    assert "one sorted unit's estimated position" not in blob
+
+
+def test_presentation_is_deterministic(tmp_path):
+    """The deck cut must render byte-identically twice (retrofit-diff guarantee)."""
+    a = unit_locations.plot_unit_locations(
+        CHANNELS, tmp_path / "a.png", monopolar=MONOPOLAR, com=COM, style="presentation",
+    )
+    b = unit_locations.plot_unit_locations(
+        CHANNELS, tmp_path / "b.png", monopolar=MONOPOLAR, com=COM, style="presentation",
+    )
+    assert a.read_bytes() == b.read_bytes()
+
+
 def test_render_is_deterministic(tmp_path):
     """Two identical calls, byte-identical files — the retrofit-diff guarantee."""
     a = unit_locations.plot_unit_locations(

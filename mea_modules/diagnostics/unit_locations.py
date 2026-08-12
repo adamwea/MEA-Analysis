@@ -152,6 +152,7 @@ def plot_unit_locations(
     figsize=DEFAULT_UNIT_LOCATIONS_FIGSIZE,
     dpi=DEFAULT_UNIT_LOCATIONS_DPI,
     invert_y_axis=False,
+    style="diagnostic",
 ):
     """Scatter recomputed unit locations over the array geometry; return the path.
 
@@ -198,12 +199,23 @@ def plot_unit_locations(
         False by default, matching :func:`.channel_layout.plot_channel_layout`
         (the array geometry as recorded); pass True for the row-0-at-top MEA
         convention some reconstruction figures use.
+    style : {"diagnostic", "presentation"}
+        ``"diagnostic"`` (default) is the verbose review figure — every layer
+        named with counts, the connector key, and the full self-documenting
+        caption. ``"presentation"`` is the deck-ready cut (Adam, 2026-08-12):
+        the multi-line prose caption is dropped, the legend shrinks to a
+        compact 2-entry key (red = monopolar fit, blue ring = CoM), and the
+        title is the standard ``"Unit locations"`` with no per-well unit-count
+        stat. The grey electrode backdrop, the grey connectors and the clean
+        µm axes all stay. The diagnostic default is unchanged — the team still
+        wants the verbose review version.
 
     Returns the written path. Raises ``ValueError`` on misaligned inputs or if
     no method layer was requested/available at all.
     """
     import numpy as np
 
+    presentation = str(style).strip().lower() == "presentation"
     methods = tuple(str(m).strip().lower() for m in (methods or ()))
     unknown = [m for m in methods if m not in _METHOD_NAMES]
     if unknown:
@@ -305,7 +317,9 @@ def plot_unit_locations(
             size=7.0,
         ))
 
-    ax.set_title(title or "Recomputed unit locations")
+    # Presentation forces a standard, stat-free title (the caller's title
+    # carries a per-well unit count that belongs on the slide, Adam 2026-08-12).
+    ax.set_title("Unit locations" if presentation else (title or "Recomputed unit locations"))
     ax.set_xlabel("x (µm)")
     ax.set_ylabel("y (µm)")
     # Electrode spacing is isotropic; a stretched aspect turns a real distance
@@ -344,7 +358,26 @@ def plot_unit_locations(
     if caption:
         caption_parts.append(caption)
 
-    _add_caption(fig, _fold_caption(caption_parts), legend_handles=handles)
+    if presentation:
+        # Deck-ready cut: no prose caption, and a compact 2-entry key only —
+        # red = monopolar fit, blue ring = CoM, no n-of-N counts (those go on
+        # the slide). The electrode and connector keys are dropped; the grey
+        # connectors themselves stay drawn. Single-method presentation calls
+        # keep only the key they actually drew.
+        from matplotlib.lines import Line2D
+
+        pres_handles = []
+        if draw_monopolar and n_mono:
+            pres_handles.append(_legend_dot(_MONOPOLAR_COLOR, "monopolar fit", size=7.0))
+        if draw_com and n_com:
+            pres_handles.append(Line2D(
+                [], [], linestyle="none", marker="o", markersize=7.0,
+                markerfacecolor="none", markeredgecolor=_COM_COLOR,
+                markeredgewidth=1.2, label="centre of mass (CoM)",
+            ))
+        _add_caption(fig, "", legend_handles=pres_handles)
+    else:
+        _add_caption(fig, _fold_caption(caption_parts), legend_handles=handles)
 
     out_path = _save_and_release(fig, out_path)
     logger.info(

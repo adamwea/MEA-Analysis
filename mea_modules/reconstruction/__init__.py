@@ -26,6 +26,20 @@ from .axon_velocity_track import (
     save_reconstruction,
     track_unit_axon,
 )
+from .overlay import (
+    ALL_RECONSTRUCTIONS_PLOT_FILENAME,
+    ALL_RECONSTRUCTIONS_SVG_FILENAME,
+    DEFAULT_ELECTRODE_DOT_SIZE,
+    DEFAULT_MAX_LEGEND_UNITS,
+    DEFAULT_OVERLAY_ALPHA,
+    DEFAULT_OVERLAY_DPI,
+    DEFAULT_OVERLAY_FIGSIZE,
+    DEFAULT_OVERLAY_LINEWIDTH,
+    DEFAULT_OVERLAY_SOMA_MARKERSIZE,
+    distinct_unit_colors,
+    plot_all_reconstructions,
+    unit_arbor_record,
+)
 from .plots import (
     DEFAULT_DPI,
     DEFAULT_FIGSIZE,
@@ -73,4 +87,16 @@ __all__ = [
     "FOOTPRINT_DIAGNOSTIC_PLOT_FILENAME",
     "DEFAULT_FOOTPRINT_DIAGNOSTIC_FIGSIZE",
     "DEFAULT_FOOTPRINT_DIAGNOSTIC_DPI",
+    "plot_all_reconstructions",
+    "unit_arbor_record",
+    "distinct_unit_colors",
+    "ALL_RECONSTRUCTIONS_PLOT_FILENAME",
+    "ALL_RECONSTRUCTIONS_SVG_FILENAME",
+    "DEFAULT_OVERLAY_FIGSIZE",
+    "DEFAULT_OVERLAY_DPI",
+    "DEFAULT_OVERLAY_LINEWIDTH",
+    "DEFAULT_OVERLAY_ALPHA",
+    "DEFAULT_OVERLAY_SOMA_MARKERSIZE",
+    "DEFAULT_ELECTRODE_DOT_SIZE",
+    "DEFAULT_MAX_LEGEND_UNITS",
 ]

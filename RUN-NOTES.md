@@ -181,3 +181,38 @@ and all-NaN degradations, input validation, byte-identical determinism. Suite
 green except `test_core_figure_legends.py::test_no_emitter_pins_its_own_figure_legend`,
 which fails on `reconstruction/overlay.py` — another agent's in-flight,
 uncommitted capsule-26 work; not touched by this change.
+
+## 2026-08-12 — `reconstruction.overlay`: all arbors on one canvas (capsule 26)
+
+New module `mea_modules/reconstruction/overlay.py` + exports: the well-level
+companion to `plots.plot_unit_footprint_reconstruction` — every reconstructed
+unit's tracked branches on ONE canvas over the array's own electrodes, ONE
+distinct color per neuron (Adam's ask; consumed by the pipeline repo's new
+`capsules/all_recon_overlay`, stage 26).
+
+Two-layer API so a well's 40+ dense full-array templates are never in memory
+together: `unit_arbor_record(gtr)` reduces one gtr to branch polylines (µm),
+the init-site xy and its locations; `plot_all_reconstructions(records, ...)`
+draws them. Style parity with the per-unit figures (black bg, µm axes, equal
+aspect, inverted y, `_add_scale_bar_um`), star = initiation site
+(`gtr.init_channel`, the soma stand-in), electrode-dot backdrop for array
+context, plain-language caption per the 2026-08-11 legend ruling (encodings +
+n drawn vs n excluded with reasons; caption text returned in the manifest so
+tests assert the exact figure text). Color strategy ported from the legacy
+build's `report_full_chip_layout` distinct_hsv palette (golden-ratio hue
+walk, S/V tiers past 24) — deterministic, unit-id-ordered, distinct at the
+validation well's real 43-unit count where tab20/sampled colormaps fail.
+Poster knobs (Adam via Rowan): dpi/figsize/linewidth/alpha/marker sizes all
+first-class; optional lossless SVG alongside the PNG (all-vector artists).
+
+Two figure-contract lessons hit and fixed in-flight: (1) fig-level legend
+tripped `test_no_emitter_pins_its_own_figure_legend` — switched to an axes
+legend anchored outside-right (the guard's sanctioned path; `_add_caption`'s
+fixed white-bg styling doesn't fit this black canvas, reasoning in the module
+docstring); (2) first real render landed the caption on the x-axis label —
+caption now anchors below the canvas (negative y, va="top", tight bbox).
+
+Tests: `tests/test_reconstruction_overlay_pure.py` — duck-typed gtr (no
+axon_velocity needed): record extraction, PNG/SVG bytes, distinct colors at
+1/20/43/96 units, caption contract (whitespace-normalized like the legend
+tests), byte-identical determinism, knob honoring. Suite green.

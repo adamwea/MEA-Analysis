@@ -82,6 +82,52 @@ def test_unit_arbor_record_extracts_paths_init_and_counts():
     np.testing.assert_allclose(record["init_xy"], locations[2, :2])
 
 
+def test_arbor_bbox_from_reconstruction_returns_branch_node_extent():
+    """arbor_bbox_from_reconstruction bounds the tracked BRANCH NODES — the
+    arbor the reconstruction draws — NOT the unit's full channel set. This is
+    the box handed to plot_unit_waveform_footprint's zoom_bbox so a footprint
+    frames the same dense arbor region its sibling reconstruction plot does
+    (Adam, 2026-08-12), instead of the whole chip the far-field crossings span.
+    """
+    locations = _grid_locations()  # 6x9 grid, pitch 17.5; channel = row*9 + col
+    # A horizontal branch on row 0 (channels 0,1,2) spans x[0,35], y[0,0]; the
+    # initiation site sits OFF that run, at channel 20 -> (col 2, row 2) = (35, 35).
+    gtr = _FakeGtr(locations, [{"channels": np.array([0, 1, 2])}], init_channel=20)
+
+    # Branch-node extent only — exactly the coloured-line coordinates the
+    # overlay draws, bounded.
+    box_no_init = ov.arbor_bbox_from_reconstruction(gtr, unit_id="1", include_init=False)
+    assert box_no_init == pytest.approx((0.0, 35.0, 0.0, 0.0))
+
+    # Including the soma extends the box to keep the initiation electrode in frame.
+    box = ov.arbor_bbox_from_reconstruction(gtr, unit_id="1")
+    assert box == pytest.approx((0.0, 35.0, 0.0, 35.0))
+
+    # And it is a genuine subset of the full grid's own bounding box (the arbor,
+    # not the array) — strictly tighter in at least one axis.
+    gx0, gx1 = float(locations[:, 0].min()), float(locations[:, 0].max())
+    gy0, gy1 = float(locations[:, 1].min()), float(locations[:, 1].max())
+    assert box[0] >= gx0 and box[1] <= gx1 and box[2] >= gy0 and box[3] <= gy1
+    assert (box[1] - box[0]) < (gx1 - gx0) or (box[3] - box[2]) < (gy1 - gy0)
+
+    # The gtr wrapper and the record-level helper agree on the same unit.
+    record = ov.unit_arbor_record(gtr, unit_id="1")
+    assert ov.arbor_bbox_from_record(record) == pytest.approx(box)
+
+
+def test_arbor_bbox_is_none_when_no_drawable_branch():
+    """No branch spans >= 2 in-range electrodes -> nothing to bound -> None
+    (even with a valid init channel), so a caller falls back to its default
+    framing instead of cropping to a single-electrode box."""
+    locations = _grid_locations()
+    gtr = _FakeGtr(
+        locations,
+        [{"channels": np.array([3])}, {"channels": np.array([900, 901])}],
+        init_channel=3,
+    )
+    assert ov.arbor_bbox_from_reconstruction(gtr, unit_id="1") is None
+
+
 def test_overlay_writes_png_and_svg_with_distinct_colors(tmp_path):
     locations = _grid_locations()
     records = _three_unit_records(locations)

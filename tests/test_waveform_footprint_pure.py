@@ -92,6 +92,11 @@ def _spy(monkeypatch):
         captured["xlabel"] = _flat(ax.get_xlabel())
         captured["ylabel"] = _flat(ax.get_ylabel())
         captured["title"] = _flat(ax.get_title())
+        # Axis limits as SET before save — the crop a zoom_bbox produces
+        # (aspect="equal" here is adjustable="box", so it moves the box, never
+        # the data limits, and get_xlim/get_ylim read back exactly as set).
+        captured["xlim"] = tuple(float(v) for v in ax.get_xlim())
+        captured["ylim"] = tuple(float(v) for v in ax.get_ylim())
         # Colour-bar label is the y-label of the colour-bar's own axes.
         captured["cbar_labels"] = [
             _flat(a.get_ylabel()) for a in fig.axes if a.get_ylabel()
@@ -224,6 +229,67 @@ def test_waveform_footprint_diagnostic_default_is_unchanged(tmp_path, monkeypatc
     # The verbose title still carries the per-unit numbers.
     assert _has(captured["title"], "waveform footprint")
     assert _has(captured["title"], "electrodes drawn")
+
+
+def test_waveform_footprint_zoom_bbox_crops_axes_to_box_plus_pad(tmp_path, monkeypatch):
+    """zoom_bbox crops the axes to the supplied box + the pitch-scaled margin,
+    WINNING over the default drawn-trace framing (Adam, 2026-08-12 — frame each
+    footprint to its arbor region so the far-field threshold-crossings drop out
+    of view). The margin is the module's own zoom_pad_pitches*pitch +
+    max(width_um, height_um), computed from the layout, not hard-coded."""
+    locations = _grid_locations()
+    template = _gaussian_template(locations)
+    captured = _spy(monkeypatch)
+
+    # A box strictly inside the grid, tighter than where the drawn traces reach,
+    # so the assertion is a real crop and not coincidentally the default frame.
+    bbox = (30.0, 90.0, 40.0, 100.0)
+    footprints.plot_unit_waveform_footprint(
+        template, locations, tmp_path / "arbor_zoom.png",
+        unit_id="7", fs=FS, zoom_bbox=bbox,
+    )
+
+    pitch = footprints._dense_pitch_um(locations)
+    width_um = footprints._WIDTH_IN_PITCHES * pitch
+    height_um = footprints._HEIGHT_IN_PITCHES * pitch
+    margin = footprints._ZOOM_MARGIN_PITCHES * pitch + max(width_um, height_um)
+
+    xmin, xmax, ymin, ymax = bbox
+    assert captured["xlim"] == pytest.approx((xmin - margin, xmax + margin))
+    assert captured["ylim"] == pytest.approx((ymin - margin, ymax + margin))
+
+    # And the crop is genuinely tighter than the default drawn-trace frame:
+    # rendering the same unit WITHOUT a bbox frames a strictly wider span.
+    footprints.plot_unit_waveform_footprint(
+        template, locations, tmp_path / "default_zoom.png",
+        unit_id="7", fs=FS,
+    )
+    default_span_x = captured["xlim"][1] - captured["xlim"][0]
+    cropped_span_x = (xmax + margin) - (xmin - margin)
+    assert cropped_span_x < default_span_x
+
+
+def test_waveform_footprint_zoom_bbox_pad_scales_with_zoom_pad_pitches(tmp_path, monkeypatch):
+    """The arbor crop honors zoom_pad_pitches: a larger pad widens the frame by
+    exactly the extra pitches on every side, so the knob is live under a bbox."""
+    locations = _grid_locations()
+    template = _gaussian_template(locations)
+    captured = _spy(monkeypatch)
+    bbox = (30.0, 90.0, 40.0, 100.0)
+    pitch = footprints._dense_pitch_um(locations)
+
+    footprints.plot_unit_waveform_footprint(
+        template, locations, tmp_path / "pad4.png",
+        unit_id="7", fs=FS, zoom_bbox=bbox, zoom_pad_pitches=4.0,
+    )
+    span_x_4 = captured["xlim"][1] - captured["xlim"][0]
+    footprints.plot_unit_waveform_footprint(
+        template, locations, tmp_path / "pad8.png",
+        unit_id="7", fs=FS, zoom_bbox=bbox, zoom_pad_pitches=8.0,
+    )
+    span_x_8 = captured["xlim"][1] - captured["xlim"][0]
+    # +4 pitches of pad on each side => +8 pitches of total x-span.
+    assert span_x_8 - span_x_4 == pytest.approx(8.0 * pitch)
 
 
 def test_waveform_footprint_rejects_flat_template(tmp_path):

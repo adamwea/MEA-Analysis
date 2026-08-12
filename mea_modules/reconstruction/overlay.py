@@ -206,6 +206,63 @@ def unit_arbor_record(gtr, unit_id=None):
     }
 
 
+def arbor_bbox_from_record(record, include_init=True):
+    """Axis-aligned bounding box of one unit's tracked ARBOR, in µm.
+
+    `record` is a :func:`unit_arbor_record` dict. The arbor is the set of
+    branch-node electrode positions the reconstruction tracked — exactly the
+    coordinates :func:`plot_all_reconstructions` draws as coloured branch lines,
+    and (for a unit whose signal reaches scattered far-field electrodes) a much
+    tighter region than the unit's full dense-template channel set, which can
+    span the whole chip. Returns ``(xmin, xmax, ymin, ymax)`` over every
+    drawable branch node; with `include_init` (default) the box also covers the
+    initiation-site electrode (`init_xy`) so the soma marker stays in frame.
+    Returns ``None`` when the unit has no drawable branch — there is nothing to
+    bound, and a caller should fall back to its default framing.
+
+    This is the box to hand
+    :func:`mea_modules.postprocess.footprints.plot_unit_waveform_footprint`'s
+    ``zoom_bbox`` so a waveform-footprint frames the same dense arbor region its
+    sibling reconstruction plot does, rather than the whole array.
+    """
+    import numpy as np
+
+    paths = record.get("branch_paths") if isinstance(record, dict) else None
+    points = []
+    for path in paths or ():
+        arr = np.asarray(path, dtype=float)
+        if arr.ndim == 2 and arr.shape[0] and arr.shape[1] >= 2:
+            points.append(arr[:, :2])
+    # A lone initiation site is not an arbor: only EXTEND an existing branch
+    # extent with it, never bound on it alone. No drawable branch -> None, so
+    # the caller falls back to its default framing rather than cropping to a
+    # single-electrode box.
+    if not points:
+        return None
+    if include_init and isinstance(record, dict) and record.get("init_xy") is not None:
+        points.append(np.asarray(record["init_xy"], dtype=float).reshape(1, 2))
+    allpts = np.concatenate(points, axis=0)
+    return (
+        float(allpts[:, 0].min()), float(allpts[:, 0].max()),
+        float(allpts[:, 1].min()), float(allpts[:, 1].max()),
+    )
+
+
+def arbor_bbox_from_reconstruction(gtr, unit_id=None, include_init=True):
+    """`(xmin, xmax, ymin, ymax)` µm bounding box of `gtr`'s tracked arbor.
+
+    Thin wrapper: build the lightweight :func:`unit_arbor_record` for `gtr`
+    (reads only the public `branches`/`locations`/`init_channel` surface — no
+    dense template held) and take :func:`arbor_bbox_from_record` of it. Returns
+    ``None`` when the unit has no drawable branch. Intended as the ``zoom_bbox``
+    source for
+    :func:`mea_modules.postprocess.footprints.plot_unit_waveform_footprint`.
+    """
+    return arbor_bbox_from_record(
+        unit_arbor_record(gtr, unit_id=unit_id), include_init=include_init
+    )
+
+
 def _compose_caption(*, well_label, n_drawn, n_no_branch, n_upstream,
                      upstream_reason, n_electrodes, width=118):
     """The plain-language explainer the figure carries at its bottom edge.
@@ -550,5 +607,7 @@ __all__ = [
     "DEFAULT_MAX_LEGEND_UNITS",
     "distinct_unit_colors",
     "unit_arbor_record",
+    "arbor_bbox_from_record",
+    "arbor_bbox_from_reconstruction",
     "plot_all_reconstructions",
 ]

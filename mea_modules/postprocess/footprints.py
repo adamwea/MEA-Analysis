@@ -701,6 +701,7 @@ def plot_unit_waveform_footprint(
     show_backdrop=None,
     backdrop_alpha=None,
     zoom_pad_pitches=None,
+    zoom_bbox=None,
 ):
     """The waveform-footprint style — miniature waveform traces at their true
     electrode positions — rendered from DENSE template arrays instead of a
@@ -767,6 +768,23 @@ def plot_unit_waveform_footprint(
     presentation), and ``zoom_pad_pitches`` (``None`` →
     :data:`_ZOOM_MARGIN_PITCHES`, the padding in electrode pitches around the
     drawn bounding box).
+
+    **`zoom_bbox` — crop to a supplied box, e.g. the arbor (Adam, 2026-08-12).**
+    By default the zoomed frame is the bounding box of the DRAWN traces, which
+    for an axonal unit at the low presentation threshold spans nearly the whole
+    chip (the template crosses threshold on scattered far-field electrodes), so
+    the frame reads noisy. Pass ``zoom_bbox=(xmin, xmax, ymin, ymax)`` in
+    micrometres to crop the axes to that box plus the ``zoom_pad_pitches``
+    margin instead; it WINS over ``zoom`` (and over the drawn-trace bbox). Its
+    intended source is the unit's own ARBOR extent — the bounding box of the
+    reconstruction's tracked branch-node electrode positions,
+    :func:`mea_modules.reconstruction.arbor_bbox_from_reconstruction` — so the
+    footprint frames the same dense arbor region the reconstruction plot frames
+    and the scattered far-field crossings drop out of view. Traces outside the
+    box are still computed and drawn into the collection; matplotlib simply
+    clips them at the axes edge, so nothing about the selection or colour scale
+    changes — only the view. Left ``None``, the historical drawn-trace-bbox
+    framing is unchanged.
     """
     from pathlib import Path
 
@@ -898,9 +916,22 @@ def plot_unit_waveform_footprint(
         )
 
     margin = float(zoom_pad_pitches) * pitch + max(width_um, height_um)
-    frame = xy if zoom else context
-    ax.set_xlim(float(frame[:, 0].min()) - margin, float(frame[:, 0].max()) + margin)
-    ax.set_ylim(float(frame[:, 1].min()) - margin, float(frame[:, 1].max()) + margin)
+    if zoom_bbox is not None:
+        # Explicit crop box (e.g. the unit's ARBOR extent from its
+        # reconstruction, arbor_bbox_from_reconstruction) wins over both zoom
+        # modes: frame to the supplied (xmin, xmax, ymin, ymax) + the same
+        # pitch-scaled margin, so the dense arbor cluster fills the frame like
+        # the reconstruction plot and the scattered far-field threshold-
+        # crossings drop out of view. Traces outside the box are still in the
+        # collection — matplotlib clips them at the axes edge — so nothing is
+        # recomputed, only reframed. min/max guard a box given in either order.
+        bx0, bx1, by0, by1 = (float(v) for v in zoom_bbox)
+        ax.set_xlim(min(bx0, bx1) - margin, max(bx0, bx1) + margin)
+        ax.set_ylim(min(by0, by1) - margin, max(by0, by1) + margin)
+    else:
+        frame = xy if zoom else context
+        ax.set_xlim(float(frame[:, 0].min()) - margin, float(frame[:, 0].max()) + margin)
+        ax.set_ylim(float(frame[:, 1].min()) - margin, float(frame[:, 1].max()) + margin)
     ax.set_aspect("equal", adjustable="box")
 
     if fs:

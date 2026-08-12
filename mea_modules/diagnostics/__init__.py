@@ -31,6 +31,11 @@ arithmetic behind that, and is exported for callers that need the axis without
 the figure.
 """
 
+from .activity_map import (
+    WHOLE_CHIP_ACTIVITY_FILENAME,
+    plot_whole_chip_activity,
+    template_projected_activity,
+)
 from .channel_layout import (
     detect_electrode_clusters,
     estimate_electrode_pitch,
@@ -64,6 +69,10 @@ __all__ = [
     "plot_raster_threshold",
     "plot_unit_locations",
     "UNIT_LOCATIONS_PLOT_FILENAME",
+    # whole-chip template-projected activity field
+    "template_projected_activity",
+    "plot_whole_chip_activity",
+    "WHOLE_CHIP_ACTIVITY_FILENAME",
     # channel selection
     "select_representative_channels",
     "channel_activity_rms",

@@ -6,9 +6,11 @@ Public API::
         plot_channel_layout,   # where the routed electrodes are
         plot_traces,           # what the loudest channels look like
         plot_raster_threshold, # whether anything is firing, and when
+        plot_unit_locations,   # where the recomputed units sit on the array
     )
 
-Every emitter takes an opened recording plus an explicit output path, writes one
+Every emitter takes an opened recording (or, for ``plot_unit_locations``, the
+arrays the caller already holds) plus an explicit output path, writes one
 figure, and returns that path — nothing here invents a directory or decides a
 filename. Figures are built on an Agg canvas without pyplot, so they are safe on
 a headless node and leave no global state behind when called in a loop over
@@ -50,12 +52,18 @@ from .traces import (
     plot_traces,
     select_representative_channels,
 )
+from .unit_locations import (
+    UNIT_LOCATIONS_PLOT_FILENAME,
+    plot_unit_locations,
+)
 
 __all__ = [
     # plot emitters
     "plot_channel_layout",
     "plot_traces",
     "plot_raster_threshold",
+    "plot_unit_locations",
+    "UNIT_LOCATIONS_PLOT_FILENAME",
     # channel selection
     "select_representative_channels",
     "channel_activity_rms",

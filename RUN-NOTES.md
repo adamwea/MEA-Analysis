@@ -155,3 +155,29 @@ measure the drawn boxes and assert caption / legend / axes are disjoint and
 stacked, parametrized over the figure sizes actually used. Plus a source-level
 guard that no emitter outside `channel_layout.py` calls `fig.legend` directly.
 Full suite 155 green.
+
+---
+
+## 2026-08-12 — `diagnostics.unit_locations`: the capsule-20 standard figure
+
+Adam's ruling (2026-08-12): a unit-locations plot is a STANDARD output of the
+pipeline's `20 recompute_unit_locations`, not a one-off. New emitter
+`mea_modules/diagnostics/unit_locations.py::plot_unit_locations` — every
+recomputed unit location scattered over the array geometry, µm axes, equal
+aspect; BOTH estimates overlaid (filled dot = monopolar-triangulation fit,
+open ring = CoM, thin joining line per unit so method disagreement reads as
+distance — an overlay, not two plots, because the disagreement IS the
+diagnostic signal). Legend/caption per the 2026-08-11 figure ruling: every
+layer named with counts, CoM expanded via `figure_text.acronym_note`, missing
+units counted with reasons. Knobs: methods / marker_size / alpha /
+connect_methods / figsize / dpi (180 review, 600 print) / invert_y_axis;
+`.svg` out_path renders vector. Built on `channel_layout`'s shared helpers
+(`_new_figure`/`_add_caption`/`_save_and_release`) so it is Agg-only,
+deterministic (asserted byte-identical in its test) and one house style.
+
+Tests: `tests/test_unit_locations_figure_legends.py` (same capture harness as
+`test_diagnostics_figure_legends.py`) — legend/caption contract, single-method
+and all-NaN degradations, input validation, byte-identical determinism. Suite
+green except `test_core_figure_legends.py::test_no_emitter_pins_its_own_figure_legend`,
+which fails on `reconstruction/overlay.py` — another agent's in-flight,
+uncommitted capsule-26 work; not touched by this change.

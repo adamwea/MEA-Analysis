@@ -97,3 +97,61 @@ setting).
   partial-random / every-other), degenerate inputs, synthetic Maxwell h5
   survey end-to-end, checkerboard √2 oddity flag, bare-file absent-facts.
   Full suite green.
+
+## Figure bottom matter: legend vs caption collision (2026-08-11, P-run review)
+
+Adam hit it on the regenerated P run, capsule 05 `traces.png`: the legend box
+sat on top of the plain-language caption and hid a whole line of it
+("...so two points either s___"). Live layout bug from the af5a59b sweep.
+
+Cause: the bottom margin had no owner. `_add_caption` reserved a band by a
+fixed FRACTION (`0.045 * lines + 0.03`) and wrote the caption bottom-LEFT;
+`plot_traces` separately pinned its own `fig.legend` to bottom-CENTRE. Two
+figure-level artists, same margin, nothing reconciling them. `waveforms` and
+`footprints` had already hit it and each carried a private
+`_hang_legend_below_axes` work-around whose own docstring said it belonged in
+`channel_layout`.
+
+Fix (`mea_modules/diagnostics/channel_layout.py`) — `_add_caption` is now the
+single owner of that margin and takes `legend_handles=`:
+
+- caption and legend are MEASURED (`get_window_extent` against the Agg
+  renderer) and stacked into disjoint bands: edge / caption / legend / axes.
+- geometry is in INCHES, not figure fractions, so the band holds its contents
+  at any figure size. Side benefit: the old fixed fraction was reserving over
+  an inch of dead space on the 7.5 in trace stack and on the raster — the plots
+  are visibly bigger now.
+- a figure too short for its own annotation (a one-row small-multiple sheet)
+  GROWS rather than squeezing or covering the plot.
+- `_hang_legend_below_axes` deleted from both postprocess modules.
+
+Covered plot types: `traces` / `traces_raw` / `traces_realtime` (all
+`plot_traces` — the reported bug), `waveform_grid`, `footprint_grid`. `raster`,
+`raster_threshold`, `channel_layout`, `unit_raster`, `unit_traces`,
+`unit_locations`, `segment_activity`, `recovery`, `stitch_wiring` key inside
+their axes, so they structurally cannot hit this; they still get the measured
+band.
+
+Tried and REJECTED: re-running `tight_layout` against the measured overhang.
+Raising the rect shortens the axes without shortening the artist overhanging
+them, so it squeezed a footprint grid's panels from 0.40 to 0.05 of the figure
+chasing a colour-bar label. Now detected and logged instead.
+
+### For Adam — two things found, NOT fixed here
+
+1. `plot_footprint_grid`'s colour-bar label ("peak-to-peak (PTP) amplitude
+   divided by that panel's largest", 8 pt, rotated ~2.4 in) is longer than the
+   bar itself when the grid is ONE row, so it hangs below its own axes and the
+   legend can touch it. Pre-existing — predates this change and the af5a59b
+   sweep; the real fix is wrapping that label or sizing it to the bar. It now
+   emits a warning.
+2. `plot_raster_threshold` keys with `loc="best"`, which on a dense raster puts
+   the legend on top of the dots. Not a caption collision, so out of scope, but
+   it is the same "legend covers something" complaint.
+
+Tests: `tests/test_core_figure_legends.py` +
+`tests/test_postprocess_figure_legends.py` — geometric, on the real figure:
+measure the drawn boxes and assert caption / legend / axes are disjoint and
+stacked, parametrized over the figure sizes actually used. Plus a source-level
+guard that no emitter outside `channel_layout.py` calls `fig.legend` directly.
+Full suite 155 green.

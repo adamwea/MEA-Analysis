@@ -93,36 +93,6 @@ def _legend_ring(color, label, size=8.0, lw=1.2):
     )
 
 
-def _hang_legend_below_axes(fig, handles, gap=0.015):
-    """Put a figure legend in the band between the panels and the caption.
-
-    Same helper as in :mod:`mea_modules.postprocess.waveforms`, and for the same
-    reason: on a small-multiple sheet every panel is data, and a legend pinned
-    to the figure bottom lands on the caption :func:`_add_caption` writes there.
-    Anchoring to the lowest panel edge puts it in the margin ``_add_caption``
-    already reserved. Call it AFTER ``_add_caption``.
-
-    (This belongs beside the other legend helpers in
-    ``mea_modules.diagnostics.channel_layout``; it is duplicated here only
-    because that module was out of scope for this change.)
-    """
-    if not handles:
-        return None
-    visible = [ax.get_position().y0 for ax in fig.axes if ax.get_visible()]
-    bottom = min(visible) if visible else 0.15
-    n_cols = max(1, min(len(handles), int(fig.get_figwidth() // 2.6)))
-    legend = fig.legend(
-        handles=handles,
-        loc="upper center",
-        bbox_to_anchor=(0.5, max(0.0, bottom - float(gap))),
-        ncol=n_cols,
-        fontsize=_LEGEND_FONTSIZE,
-        framealpha=_LEGEND_FRAMEALPHA,
-    )
-    legend.set_in_layout(False)
-    return legend
-
-
 def _layout(analyzer):
     """``(channel_ids, locations)`` for the whole analyzer, as arrays.
 
@@ -632,10 +602,10 @@ def plot_footprint_grid(
         )
     caption_parts.append(PROXY_NOT_MODEL)
     caption_parts.append(caption)
-    _add_caption(fig, _fold_caption(caption_parts))
 
-    # Terse keys — the caption above carries the sentences. Hung below the
-    # panels, where it can cover neither a footprint nor the caption.
+    # Terse keys — the caption carries the sentences. Both go in the bottom
+    # margin, which `_add_caption` divides between them, so the legend can
+    # cover neither a footprint nor a caption line.
     handles = [
         _legend_line(_CMAP_MID_COLOR, "one trace per electrode reached", lw=1.4)
     ]
@@ -644,7 +614,7 @@ def plot_footprint_grid(
     handles.append(
         _legend_ring(_EXTREMUM_COLOR, "largest-signal electrode", size=7.0)
     )
-    _hang_legend_below_axes(fig, handles)
+    _add_caption(fig, _fold_caption(caption_parts), legend_handles=handles)
 
     out_path = _save_and_release(fig, out_path)
     logger.info("wrote footprint grid: %s (%d units)", out_path, len(unit_ids))

@@ -14,6 +14,7 @@ that only ``plt.close`` clears.
 """
 
 import logging
+import math
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
@@ -34,6 +35,47 @@ _LEGEND_FRAMEALPHA = 0.85
 _CAPTION_FONTSIZE = 6.5
 _CAPTION_COLOR = "#444444"
 _WRAP_WIDTH = 46
+
+# --- bottom matter geometry (Adam, 2026-08-11) ----------------------------
+#
+# A caption and a figure-level legend are BOTH drawn in the margin under the
+# axes, in figure coordinates, so whichever is added second lands on top of the
+# first unless one function owns that margin. None did: `_add_caption` reserved
+# a band and wrote the caption bottom-LEFT, while `plot_traces` separately
+# pinned its legend to the figure's bottom-CENTRE, and on capsule 05's
+# traces.png the legend box sat squarely over the caption's third line. Two
+# other emitters had already hit the same collision and each carried its own
+# private work-around. `_add_caption` is now the single owner of this margin:
+# it stacks caption and legend into disjoint horizontal bands and reserves
+# exactly the height the two of them measure.
+#
+# Sizes are in INCHES, not figure fractions. A fixed fraction is wrong at both
+# ends — the old 0.045-per-caption-line reserved a cramped strip on a 4.5 in
+# layout sheet and over an inch of dead space on a 7.5 in trace stack — and it
+# is exactly the kind of tuned constant that silently breaks at the next figure
+# size. Inches are what text is measured in, so a band sized in inches holds
+# its contents at every figure size.
+_BOTTOM_PAD_IN = 0.08  # figure edge -> caption
+_BOTTOM_GAP_IN = 0.10  # caption -> legend, and legend -> axes
+_CAPTION_LINESPACING = 1.35  # matplotlib's default line multiple, made explicit
+
+# Bottom matter may not eat the figure. A short figure with a long caption — a
+# one-row small-multiple sheet is the real case — GROWS to hold its annotation
+# rather than letting the annotation squeeze or cover the plot. Shrinking the
+# data to fit the fine print is the wrong trade in a review figure.
+_MAX_BOTTOM_FRACTION = 0.45
+
+# Width one legend column needs before its wrapped label runs into the next.
+# Used to fold a row of keys that would otherwise overrun a narrow sheet.
+_LEGEND_COLUMN_WIDTH_IN = 2.6
+
+# `tight_layout` fits each axes' own box into the rect it is given, but an
+# artist that OVERHANGS its axes can still land outside — a rotated colour-bar
+# label longer than the bar it labels is one. No rect can fix that (raising the
+# rect shortens the bar, and the label does not shrink with it), so the result
+# is measured and reported rather than chased: an emitter with an overhang has
+# a figure to fix, not a margin to widen.
+_LAYOUT_TOLERANCE_IN = 0.02
 
 
 def _wrap_label(text, width=_WRAP_WIDTH):
@@ -100,28 +142,247 @@ def _fold_caption(parts, width=118):
     return "\n".join(textwrap.wrap(text, width=int(width)) or [text])
 
 
-def _add_caption(fig, text, fontsize=_CAPTION_FONTSIZE):
-    """Put an explanatory caption under the axes without overlapping them.
+def _renderer(fig):
+    """The renderer to measure artists against, or None if there is none.
 
-    ``tight_layout`` is re-run with a bottom margin reserved, so the caption
-    never lands on data whatever the figure size. Position is fixed, so the
-    render stays deterministic.
+    Every figure built by :func:`_new_figure` carries an Agg canvas, which
+    always has one. Returns None rather than raising so a figure built some
+    other way still lays out — callers fall back to an estimate.
     """
-    if not text:
-        fig.tight_layout()
-        return
-    lines = str(text).count("\n") + 1
-    reserved = min(0.32, 0.045 * lines + 0.03)
+    canvas = getattr(fig, "canvas", None)
+    for getter in (getattr(canvas, "get_renderer", None), getattr(fig, "_get_renderer", None)):
+        if getter is None:
+            continue
+        try:
+            renderer = getter()
+        except Exception:  # pragma: no cover - exotic/headless canvases
+            continue
+        if renderer is not None:
+            return renderer
+    return None
+
+
+def _artist_height_in(fig, artist, fallback_in=0.0):
+    """Height of a drawn `artist` in INCHES, or `fallback_in` if unmeasurable.
+
+    Measuring beats estimating for anything whose size depends on its own
+    content: a legend's height is set by its key count, its column count and
+    how far each label wrapped, none of which the caller reliably knows.
+    """
+    renderer = _renderer(fig)
+    if renderer is None:
+        return float(fallback_in)
+    try:
+        height_px = float(artist.get_window_extent(renderer).height)
+    except Exception:  # pragma: no cover - defensive; artist not yet drawable
+        return float(fallback_in)
+    dpi = float(fig.dpi) or 1.0
+    if not height_px > 0.0:
+        return float(fallback_in)
+    return height_px / dpi
+
+
+def _lowest_axes_edge(fig, renderer):
+    """Lowest point anything the axes draw reaches, in figure fractions.
+
+    The TIGHT bounding box, so tick labels, axis labels and a colour bar's
+    label all count: the reserved band exists to keep the caption and legend
+    off ALL of that, not merely off the axes rectangles.
+    """
+    inverse = fig.transFigure.inverted()
+    lowest = None
+    for axis in fig.get_axes():
+        if not axis.get_visible():
+            continue
+        try:
+            box = axis.get_tightbbox(renderer)
+        except Exception:  # pragma: no cover - defensive
+            continue
+        if box is None:
+            continue
+        edge = box.transformed(inverse).y0
+        lowest = edge if lowest is None else min(lowest, edge)
+    return lowest
+
+
+def _fit_axes_above(fig, reserved):
+    """Fit the axes above `reserved`, and report anything that overhangs.
+
+    Deliberately ONE ``tight_layout`` pass. Re-fitting against a measured
+    overhang looks like the obvious repair and is a trap: raising the rect
+    shortens the axes without shortening the artist that overhangs them, so the
+    loop squeezes the plot to a sliver chasing a label that was never going to
+    fit. An overhang is a defect in the figure that drew it — say so, and leave
+    the layout honest.
+    """
     fig.tight_layout(rect=(0.0, reserved, 1.0, 1.0))
-    fig.text(
-        0.01,
-        0.012,
-        str(text),
-        ha="left",
-        va="bottom",
-        fontsize=float(fontsize),
-        color=_CAPTION_COLOR,
+    renderer = _renderer(fig)
+    if renderer is None:
+        return
+    lowest = _lowest_axes_edge(fig, renderer)
+    tolerance = _LAYOUT_TOLERANCE_IN / (float(fig.get_figheight()) or 1.0)
+    if lowest is not None and lowest < reserved - tolerance:
+        logger.warning(
+            "an axes artist overhangs the reserved bottom margin by %.2f in "
+            "(likely a label longer than the axes it belongs to); the caption or "
+            "legend may touch it",
+            (reserved - lowest) * (float(fig.get_figheight()) or 1.0),
+        )
+
+
+def _legend_columns(fig, n_handles):
+    """Key columns that fit across this figure — at least one, never more than
+    there are keys. Derived from the figure width so a row of keys cannot run
+    off the edge of a narrow sheet."""
+    fits = int(float(fig.get_figwidth()) // _LEGEND_COLUMN_WIDTH_IN)
+    return max(1, min(int(n_handles), fits or 1))
+
+
+def _bottom_legend(
+    fig,
+    handles,
+    fontsize=_LEGEND_FONTSIZE,
+    framealpha=_LEGEND_FRAMEALPHA,
+    ncol=None,
+):
+    """Create the figure-level legend that :func:`_add_caption` will place.
+
+    For figures where no single axes can hold the key: a stack of trace panels
+    or a sheet of small multiples is data edge to edge, and a key describing
+    the whole figure does not belong inside one of its panels anyway.
+
+    Created here, POSITIONED by :func:`_add_caption` — only that function knows
+    how much room the caption underneath it needs. Callers pass their handles
+    to ``_add_caption(..., legend_handles=...)`` rather than calling this.
+    """
+    handles = [handle for handle in (handles or ()) if handle is not None]
+    if not handles:
+        return None
+    legend = fig.legend(
+        handles=handles,
+        loc="lower center",
+        bbox_to_anchor=(0.5, 0.0),
+        bbox_transform=fig.transFigure,
+        ncol=_legend_columns(fig, len(handles)) if ncol is None else max(1, int(ncol)),
+        fontsize=fontsize,
+        framealpha=framealpha,
     )
+    # `tight_layout` must not try to fit it. Its position is computed against
+    # the reserved band below; letting the layout engine react to it as well
+    # makes the two fight over the same margin.
+    legend.set_in_layout(False)
+    return legend
+
+
+def _estimated_legend_height_in(legend, fontsize):
+    """Fallback height for a legend that could not be measured, in inches."""
+    handles = list(getattr(legend, "legend_handles", None) or ())
+    texts = [text.get_text() for text in legend.get_texts()] or [""]
+    columns = max(1, int(getattr(legend, "_ncols", 0) or len(texts)))
+    rows = math.ceil(len(handles or texts) / columns)
+    tallest = max(str(text).count("\n") + 1 for text in texts)
+    return rows * tallest * float(fontsize) * _CAPTION_LINESPACING / 72.0 + 0.10
+
+
+def _add_caption(
+    fig,
+    text,
+    fontsize=_CAPTION_FONTSIZE,
+    legend_handles=None,
+    legend_fontsize=_LEGEND_FONTSIZE,
+    legend_framealpha=_LEGEND_FRAMEALPHA,
+    legend_ncol=None,
+):
+    """Lay out the figure's bottom matter; return the legend, or None.
+
+    Stacks, from the bottom edge upwards: caption, then the figure legend, then
+    the axes ``tight_layout`` is re-run against. Each band is as tall as the
+    thing in it actually measures, so the caption and the legend cannot land on
+    each other, and neither can land on data — at any figure size, with any
+    number of caption lines or legend keys.
+
+    Pass ``legend_handles`` for a figure-wide key; a legend that belongs to one
+    axes still goes through ``ax.legend`` and never reaches this margin.
+    Positions are computed, not tuned, and depend only on the figure and its
+    text, so the render stays deterministic.
+    """
+    text = "" if text is None else str(text)
+    legend = _bottom_legend(
+        fig,
+        legend_handles,
+        fontsize=legend_fontsize,
+        framealpha=legend_framealpha,
+        ncol=legend_ncol,
+    )
+
+    if not text and legend is None:
+        fig.tight_layout()
+        return None
+
+    caption = None
+    caption_height_in = 0.0
+    if text:
+        # Drawn first at a provisional position so it can be measured, then
+        # moved: a multi-line caption's height depends on the font metrics, not
+        # just on the line count.
+        caption = fig.text(
+            0.01,
+            0.0,
+            text,
+            ha="left",
+            va="bottom",
+            fontsize=float(fontsize),
+            color=_CAPTION_COLOR,
+        )
+        n_lines = text.count("\n") + 1
+        caption_height_in = _artist_height_in(
+            fig,
+            caption,
+            fallback_in=n_lines * float(fontsize) * _CAPTION_LINESPACING / 72.0,
+        )
+
+    legend_height_in = 0.0
+    if legend is not None:
+        legend_height_in = _artist_height_in(
+            fig,
+            legend,
+            fallback_in=_estimated_legend_height_in(legend, legend_fontsize),
+        )
+
+    cursor_in = _BOTTOM_PAD_IN
+    caption_y_in = cursor_in
+    if caption is not None:
+        cursor_in += caption_height_in + _BOTTOM_GAP_IN
+    legend_y_in = cursor_in
+    if legend is not None:
+        cursor_in += legend_height_in + _BOTTOM_GAP_IN
+
+    # Grow a figure too short to hold its own annotation. Heights above are in
+    # inches and text does not rescale with the canvas, so resizing here leaves
+    # every measurement valid — only the fractions below are re-derived. Done
+    # BEFORE `tight_layout`, so the axes are fitted to the final canvas.
+    figure_height_in = float(fig.get_figheight()) or 1.0
+    if cursor_in > _MAX_BOTTOM_FRACTION * figure_height_in:
+        grown_in = cursor_in / _MAX_BOTTOM_FRACTION
+        logger.info(
+            "figure bottom matter needs %.2f in of a %.2f in figure; growing it to "
+            "%.2f in so the caption and legend cannot cover the plot",
+            cursor_in,
+            figure_height_in,
+            grown_in,
+        )
+        fig.set_figheight(grown_in)
+        figure_height_in = grown_in
+
+    _fit_axes_above(fig, cursor_in / figure_height_in)
+
+    if caption is not None:
+        caption.set_position((0.01, caption_y_in / figure_height_in))
+    if legend is not None:
+        legend.set_bbox_to_anchor(
+            (0.5, legend_y_in / figure_height_in), transform=fig.transFigure
+        )
+    return legend
 
 
 def _new_figure(figsize, dpi):

@@ -709,3 +709,70 @@ def test_new_annotation_params_are_optional_and_last(func, new_params):
     assert list(parameters)[-len(new_params):] == new_params
     for name in new_params:
         assert parameters[name].default is None
+
+
+# --------------------------------------------------------------------------
+# bottom matter: the small-multiple sheets share one margin with the caption
+# --------------------------------------------------------------------------
+#
+# These sheets are data edge to edge, so their key goes on the FIGURE, in the
+# same bottom margin the caption uses. Each used to hang its legend off the
+# lowest panel with its own private helper — a guess that happened to clear the
+# caption at the sizes tried. Both now go through `_add_caption`, which measures
+# the two and gives each a band, and these assert the boxes really are disjoint.
+
+def _measure_bottom_matter(monkeypatch, module):
+    """Capture the drawn geometry of the caption, legend and panels."""
+    seen = {}
+    real = module._save_and_release
+
+    def spy(fig, out_path):
+        renderer = fig.canvas.get_renderer()
+        to_fraction = fig.transFigure.inverted()
+        special = {getattr(fig, name, None) for name in ("_suptitle", "_supxlabel", "_supylabel")}
+        captions = [t for t in fig.texts if t not in special and _flat(t.get_text())]
+        assert len(captions) == 1 and len(fig.legends) == 1
+        seen["caption"] = captions[0].get_window_extent(renderer).transformed(to_fraction)
+        seen["legend"] = fig.legends[0].get_window_extent(renderer).transformed(to_fraction)
+        # The panel RECTANGLES. These sheets draw no tick labels, so the frame
+        # is the panel's real edge. (`plot_footprint_grid`'s colour-bar label is
+        # longer than a one-row bar and hangs below its own axes — a separate,
+        # pre-existing defect of that figure, not of this margin.)
+        seen["panels_bottom"] = min(
+            ax.get_position().y0 for ax in fig.axes if ax.get_visible()
+        )
+        return real(fig, out_path)
+
+    monkeypatch.setattr(module, "_save_and_release", spy)
+    return seen
+
+
+def _assert_bands_are_disjoint(seen):
+    caption, legend = seen["caption"], seen["legend"]
+    assert not caption.overlaps(legend), (
+        f"legend {legend.bounds} covers the caption {caption.bounds}"
+    )
+    assert legend.y0 >= caption.y1, "the legend must sit above the caption"
+    assert seen["panels_bottom"] >= legend.y1, "the legend must sit below the panels"
+
+
+@pytest.mark.parametrize("n_cols", [1, 2, 4])
+def test_waveform_grid_legend_never_covers_the_caption(tmp_path, monkeypatch, analyzer, n_cols):
+    seen = _measure_bottom_matter(monkeypatch, waveforms)
+    waveforms.plot_waveform_grid(
+        analyzer, ["u0", "u1"], tmp_path / "waveform_grid.png", n_cols=n_cols,
+        caption="An extra sentence from the caller, long enough to wrap the caption "
+                "onto another line and give the legend something to collide with.",
+    )
+    _assert_bands_are_disjoint(seen)
+
+
+@pytest.mark.parametrize("n_cols", [1, 2, 4])
+def test_footprint_grid_legend_never_covers_the_caption(tmp_path, monkeypatch, analyzer, n_cols):
+    seen = _measure_bottom_matter(monkeypatch, footprints)
+    footprints.plot_footprint_grid(
+        analyzer, ["u0", "u1"], tmp_path / "footprint_grid.png", n_cols=n_cols,
+        caption="An extra sentence from the caller, long enough to wrap the caption "
+                "onto another line and give the legend something to collide with.",
+    )
+    _assert_bands_are_disjoint(seen)

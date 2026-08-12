@@ -482,3 +482,244 @@ def test_high_quality_raises_the_rendered_resolution(recording, tmp_path):
     high = tr.plot_traces(recording, tmp_path / "high.png", channel_ids=["ch0"],
                           duration_s=0.5, quality="high")
     assert Image.open(high).size[0] > Image.open(draft).size[0]
+
+
+# --------------------------------------------------------------------------
+# bottom matter: caption and legend share one margin and may never collide
+# --------------------------------------------------------------------------
+#
+# The defect these guard: on capsule 05's regenerated traces.png the legend box
+# sat on top of the plain-language caption, hiding a whole line of it. The
+# caption was written bottom-left by `_add_caption` and the legend pinned
+# bottom-centre by `plot_traces`, with nothing reconciling the two.
+#
+# These assert on GEOMETRY, not on placement constants: they measure the drawn
+# artists and demand the boxes be disjoint. A future change that reintroduces
+# the overlap by any route — a second legend, a longer caption, a different
+# figure size — fails here.
+
+def _caption_texts(fig):
+    """Figure-level caption texts, excluding the sup* labels."""
+    special = {getattr(fig, name, None) for name in ("_suptitle", "_supxlabel", "_supylabel")}
+    return [t for t in fig.texts if t not in special and str(t.get_text()).strip()]
+
+
+def _fraction_box(fig, artist, renderer):
+    """`artist`'s drawn extent in figure fractions (0-1 of width/height)."""
+    return artist.get_window_extent(renderer).transformed(fig.transFigure.inverted())
+
+
+def _axes_bottom(fig, renderer):
+    """Lowest edge of anything the axes draw, in figure fractions.
+
+    The TIGHT bbox, not the axes rectangle: an x label hanging below the frame
+    is part of the plot, and covering it is the same defect as covering data.
+    """
+    return min(
+        axis.get_tightbbox(renderer).transformed(fig.transFigure.inverted()).y0
+        for axis in fig.get_axes()
+        if axis.get_visible()
+    )
+
+
+def _bottom_matter(fig):
+    """(caption box, legend box, lowest drawn axes edge) in figure fractions."""
+    renderer = fig.canvas.get_renderer()
+    captions = _caption_texts(fig)
+    assert len(captions) == 1, f"expected exactly one caption, got {len(captions)}"
+    caption_box = _fraction_box(fig, captions[0], renderer)
+
+    legends = list(fig.legends)
+    legend_box = _fraction_box(fig, legends[0], renderer) if legends else None
+
+    return caption_box, legend_box, _axes_bottom(fig, renderer)
+
+
+@pytest.fixture
+def geometry(monkeypatch):
+    """Measure the bottom matter of whatever figure the emitter saves."""
+    seen = {}
+    for module in (cl, tr, ra):
+        real = module._save_and_release
+
+        def wrapper(fig, out_path, _real=real):
+            caption_box, legend_box, lowest = _bottom_matter(fig)
+            seen.update(caption=caption_box, legend=legend_box, axes_bottom=lowest)
+            return _real(fig, out_path)
+
+        monkeypatch.setattr(module, "_save_and_release", wrapper)
+    return seen
+
+
+def _assert_disjoint(seen):
+    caption, legend, axes_bottom = seen["caption"], seen["legend"], seen["axes_bottom"]
+    assert legend is not None, "the figure legend went missing"
+    assert not caption.overlaps(legend), (
+        f"legend {legend.bounds} covers the caption {caption.bounds}"
+    )
+    # Stacked, not merely non-overlapping: caption at the bottom edge, legend
+    # above it, axes above that. An accidental side-by-side layout would pass
+    # the overlap check while still being unreadable at another caption length.
+    assert legend.y0 >= caption.y1, "the legend must sit above the caption"
+    assert axes_bottom >= legend.y1, "the legend must sit below the axes"
+
+
+@pytest.mark.parametrize(
+    "figsize",
+    [
+        tr._TRACE_FIGSIZE,  # what the capsules actually render at
+        (6.5, 4.5),         # a small sheet: the band has to shrink to fit
+        (20.0, 11.0),       # a large one: it must not balloon into dead space
+        (7.0, 3.2),         # short and wide, where a fixed fraction ran out
+    ],
+)
+def test_traces_legend_never_covers_the_caption(geometry, recording, tmp_path, figsize):
+    """The capsule-05 defect, at every size these figures are rendered at."""
+    tr.plot_traces(
+        recording,
+        tmp_path / "traces.png",
+        channel_ids=["ch0", "ch5"],
+        duration_s=1.0,
+        stitch_frames=(10_000,),
+        figsize=figsize,
+        caption_extra=(
+            "These are the channels marked red in channel_layout.png, and this "
+            "sentence is here to push the caption onto several lines so the "
+            "legend has something to collide with."
+        ),
+    )
+    _assert_disjoint(geometry)
+
+
+def test_traces_realtime_legend_never_covers_the_caption(geometry, recording, tmp_path):
+    """The realtime twin carries one more key and one more caption paragraph."""
+    tr.plot_traces(
+        recording,
+        tmp_path / "traces_realtime.png",
+        channel_ids=["ch0"],
+        duration_s=1.0,
+        stitch_frames=(10_000,),
+        time_gaps={"break_sample_indices": [5_000], "break_gap_frames": [40_000]},
+    )
+    _assert_disjoint(geometry)
+
+
+def test_traces_raw_in_device_counts_keeps_its_caption_clear(geometry, tmp_path):
+    """traces_raw adds the ADC acronym note — a longer caption, same contract."""
+    class Unscaleable(FakeRecording):
+        def has_scaleable_traces(self):
+            return False
+
+    tr.plot_traces(
+        Unscaleable(),
+        tmp_path / "traces_raw.png",
+        channel_ids=["ch0"],
+        duration_s=1.0,
+        stitch_frames=(10_000,),
+    )
+    _assert_disjoint(geometry)
+
+
+@pytest.mark.parametrize("figsize", [(16.0, 8.0), (6.5, 4.5)])
+def test_raster_caption_stays_clear_of_the_axes(geometry, recording, tmp_path, figsize):
+    """The raster keys live inside the axes, so only the caption uses the margin.
+
+    It still has to clear the plot: the reserved band is measured from the
+    caption, and a caption that outgrows it lands on the x axis.
+    """
+    ra.plot_raster_threshold(
+        recording,
+        tmp_path / "raster_threshold.png",
+        duration_s=1.0,
+        segment_boundaries=(0.2, 0.6),
+        figsize=figsize,
+    )
+    assert geometry["legend"] is None, "the raster key belongs in its axes"
+    assert geometry["axes_bottom"] >= geometry["caption"].y1
+
+
+def test_channel_layout_caption_stays_clear_of_the_axes(geometry, recording, tmp_path):
+    cl.plot_channel_layout(
+        recording,
+        tmp_path / "channel_layout.png",
+        highlight_channel_ids=["ch0"],
+        highlight_label="representative channels — traced in traces.png",
+        caption=ft.REPRESENTATIVE_CHANNELS,
+    )
+    assert geometry["axes_bottom"] >= geometry["caption"].y1
+
+
+@pytest.mark.parametrize("figsize", [tr._TRACE_FIGSIZE, (7.0, 3.2)])
+def test_reserved_band_is_measured_not_guessed(geometry, recording, tmp_path, figsize):
+    """The margin holds its contents and little else.
+
+    The old rule reserved a fixed FRACTION per caption line, which was both too
+    little on a short figure and over an inch of dead space on a tall one. The
+    band is now measured, so the gap left between the bottom matter and the plot
+    is a constant few tenths of an inch at any figure size.
+    """
+    tr.plot_traces(
+        recording, tmp_path / "traces.png", channel_ids=["ch0"],
+        duration_s=1.0, stitch_frames=(10_000,), figsize=figsize,
+    )
+    dead_inches = (geometry["axes_bottom"] - geometry["legend"].y1) * figsize[1]
+    assert 0.0 <= dead_inches < 0.45, f"{dead_inches:.2f} in of empty margin"
+
+
+def test_a_longer_caption_reserves_more_room(recording, tmp_path):
+    """Nothing is clipped when the caption grows: the band grows with it."""
+    bottoms = {}
+    real = tr._save_and_release
+    for name, extra in (
+        ("short", None),
+        ("long", " ".join(["A much longer explanatory sentence."] * 12)),
+    ):
+        measured = {}
+
+        def wrapper(fig, out_path, _real=real, _store=measured):
+            _store["y"] = _axes_bottom(fig, fig.canvas.get_renderer())
+            return _real(fig, out_path)
+
+        tr._save_and_release = wrapper
+        try:
+            tr.plot_traces(recording, tmp_path / f"{name}.png", channel_ids=["ch0"],
+                           duration_s=1.0, caption_extra=extra)
+        finally:
+            tr._save_and_release = real
+        bottoms[name] = measured["y"]
+
+    assert bottoms["long"] > bottoms["short"], "a longer caption must reserve more"
+
+
+def test_bottom_matter_is_deterministic(recording, tmp_path):
+    """Measured placement must still render byte-identically twice."""
+    first = tr.plot_traces(recording, tmp_path / "a.png", channel_ids=["ch0", "ch5"],
+                           duration_s=1.0, stitch_frames=(10_000,))
+    second = tr.plot_traces(recording, tmp_path / "b.png", channel_ids=["ch0", "ch5"],
+                            duration_s=1.0, stitch_frames=(10_000,))
+    assert first.read_bytes() == second.read_bytes()
+
+
+def test_no_emitter_pins_its_own_figure_legend(recording, tmp_path):
+    """`_add_caption` owns the bottom margin; a second owner is the whole bug.
+
+    Guards the fix at the source level, because a private `fig.legend` in a new
+    emitter reintroduces the collision without failing any per-figure test that
+    happens not to cover that emitter.
+    """
+    import inspect
+    from pathlib import Path
+
+    import mea_modules
+
+    root = Path(inspect.getfile(mea_modules)).parent
+    offenders = sorted(
+        str(path.relative_to(root))
+        for path in root.rglob("*.py")
+        if path.name != "channel_layout.py"
+        and "fig.legend(" in path.read_text(encoding="utf-8")
+    )
+    assert not offenders, (
+        f"{offenders} call fig.legend directly; pass handles to "
+        "_add_caption(legend_handles=...) so caption and legend cannot collide"
+    )

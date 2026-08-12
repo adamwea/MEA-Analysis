@@ -61,38 +61,6 @@ _SPIKE_COLOR = "#4a4a4a"
 _TEMPLATE_COLOR = "#c0392b"
 
 
-def _hang_legend_below_axes(fig, handles, gap=0.015):
-    """Put a figure legend in the band between the panels and the caption.
-
-    Small-multiple sheets have nowhere safe for an in-axes legend — every panel
-    is data — and a legend pinned to the figure bottom lands on the caption
-    :func:`_add_caption` writes there. Anchoring to the lowest panel edge puts
-    it in the margin that ``_add_caption``'s ``tight_layout`` already reserved,
-    so it can cover neither. Call it AFTER ``_add_caption``, when the panel
-    positions are final.
-
-    Column count is derived from the figure width so the row cannot run off the
-    edge of a narrow sheet. (This belongs beside the other legend helpers in
-    ``mea_modules.diagnostics.channel_layout``; it lives here, and in
-    ``footprints``, only because that module was out of scope for this change.)
-    """
-    if not handles:
-        return None
-    visible = [ax.get_position().y0 for ax in fig.axes if ax.get_visible()]
-    bottom = min(visible) if visible else 0.15
-    n_cols = max(1, min(len(handles), int(fig.get_figwidth() // 2.6)))
-    legend = fig.legend(
-        handles=handles,
-        loc="upper center",
-        bbox_to_anchor=(0.5, max(0.0, bottom - float(gap))),
-        ncol=n_cols,
-        fontsize=_LEGEND_FONTSIZE,
-        framealpha=_LEGEND_FRAMEALPHA,
-    )
-    legend.set_in_layout(False)
-    return legend
-
-
 def unit_waveforms(analyzer, unit_id, channel_id=None, n_spikes=_DEFAULT_N_SPIKES, seed=0):
     """Snippets for one unit on one channel: ``(snippets, template, channel_id)``.
 
@@ -487,19 +455,18 @@ def plot_waveform_grid(
         )
     caption_parts.append(PROXY_NOT_MODEL)
     caption_parts.append(caption)
-    _add_caption(fig, _fold_caption(caption_parts))
 
-    # The legend goes on the FIGURE, hung off the bottom of the panels: an
-    # in-axes legend would cover one unit's waveform, and one pinned to the
-    # figure bottom would land on the caption. Placed after `_add_caption` so
-    # the panel positions it anchors to are the final ones. Keys are terse
-    # because the caption above carries the full sentence.
+    # The legend goes on the FIGURE: an in-axes legend would cover one unit's
+    # waveform on a sheet that is data edge to edge. `_add_caption` reserves the
+    # bottom margin and gives the legend and the caption a band each, so neither
+    # can cover the other or the panels. Keys are terse because the caption
+    # carries the full sentence.
     handles = [
         _legend_line(_SPIKE_COLOR, "one recorded spike, drawn faintly", lw=0.9),
         _legend_line(_TEMPLATE_COLOR, "template: mean of all stored spikes", lw=1.4),
         _legend_line("#999999", "time zero: the template's trough", lw=0.9, linestyle=":"),
     ]
-    _hang_legend_below_axes(fig, handles)
+    _add_caption(fig, _fold_caption(caption_parts), legend_handles=handles)
 
     out_path = _save_and_release(fig, out_path)
     logger.info(

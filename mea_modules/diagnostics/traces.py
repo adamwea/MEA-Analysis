@@ -644,19 +644,6 @@ def plot_traces(
         handles.append(_legend_line("red", "segment join", lw=0.9))
     if real_time and shaded:
         handles.append(_legend_patch(_GAP_SHADE_COLOR, "no data recorded", alpha=_GAP_SHADE_ALPHA))
-    # Placed on the figure, below the stacked panels: a legend inside any single
-    # panel would cover that channel's trace, and the keys describe the whole
-    # stack rather than one row.
-    legend = fig.legend(
-        handles=handles,
-        loc="lower center",
-        bbox_to_anchor=(0.5, 0.0),
-        ncol=len(handles),
-        fontsize=7,
-        framealpha=0.85,
-    )
-    legend.set_in_layout(False)
-
     caption_parts = []
     if channel_ids_were_selected:
         caption_parts.append(REPRESENTATIVE_CHANNELS)
@@ -669,7 +656,13 @@ def plot_traces(
         caption_parts.append(NO_DATA_SHADING)
     if not in_uv:
         caption_parts.append(acronym_note("ADC"))
-    _add_caption(fig, _fold_caption(caption_parts))
+    # Caption and legend go through ONE call: both live in the margin under the
+    # panels, and `_add_caption` is what gives each its own band there. Pinning
+    # the legend separately is what put it on top of the caption on capsule
+    # 05's traces.png (Adam, 2026-08-11). The keys describe the whole stack, and
+    # a legend inside any single panel would cover that channel's trace, so the
+    # margin is where it belongs — just not on the caption's lines.
+    _add_caption(fig, _fold_caption(caption_parts), legend_handles=handles)
 
     out_path = _save_and_release(fig, out_path)
     logger.info(

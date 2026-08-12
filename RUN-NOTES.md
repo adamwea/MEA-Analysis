@@ -216,3 +216,9 @@ Tests: `tests/test_reconstruction_overlay_pure.py` — duck-typed gtr (no
 axon_velocity needed): record extraction, PNG/SVG bytes, distinct colors at
 1/20/43/96 units, caption contract (whitespace-normalized like the legend
 tests), byte-identical determinism, knob honoring. Suite green.
+
+Addendum (same day, Adam's review): initiation-site marker is now a DIAMOND
+("D", wide variant — the thin "d" collapses toward a tick at poster scale;
+size 12→9 pt to keep visual weight), per Adam: "just dont use the stars as
+the soma-points lol. Use diamonds." Caption wording updated to match; tests
+unaffected (they assert the encoding is explained, not the glyph).

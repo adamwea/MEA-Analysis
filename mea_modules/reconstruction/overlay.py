@@ -79,7 +79,13 @@ DEFAULT_OVERLAY_DPI = 200.0
 # canvas) a 0.5 pt line all but vanishes; 1.8 pt survives print. Knob-exposed.
 DEFAULT_OVERLAY_LINEWIDTH = 1.8
 DEFAULT_OVERLAY_ALPHA = 0.9
-DEFAULT_OVERLAY_SOMA_MARKERSIZE = 12.0
+# Initiation-site marker: a filled diamond ("D"), per Adam's review of the
+# first render ("just dont use the stars as the soma-points lol. Use
+# diamonds."). The WIDE variant ("D", not the thin "d") — at poster scale the
+# thin diamond collapses toward a tick mark. 9 pt: a diamond carries more ink
+# than the 12 pt star it replaced, so the size drops to keep the same visual
+# weight over the branch lines.
+DEFAULT_OVERLAY_SOMA_MARKERSIZE = 9.0
 # Electrode-context dots: small enough that at MaxOne's 17.5 um pitch the
 # backdrop reads as a faint grid, not a filled plane (dot diameter ~1.6 pt vs
 # ~4.6 pt of pitch on the default 16 in canvas).
@@ -218,8 +224,8 @@ def _compose_caption(*, well_label, n_drawn, n_no_branch, n_upstream,
         "neuron's signal followed. Colour identifies the neuron: all lines of one colour "
         "belong to one neuron (colours are assigned in unit-id order and carry no other "
         "meaning).",
-        "A star marks each neuron's initiation site — its largest-signal electrode, the "
-        "closest available stand-in for the soma (cell body).",
+        "A diamond marks each neuron's initiation site — its largest-signal electrode, "
+        "the closest available stand-in for the soma (cell body).",
         f"Faint grey dots are the array's {int(n_electrodes)} recording electrodes.",
         f"{int(n_drawn)} of {n_total} reconstructed neuron(s) are drawn.",
     ]
@@ -353,9 +359,11 @@ def plot_all_reconstructions(records, out_path, *, locations=None,
                 )
             n_branches_drawn += len(record["branch_paths"])
             if record.get("init_xy") is not None:
+                # "D" (wide diamond), Adam's marker of choice — see
+                # DEFAULT_OVERLAY_SOMA_MARKERSIZE for the star -> diamond story.
                 ax.plot(
                     [record["init_xy"][0]], [record["init_xy"][1]],
-                    marker="*", markersize=soma_markersize, ls="",
+                    marker="D", markersize=soma_markersize, ls="",
                     markerfacecolor=color, markeredgecolor=text_color,
                     markeredgewidth=0.7, zorder=12,
                 )

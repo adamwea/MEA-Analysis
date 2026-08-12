@@ -222,13 +222,19 @@ def _draw_footprint(
     }
 
 
-def _add_scale_bar(ax, width_um, height_um, duration_ms, amplitude_scale, normalize="shared"):
+def _add_scale_bar(ax, width_um, height_um, duration_ms, amplitude_scale, normalize="shared",
+                   time_label=None):
     """Corner marker saying what one trace's width and height mean.
 
     Without it the figure has micrometre axes and millivolt-shaped squiggles and
     no way to tell how big either actually is. Under per-channel normalisation
     the height has no single microvolt value, and saying so is the point — a
     number there would be a lie.
+
+    `time_label` overrides the horizontal-bar text for the caller that has no
+    sampling rate and honestly reports samples rather than milliseconds
+    (:func:`plot_unit_waveform_footprint`); left None, the bar keeps its
+    historical ``"<duration> ms"`` wording.
 
     Returns the height label it drew, so the legend key can quote the same words
     the bar itself carries instead of recomputing them.
@@ -241,7 +247,8 @@ def _add_scale_bar(ax, width_um, height_um, duration_ms, amplitude_scale, normal
     ax.plot([x0, x0 + width_um], [y0, y0], color="black", lw=1.2, zorder=4)
     ax.plot([x0, x0], [y0, y0 + height_um], color="black", lw=1.2, zorder=4)
     ax.text(
-        x0 + width_um / 2.0, y0 - 0.015 * (y_max - y_min), f"{duration_ms:.1f} ms",
+        x0 + width_um / 2.0, y0 - 0.015 * (y_max - y_min),
+        time_label if time_label is not None else f"{duration_ms:.1f} ms",
         ha="center", va="top", fontsize=7, zorder=4,
     )
     if normalize == "per_channel":
@@ -618,4 +625,329 @@ def plot_footprint_grid(
 
     out_path = _save_and_release(fig, out_path)
     logger.info("wrote footprint grid: %s (%d units)", out_path, len(unit_ids))
+    return out_path
+
+
+# --------------------------------------------------------------------------- #
+# waveform-footprint on DENSE template arrays (no analyzer required)
+# --------------------------------------------------------------------------- #
+
+WAVEFORM_FOOTPRINT_PLOT_FILENAME = "waveform_footprint.png"
+
+DEFAULT_WAVEFORM_TRACE_THRESHOLD = 0.05
+DEFAULT_WAVEFORM_MAX_TRACES = 500
+DEFAULT_WAVEFORM_FOOTPRINT_DPI = 180
+_WAVEFORM_FOOTPRINT_FIGSIZE = (7.5, 7.0)
+
+
+def _dense_pitch_um(locations):
+    """Median nearest-neighbour distance, safe on a 13k-channel union layout.
+
+    :func:`estimate_electrode_pitch` builds the full O(n²) distance matrix —
+    ~1.4 GB at Maxwell's 13 377-electrode union — so the dense path goes
+    through a KD-tree (O(n log n), exact same statistic). Falls back to the
+    shared estimator when SciPy is unavailable, and to 0.0 below 2 points,
+    matching the shared estimator's own degenerate-layout contract.
+    """
+    import numpy as np
+
+    points = np.asarray(locations, dtype=float)
+    if points.shape[0] < 2:
+        return 0.0
+    try:
+        from scipy.spatial import cKDTree
+    except ImportError:  # pragma: no cover - scipy ships with spikeinterface
+        return estimate_electrode_pitch(points[:, 0], points[:, 1])
+    distances, _ = cKDTree(points).query(points, k=2)
+    return float(np.median(distances[:, 1]))
+
+
+def plot_unit_waveform_footprint(
+    template,
+    locations,
+    out_path,
+    unit_id=None,
+    fs=None,
+    all_locations=None,
+    trace_threshold=DEFAULT_WAVEFORM_TRACE_THRESHOLD,
+    trace_radius_um=None,
+    max_traces=DEFAULT_WAVEFORM_MAX_TRACES,
+    width_pitches=_WIDTH_IN_PITCHES,
+    height_pitches=_HEIGHT_IN_PITCHES,
+    amplitude_scale=None,
+    normalize="shared",
+    linewidth=0.7,
+    dpi=DEFAULT_WAVEFORM_FOOTPRINT_DPI,
+    figsize=_WAVEFORM_FOOTPRINT_FIGSIZE,
+    zoom=True,
+    mark_extremum=True,
+    show_colorbar=True,
+    title=None,
+    caption=None,
+):
+    """The waveform-footprint style — miniature waveform traces at their true
+    electrode positions — rendered from DENSE template arrays instead of a
+    SortingAnalyzer; returns `out_path`.
+
+    This is the same visual language as :func:`plot_unit_footprint` (capsule
+    07's per-unit footprint, the style Adam named **waveform-footprint**):
+    one small copy of the unit's average waveform per electrode, placed at
+    that electrode's micrometre position, coloured by its own peak-to-peak
+    amplitude, extremum ringed in red, the rest of the array in grey
+    underneath, with the corner scale bar saying what one trace's width and
+    height mean. What changes is the input contract: `template` is a plain
+    ``(n_channels, n_samples)`` array and `locations` ``(n_channels, 2)`` —
+    the stitch/merge bundle's own per-unit slice (`mea_modules.templates.
+    load_unit_inputs`) — so the FULL-chip stitched templates can be drawn,
+    not only the sorter's sparse backbone subset an analyzer carries.
+
+    **Why a channel subset exists at all.** A dense bundle covers the whole
+    union layout (13 377 electrodes on a Maxwell chip); a trace on every one
+    of them is spaghetti and minutes of render time. Traces are drawn only
+    where the unit actually reaches: channels whose peak-to-peak (PTP)
+    amplitude is at least ``trace_threshold`` of the unit's own loudest
+    channel (default 5 %), optionally also within ``trace_radius_um`` of the
+    extremum, hard-capped at the ``max_traces`` loudest (default 500). Every
+    other electrode is drawn as a grey position-only dot, and the figure
+    says how many were omitted and why — the omission rule is part of the
+    figure, not a silent choice.
+
+    `all_locations` supplies the full-array context layer when `locations`
+    itself is already a covered-channel subset; left None, `locations` is
+    the context. `width_pitches`/`height_pitches` size one trace's box in
+    multiples of the layout's own median electrode pitch (KD-tree estimate,
+    dense-safe); `amplitude_scale` (µm per µV) is derived so the loudest
+    DRAWN trace fills its box unless fixed by the caller; `normalize`
+    behaves exactly as in :func:`plot_unit_footprint` (``"shared"`` is
+    physically honest, ``"per_channel"`` trades amplitude for shape).
+    Rendering is deterministic: Agg canvas, no randomness, channels drawn in
+    stable ascending-amplitude order so the loudest trace always lands on
+    top. A falsy `fs` reports the trace window in samples rather than
+    milliseconds, honestly.
+    """
+    from pathlib import Path
+
+    import numpy as np
+    from matplotlib import colormaps
+    from matplotlib.collections import LineCollection
+    from matplotlib.colors import Normalize
+
+    out_path = Path(out_path)
+    template_arr = np.nan_to_num(np.asarray(template, dtype=float), nan=0.0)
+    locations_arr = np.asarray(locations, dtype=float)[:, :2]
+    if template_arr.ndim != 2 or template_arr.shape[0] != locations_arr.shape[0]:
+        raise ValueError(
+            f"template has {template_arr.shape[0]} channel row(s) but locations has "
+            f"{locations_arr.shape[0]} -- must match 1:1"
+        )
+    context = (
+        np.asarray(all_locations, dtype=float)[:, :2]
+        if all_locations is not None
+        else locations_arr
+    )
+
+    n_channels, n_samples = template_arr.shape
+    peak_to_peak = np.ptp(template_arr, axis=1)
+    peak = float(peak_to_peak.max()) if peak_to_peak.size else 0.0
+    if peak <= 0:
+        raise ValueError(
+            f"unit {unit_id!r}: template is flat (peak-to-peak 0 on every "
+            "channel) -- nothing to draw"
+        )
+    extremum_index = int(np.argmax(peak_to_peak))
+    extremum_xy = locations_arr[extremum_index]
+
+    # --- the drawing subset: reach threshold, optional radius, loudest cap ---
+    keep = peak_to_peak >= float(trace_threshold) * peak
+    if trace_radius_um:
+        keep &= (
+            np.linalg.norm(locations_arr - extremum_xy[None, :], axis=1)
+            <= float(trace_radius_um)
+        )
+    selected = np.flatnonzero(keep)
+    capped = False
+    if max_traces and selected.size > int(max_traces):
+        loudest = np.argsort(-peak_to_peak[selected], kind="stable")[: int(max_traces)]
+        selected = selected[np.sort(loudest)]
+        capped = True
+    # Stable ascending-amplitude draw order: the loudest trace lands on top.
+    selected = selected[np.argsort(peak_to_peak[selected], kind="stable")]
+    n_drawn = int(selected.size)
+    if n_drawn == 0:
+        raise ValueError(
+            f"unit {unit_id!r}: no channel clears trace_threshold="
+            f"{trace_threshold!r} (peak {peak:.1f} µV) -- nothing to draw"
+        )
+
+    pitch = _dense_pitch_um(context) or 1.0
+    width_um = float(width_pitches) * pitch
+    height_um = float(height_pitches) * pitch
+
+    drawn_max = float(np.max(np.abs(template_arr[selected]))) if n_drawn else 0.0
+    if amplitude_scale is None:
+        amplitude_scale = (height_um / 2.0) / drawn_max if drawn_max > 0 else 0.0
+
+    fig = _new_figure(figsize, dpi)
+    ax = fig.subplots()
+
+    ax.scatter(
+        context[:, 0], context[:, 1], s=2, c=_CONTEXT_COLOR, linewidths=0,
+        rasterized=True, zorder=0,
+    )
+
+    offsets = np.linspace(-width_um / 2.0, width_um / 2.0, n_samples)
+    sub = template_arr[selected]  # (n_drawn, n_samples)
+    if normalize == "per_channel":
+        per_channel = peak_to_peak[selected]
+        per_channel = np.where(per_channel > 0, per_channel, 1.0)
+        drawn_traces = sub / per_channel[:, None] * height_um
+    else:
+        drawn_traces = sub * amplitude_scale
+    xy = locations_arr[selected]
+    segments = [
+        np.column_stack((xy[i, 0] + offsets, xy[i, 1] + drawn_traces[i]))
+        for i in range(n_drawn)
+    ]
+    norm = Normalize(vmin=0.0, vmax=float(peak_to_peak[selected].max()))
+    collection = LineCollection(
+        segments,
+        array=np.asarray(peak_to_peak[selected], dtype=float),
+        cmap=colormaps[_AMPLITUDE_CMAP],
+        norm=norm,
+        linewidths=float(linewidth),
+        zorder=2,
+    )
+    ax.add_collection(collection)
+
+    if mark_extremum:
+        ax.scatter(
+            [extremum_xy[0]], [extremum_xy[1]], s=90, facecolors="none",
+            edgecolors=_EXTREMUM_COLOR, linewidths=1.2, zorder=3,
+        )
+
+    margin = _ZOOM_MARGIN_PITCHES * pitch + max(width_um, height_um)
+    frame = xy if zoom else context
+    ax.set_xlim(float(frame[:, 0].min()) - margin, float(frame[:, 0].max()) + margin)
+    ax.set_ylim(float(frame[:, 1].min()) - margin, float(frame[:, 1].max()) + margin)
+    ax.set_aspect("equal", adjustable="box")
+
+    if fs:
+        duration_ms = (n_samples / float(fs)) * 1000.0
+        time_words = f"{duration_ms:.1f} ms ({n_samples} samples)"
+        time_label = None  # the bar's default "<duration> ms" is correct
+    else:
+        duration_ms = float(n_samples)
+        time_words = f"{n_samples} samples (no sampling rate supplied)"
+        time_label = f"{n_samples} samples"
+    uv_label = _add_scale_bar(
+        ax, width_um, height_um, duration_ms, amplitude_scale,
+        normalize=normalize, time_label=time_label,
+    )
+
+    if show_colorbar:
+        bar = fig.colorbar(collection, ax=ax, fraction=0.04, pad=0.02)
+        bar.set_label("peak-to-peak (PTP) amplitude of that electrode's trace (µV)")
+
+    ax.set_xlabel("x (µm)")
+    ax.set_ylabel("y (µm)")
+    extent_x = float(xy[:, 0].max() - xy[:, 0].min())
+    extent_y = float(xy[:, 1].max() - xy[:, 1].min())
+    # Two SHORT lines at a slightly smaller size: the title is centred on the
+    # AXES, and an aspect-equal frame routinely sits off-centre in the figure,
+    # so a long title runs past the figure edge and matplotlib clips rather
+    # than wraps it (seen on the first poster render). The spread stats live
+    # in the log line instead of the title.
+    ax.set_title(
+        title
+        or (
+            f"unit {unit_id} waveform footprint\n{n_drawn} of {n_channels} "
+            f"electrodes drawn - peak {peak:.0f} µV"
+        ),
+        fontsize=11,
+    )
+
+    # Every encoding gets a legend key (Adam, 2026-08-11), and the omission
+    # rule is an encoding: a reader must know why most electrodes carry no
+    # trace before trusting the spread they see.
+    colour_key = (
+        "one miniature copy of this unit's average waveform per drawn "
+        "electrode, coloured by that trace's peak-to-peak (PTP) amplitude"
+    )
+    colour_key += " — see the colour bar" if show_colorbar else " in microvolts (µV)"
+    subset_words = (
+        f"electrodes below {trace_threshold:.0%} of the unit's loudest "
+        "peak-to-peak (PTP) amplitude"
+    )
+    if trace_radius_um:
+        subset_words += f", or farther than {float(trace_radius_um):.0f} µm from the ringed electrode"
+    handles = [
+        _legend_line(_CMAP_MID_COLOR, colour_key, lw=1.4),
+        _legend_dot(
+            _CONTEXT_COLOR,
+            f"every other electrode ({int(context.shape[0]) - n_drawn}), drawn for "
+            f"position only — {subset_words} carry no trace",
+        ),
+    ]
+    if mark_extremum:
+        handles.append(
+            _legend_ring(
+                _EXTREMUM_COLOR,
+                f"electrode where this unit's signal is largest (peak-to-peak {peak:.0f} µV)",
+            )
+        )
+    if normalize == "per_channel":
+        scale_key = (
+            f"scale bar: one trace box spans {time_words} across; its height is "
+            "each trace's own peak, so heights are not comparable between electrodes"
+        )
+    else:
+        scale_key = (
+            f"scale bar: one trace box spans {time_words} across and "
+            f"{uv_label} top to bottom"
+        )
+    handles.append(_legend_line("black", scale_key, lw=1.2))
+
+    cap_sentence = (
+        f"Traces are drawn only where this unit's peak-to-peak (PTP) amplitude "
+        f"reaches at least {trace_threshold:.0%} of its loudest electrode"
+    )
+    if trace_radius_um:
+        cap_sentence += f" and within {float(trace_radius_um):.0f} µm of that electrode"
+    if capped:
+        cap_sentence += f", capped at the {int(max_traces)} loudest"
+    cap_sentence += (
+        f"; the other {int(context.shape[0]) - n_drawn} electrodes are grey "
+        "position-only dots, omitted so a full-chip template stays readable."
+    )
+    caption_parts = [
+        "Each drawn electrode carries a miniature copy of the unit's average "
+        "waveform at that electrode's real position on the array (axes are "
+        "micrometres, µm); how far those traces spread IS the footprint.",
+        cap_sentence,
+        acronym_note("PTP"),
+    ]
+    if normalize == "per_channel":
+        caption_parts.append(
+            "Trace HEIGHT is scaled electrode by electrode so small, distant "
+            "deflections stay visible; colour still carries the true amplitude "
+            "in microvolts (µV), so the two together give the real numbers."
+        )
+    else:
+        caption_parts.append(
+            "Every trace is drawn on one shared microvolt (µV) scale, so trace "
+            "heights are directly comparable between electrodes."
+        )
+    caption_parts.append(PROXY_NOT_MODEL)
+    caption_parts.append(caption)
+    # Legend goes through `_add_caption`'s bottom margin, not `ax.legend`: on a
+    # full-chip frame there is no in-axes corner these four wrapped keys fit in
+    # without covering array context or the corner scale bar (seen on the first
+    # real render), and the margin owner guarantees data stays uncovered.
+    _add_caption(fig, _fold_caption(caption_parts), legend_handles=handles)
+
+    out_path = _save_and_release(fig, out_path)
+    logger.info(
+        "wrote waveform footprint: %s (unit=%s drawn=%d/%d extent=%.0fx%.0f um peak=%.1f uV)",
+        out_path, unit_id, n_drawn, n_channels, extent_x, extent_y, peak,
+    )
     return out_path

@@ -8,6 +8,7 @@ Public API::
         extremum_channels,     # {unit_id: loudest channel}
         plot_unit_waveform,    # spikes + template on the extremum channel
         plot_unit_footprint,   # the template across the electrode layout
+        plot_unit_waveform_footprint,  # same style, from dense template arrays
         plot_footprint_grid,   # several footprints in one figure
         plot_waveform_grid,    # several waveforms in one figure
         plot_unit_trace,       # the recording trace with one unit's spikes marked
@@ -48,7 +49,12 @@ from .analyzer import (
     unit_random_spike_count,
     unit_template,
 )
-from .footprints import plot_footprint_grid, plot_unit_footprint
+from .footprints import (
+    WAVEFORM_FOOTPRINT_PLOT_FILENAME,
+    plot_footprint_grid,
+    plot_unit_footprint,
+    plot_unit_waveform_footprint,
+)
 from .segment_activity import (
     plot_spikes_per_segment,
     segment_activity_summary,
@@ -79,6 +85,8 @@ __all__ = [
     "plot_firing_rate_histogram",
     "plot_unit_footprint",
     "plot_footprint_grid",
+    "plot_unit_waveform_footprint",
+    "WAVEFORM_FOOTPRINT_PLOT_FILENAME",
     "plot_unit_trace",
     "densest_spike_window",
     "plot_spikes_per_segment",

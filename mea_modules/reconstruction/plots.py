@@ -659,7 +659,7 @@ def _add_scale_bar_um(ax, *, color="white", fontsize=9):
     )
 
 
-def _add_scale_circle_um(ax, *, radius_um, reference_value, color="white", fontsize=9):
+def _add_scale_circle_um(ax, *, radius_um, reference_value, color="white", fontsize=9, compact=False):
     """A reference circle (top-left) showing what the MAX amplitude circle
     looks like, labeled with the uV value it represents.
 
@@ -697,10 +697,16 @@ def _add_scale_circle_um(ax, *, radius_um, reference_value, color="white", fonts
     ax.add_patch(patch)
     # The circle is a SIZE legend, and a bare number is not one: without the
     # unit and without saying that size means amplitude, a reader has a ring
-    # with a float under it (Adam, 2026-08-11).
+    # with a float under it (Adam, 2026-08-11). In `compact` (presentation)
+    # mode the per-unit µV reference number comes OFF the plot — it belongs on
+    # the slide text (Adam, 2026-08-12) — so the key states only the encoding.
+    label = (
+        "circle = amplitude"
+        if compact
+        else f"circle size = peak amplitude\nlargest drawn: {reference_value:.1f} µV"
+    )
     ax.text(
-        cx, cy - ry_axes - 0.02,
-        f"circle size = peak amplitude\nlargest drawn: {reference_value:.1f} µV",
+        cx, cy - ry_axes - 0.02, label,
         transform=ax.transAxes, color=color, ha="center", va="top", fontsize=fontsize,
         linespacing=1.25,
     )
@@ -710,6 +716,7 @@ def _render_footprint_core(
     template_arr, locations_arr, fs, *,
     dpi, figsize, invert_y_axis, cmap_name,
     max_radius_pitch_fraction, min_radius_max_fraction, radius_scaling, background,
+    style="diagnostic",
 ):
     """The amplitude/latency circle footprint alone — no branches, no title,
     not yet saved. Shared by :func:`plot_unit_footprint_reconstruction`
@@ -738,6 +745,7 @@ def _render_footprint_core(
     from matplotlib.collections import EllipseCollection
 
     background = str(background)
+    presentation = str(style).strip().lower() == "presentation"
     text_color = "white" if background.strip().lower() in {"black", "k", "#000", "#000000"} else "black"
 
     amplitude, latency = _channel_amplitude_and_latency(template_arr, fs)
@@ -771,11 +779,16 @@ def _render_footprint_core(
     )
     ax.add_collection(footprint)
     cbar = fig.colorbar(footprint, ax=ax, fraction=0.045, pad=0.03)
-    cbar.set_label(
-        "Latency: peak time relative to the largest electrode "
-        + ("(ms)" if fs else "(samples — no sampling rate supplied)"),
-        color=text_color,
-    )
+    # Presentation trims the long self-documenting label to the short form Adam
+    # asked for (2026-08-12); diagnostic keeps the full explanation.
+    if presentation:
+        cbar.set_label(f"Latency ({'ms' if fs else 'samples'})", color=text_color)
+    else:
+        cbar.set_label(
+            "Latency: peak time relative to the largest electrode "
+            + ("(ms)" if fs else "(samples — no sampling rate supplied)"),
+            color=text_color,
+        )
     cbar.ax.tick_params(colors=text_color, labelsize=8)
     cbar.outline.set_edgecolor(text_color)
 
@@ -797,7 +810,10 @@ def _render_footprint_core(
     # puts a branch legend (top right), so none of the three ever compete.
     amp_max = float(np.max(amplitude)) if amplitude.size else 0.0
     max_radius_drawn = float(np.max(radii_um)) if radii_um.size else 0.0
-    _add_scale_circle_um(ax, radius_um=max_radius_drawn, reference_value=amp_max, color=text_color)
+    _add_scale_circle_um(
+        ax, radius_um=max_radius_drawn, reference_value=amp_max,
+        color=text_color, compact=presentation,
+    )
     _add_scale_bar_um(ax, color=text_color)
 
     return fig, ax, amplitude, latency, pitch_um, radii_um, text_color
@@ -886,7 +902,13 @@ def plot_unit_footprint_reconstruction(
     :data:`DEFAULT_MIN_RADIUS_MAX_FRACTION`/:data:`DEFAULT_RADIUS_SCALING`
     — `radius_scaling` is `"linear"`/`"sqrt"`/`"log"`, see
     :func:`_marker_radii_um`), `fs` (override for `gtr.fs`), `background`
-    (default `"black"`). Unknown kwargs are ignored, matching
+    (default `"black"`), `style` (`"diagnostic"` default / `"presentation"`;
+    presentation gives the deck-ready cut — title is the unit id alone with no
+    per-unit stats, no branch legend box, a compact `"Latency (ms)"` colour-bar
+    label and a `"circle = amplitude"` size key with the µV number dropped;
+    the clean µm axes, scale bar, scale circle and colour bar all stay). Adam,
+    2026-08-12: the diagnostic default is unchanged — the team still wants the
+    verbose review figure. Unknown kwargs are ignored, matching
     `plot_unit_reconstruction`'s own plotting-convenience contract.
 
     Always closes the figure before returning (or raising) — same
@@ -914,6 +936,15 @@ def plot_unit_footprint_reconstruction(
         )
     fs = kwargs.get("fs", getattr(gtr, "fs", None))
     background = str(kwargs.get("background", "black"))
+    # style="presentation" (Adam, 2026-08-12): deck-ready cut of the same plot
+    # — unit-id-only title with no per-unit stats, no branch legend box, a
+    # compact "Latency (ms)" colour-bar label and a "circle = amplitude" scale
+    # key with the µV number dropped. The diagnostic default is unchanged; the
+    # team still wants the verbose review version. `background` stays its own
+    # exposed knob (default black), so presentation keeps the look Adam likes
+    # unless a caller passes background="white".
+    style = str(kwargs.get("style", "diagnostic")).strip().lower()
+    presentation = style == "presentation"
 
     fig, ax, amplitude, latency, pitch_um, radii_um, text_color = _render_footprint_core(
         template_arr, locations_arr, fs,
@@ -929,12 +960,16 @@ def plot_unit_footprint_reconstruction(
         ),
         radius_scaling=str(kwargs.get("radius_scaling", DEFAULT_RADIUS_SCALING)),
         background=background,
+        style=style,
     )
     try:
         branch_paths = _branch_channel_paths(gtr)
         n_branches = len(branch_paths)
         branch_cmap = plt.get_cmap("tab20")
-        show_legend = 0 < n_branches <= 10
+        # No framed branch legend in presentation mode — the branch count is a
+        # per-unit stat that belongs on the slide, and the box is exactly the
+        # "large legend" Adam wants gone. The branches themselves still draw.
+        show_legend = (0 < n_branches <= 10) and not presentation
         for branch_idx, channels in enumerate(branch_paths):
             color = (
                 branch_cmap(branch_idx / max(1, len(branch_paths) - 1))
@@ -965,15 +1000,18 @@ def plot_unit_footprint_reconstruction(
                     text.set_color(text_color)
 
         n_channels = int(locations_arr.shape[0])
-        amp_min = float(np.min(amplitude)) if amplitude.size else 0.0
-        amp_max = float(np.max(amplitude)) if amplitude.size else 0.0
-        pitch_label = f"{pitch_um:.1f}um" if np.isfinite(pitch_um) else "n/a"
-        title = (
-            f"{n_branches} branch(es), {n_channels} electrode(s), "
-            f"amplitude {amp_min:.1f}-{amp_max:.1f}, pitch {pitch_label}"
-        )
-        if unit_id is not None:
-            title = f"Unit {unit_id} — {title}"
+        if presentation:
+            title = f"Unit {unit_id}" if unit_id is not None else ""
+        else:
+            amp_min = float(np.min(amplitude)) if amplitude.size else 0.0
+            amp_max = float(np.max(amplitude)) if amplitude.size else 0.0
+            pitch_label = f"{pitch_um:.1f}um" if np.isfinite(pitch_um) else "n/a"
+            title = (
+                f"{n_branches} branch(es), {n_channels} electrode(s), "
+                f"amplitude {amp_min:.1f}-{amp_max:.1f}, pitch {pitch_label}"
+            )
+            if unit_id is not None:
+                title = f"Unit {unit_id} — {title}"
         ax.set_title(title, color=text_color, fontsize=12)
 
         out_path.parent.mkdir(parents=True, exist_ok=True)
@@ -1034,6 +1072,8 @@ def plot_unit_footprint(template, locations, out_path, unit_id=None, fs=None, **
         )
 
     dpi = float(kwargs.get("dpi", DEFAULT_FOOTPRINT_DPI))
+    style = str(kwargs.get("style", "diagnostic")).strip().lower()
+    presentation = style == "presentation"
     fig, ax, amplitude, latency, pitch_um, radii_um, text_color = _render_footprint_core(
         template_arr, locations_arr, fs,
         dpi=dpi,
@@ -1048,15 +1088,19 @@ def plot_unit_footprint(template, locations, out_path, unit_id=None, fs=None, **
         ),
         radius_scaling=str(kwargs.get("radius_scaling", DEFAULT_RADIUS_SCALING)),
         background=str(kwargs.get("background", "black")),
+        style=style,
     )
     try:
         n_channels = int(locations_arr.shape[0])
-        amp_min = float(np.min(amplitude)) if amplitude.size else 0.0
-        amp_max = float(np.max(amplitude)) if amplitude.size else 0.0
-        pitch_label = f"{pitch_um:.1f}um" if np.isfinite(pitch_um) else "n/a"
-        title = f"{n_channels} electrode(s), amplitude {amp_min:.1f}-{amp_max:.1f}, pitch {pitch_label}"
-        if unit_id is not None:
-            title = f"Unit {unit_id} — {title}"
+        if presentation:
+            title = f"Unit {unit_id}" if unit_id is not None else ""
+        else:
+            amp_min = float(np.min(amplitude)) if amplitude.size else 0.0
+            amp_max = float(np.max(amplitude)) if amplitude.size else 0.0
+            pitch_label = f"{pitch_um:.1f}um" if np.isfinite(pitch_um) else "n/a"
+            title = f"{n_channels} electrode(s), amplitude {amp_min:.1f}-{amp_max:.1f}, pitch {pitch_label}"
+            if unit_id is not None:
+                title = f"Unit {unit_id} — {title}"
         ax.set_title(title, color=text_color, fontsize=12)
 
         out_path.parent.mkdir(parents=True, exist_ok=True)

@@ -76,16 +76,26 @@ def _spy(monkeypatch):
             if isinstance(c, LineCollection) and len(c.get_paths()) > 0
         ]
         captured["n_traces"] = len(traces[0].get_paths()) if traces else 0
-        # The legend lives in `_add_caption`'s figure-level bottom margin, not
-        # on the axes — sweep both, the figure-legends suites' convention.
-        labels = []
+        # The diagnostic legend lives in `_add_caption`'s figure-level bottom
+        # margin; the presentation compact key lives on the axes. Capture the
+        # two SEPARATELY (the split is what a presentation assertion checks)
+        # and also merged, the figure-legends suites' convention.
+        fig_labels = []
         for legend in list(fig.legends):
-            labels.extend(_flat(t.get_text()) for t in legend.get_texts())
+            fig_labels.extend(_flat(t.get_text()) for t in legend.get_texts())
+        ax_labels = []
         if ax.get_legend() is not None:
-            labels.extend(_flat(t.get_text()) for t in ax.get_legend().get_texts())
-        captured["legend"] = labels
+            ax_labels.extend(_flat(t.get_text()) for t in ax.get_legend().get_texts())
+        captured["fig_legend"] = fig_labels
+        captured["ax_legend"] = ax_labels
+        captured["legend"] = fig_labels + ax_labels
         captured["xlabel"] = _flat(ax.get_xlabel())
         captured["ylabel"] = _flat(ax.get_ylabel())
+        captured["title"] = _flat(ax.get_title())
+        # Colour-bar label is the y-label of the colour-bar's own axes.
+        captured["cbar_labels"] = [
+            _flat(a.get_ylabel()) for a in fig.axes if a.get_ylabel()
+        ]
         captured["caption"] = " ".join(_flat(t.get_text()) for t in fig.texts)
         return real(fig, out_path)
 
@@ -138,6 +148,82 @@ def test_waveform_footprint_deterministic(tmp_path):
         template, locations, tmp_path / "b.png", unit_id="7", fs=FS,
     )
     assert first.read_bytes() == second.read_bytes()
+
+
+def test_waveform_footprint_presentation_drops_caption_legend_and_stats(tmp_path, monkeypatch):
+    """style="presentation" is the deck cut (Adam, 2026-08-12): no prose
+    caption, no framed figure legend, the title is the unit id alone with no
+    per-unit stats baked in, and the colour-bar label is the compact form."""
+    locations = _grid_locations()
+    template = _gaussian_template(locations)
+    captured = _spy(monkeypatch)
+
+    footprints.plot_unit_waveform_footprint(
+        template, locations, tmp_path / "presentation.png",
+        unit_id="7", fs=FS, style="presentation",
+    )
+
+    # No multi-line prose caption block below the figure.
+    assert captured["caption"].strip() == ""
+    # The verbose figure-margin legend is gone; at most a compact inline key.
+    assert captured["fig_legend"] == []
+    fig_and_ax = " ".join(captured["legend"])
+    assert not _has(fig_and_ax, "average waveform")
+    assert not _has(fig_and_ax, "position only")
+    # Standard title = the unit id alone, carrying no per-unit numbers.
+    assert captured["title"] == "Unit 7"
+    for banned in ("of", "peak", "µV", "electrodes drawn"):
+        assert banned not in captured["title"], captured["title"]
+    # Compact colour-bar label.
+    assert any(label == "PTP (µV)" for label in captured["cbar_labels"]), captured["cbar_labels"]
+
+
+def test_waveform_footprint_presentation_is_less_sparse(tmp_path, monkeypatch):
+    """The sparsity fix (Adam: "can they be less sparse?"): presentation's
+    lower default trace threshold draws strictly MORE traces than the
+    diagnostic default on the same unit."""
+    locations = _grid_locations()
+    template = _gaussian_template(locations)
+    captured = _spy(monkeypatch)
+
+    footprints.plot_unit_waveform_footprint(
+        template, locations, tmp_path / "diag.png", unit_id="7", fs=FS,
+    )
+    n_diagnostic = captured["n_traces"]
+    footprints.plot_unit_waveform_footprint(
+        template, locations, tmp_path / "pres.png", unit_id="7", fs=FS,
+        style="presentation",
+    )
+    n_presentation = captured["n_traces"]
+
+    assert n_presentation > n_diagnostic, (n_presentation, n_diagnostic)
+    # And the presentation default really is the lower threshold constant.
+    assert (
+        footprints.DEFAULT_WAVEFORM_TRACE_THRESHOLD_PRESENTATION
+        < footprints.DEFAULT_WAVEFORM_TRACE_THRESHOLD
+    )
+
+
+def test_waveform_footprint_diagnostic_default_is_unchanged(tmp_path, monkeypatch):
+    """The diagnostic default keeps the verbose review figure verbatim — the
+    prose caption, the figure-wide legend and the stats-carrying title all
+    stay (the team still wants this version)."""
+    locations = _grid_locations()
+    template = _gaussian_template(locations)
+    captured = _spy(monkeypatch)
+
+    footprints.plot_unit_waveform_footprint(
+        template, locations, tmp_path / "diagnostic.png", unit_id="7", fs=FS,
+    )
+
+    assert _has(captured["caption"], "PTP = peak-to-peak")
+    assert _has(captured["caption"], "omitted")
+    legend_blob = " ".join(captured["fig_legend"])
+    assert _has(legend_blob, "average waveform")
+    assert _has(legend_blob, "scale bar")
+    # The verbose title still carries the per-unit numbers.
+    assert _has(captured["title"], "waveform footprint")
+    assert _has(captured["title"], "electrodes drawn")
 
 
 def test_waveform_footprint_rejects_flat_template(tmp_path):

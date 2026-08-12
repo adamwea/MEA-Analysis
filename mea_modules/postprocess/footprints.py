@@ -635,6 +635,19 @@ def plot_footprint_grid(
 WAVEFORM_FOOTPRINT_PLOT_FILENAME = "waveform_footprint.png"
 
 DEFAULT_WAVEFORM_TRACE_THRESHOLD = 0.05
+# Presentation default is deliberately LOWER than the diagnostic 5 %: at 5 %
+# only a handful of channels clear the bar on a full-chip dense template, so
+# the drawn traces read as a few hairlines lost on the grey backdrop — exactly
+# the "much more sparse than the circles plot" Adam flagged (2026-08-12). 2 %
+# pulls the mid-amplitude ring of channels in so the frame reads dense and
+# legible like the circle reconstruction plot; tuned on unit 18 of the P005843
+# review run (5 %: 91 traces; 2 %: ~300, filling the zoomed frame without
+# turning to mush). Still an exposed knob — override per unit if wanted.
+DEFAULT_WAVEFORM_TRACE_THRESHOLD_PRESENTATION = 0.02
+DEFAULT_WAVEFORM_LINEWIDTH = 0.7
+# Bolder traces so they stay visible at poster scale (the diagnostic 0.7 pt
+# hairline all but vanishes once the figure is printed a foot wide).
+DEFAULT_WAVEFORM_LINEWIDTH_PRESENTATION = 1.3
 DEFAULT_WAVEFORM_MAX_TRACES = 500
 DEFAULT_WAVEFORM_FOOTPRINT_DPI = 180
 _WAVEFORM_FOOTPRINT_FIGSIZE = (7.5, 7.0)
@@ -669,14 +682,14 @@ def plot_unit_waveform_footprint(
     unit_id=None,
     fs=None,
     all_locations=None,
-    trace_threshold=DEFAULT_WAVEFORM_TRACE_THRESHOLD,
+    trace_threshold=None,
     trace_radius_um=None,
     max_traces=DEFAULT_WAVEFORM_MAX_TRACES,
     width_pitches=_WIDTH_IN_PITCHES,
     height_pitches=_HEIGHT_IN_PITCHES,
     amplitude_scale=None,
     normalize="shared",
-    linewidth=0.7,
+    linewidth=None,
     dpi=DEFAULT_WAVEFORM_FOOTPRINT_DPI,
     figsize=_WAVEFORM_FOOTPRINT_FIGSIZE,
     zoom=True,
@@ -684,6 +697,10 @@ def plot_unit_waveform_footprint(
     show_colorbar=True,
     title=None,
     caption=None,
+    style="diagnostic",
+    show_backdrop=None,
+    backdrop_alpha=None,
+    zoom_pad_pitches=None,
 ):
     """The waveform-footprint style — miniature waveform traces at their true
     electrode positions — rendered from DENSE template arrays instead of a
@@ -724,6 +741,32 @@ def plot_unit_waveform_footprint(
     stable ascending-amplitude order so the loudest trace always lands on
     top. A falsy `fs` reports the trace window in samples rather than
     milliseconds, honestly.
+
+    **`style` — diagnostic (default) vs presentation (Adam, 2026-08-12).**
+    ``"diagnostic"`` is the verbose, self-documenting figure above, unchanged:
+    the full prose caption, the figure-wide legend keying every encoding, the
+    stats-carrying title, the whole-array grey backdrop. ``"presentation"`` is
+    the deck-ready cut of the SAME plot — no prose caption block, no framed
+    legend (only a compact one-entry inline key for the extremum ring), the
+    title is the unit id alone with no per-unit stats baked in, a compact
+    ``"PTP (µV)"`` colour-bar label, the grey position-only backdrop heavily
+    lightened so the traces dominate it, and — to fix the sparsity Adam flagged
+    — a lower trace threshold (more channels carry a trace) and bolder traces,
+    framed to the active bounding box. The commentary that used to live on the
+    figure (n-of-N electrode counts, peak amplitude, spread) moves to the slide
+    text.
+
+    Every difference presentation mode makes is also an independent exposed
+    knob, so a caller can dial any of them in either style: ``trace_threshold``
+    (``None`` → :data:`DEFAULT_WAVEFORM_TRACE_THRESHOLD` diagnostic /
+    :data:`DEFAULT_WAVEFORM_TRACE_THRESHOLD_PRESENTATION` presentation),
+    ``linewidth`` (``None`` → :data:`DEFAULT_WAVEFORM_LINEWIDTH` /
+    :data:`DEFAULT_WAVEFORM_LINEWIDTH_PRESENTATION`), ``show_backdrop``
+    (``None`` → on in both styles; pass ``False`` to drop the grey grid
+    entirely), ``backdrop_alpha`` (``None`` → 1.0 diagnostic / 0.30
+    presentation), and ``zoom_pad_pitches`` (``None`` →
+    :data:`_ZOOM_MARGIN_PITCHES`, the padding in electrode pitches around the
+    drawn bounding box).
     """
     from pathlib import Path
 
@@ -733,6 +776,34 @@ def plot_unit_waveform_footprint(
     from matplotlib.colors import Normalize
 
     out_path = Path(out_path)
+    presentation = str(style).strip().lower() == "presentation"
+    # Resolve the style-varying knobs. Each stays independently overridable: a
+    # non-None argument wins over the style default, so presentation is just a
+    # bundle of defaults, never a lock.
+    if trace_threshold is None:
+        trace_threshold = (
+            DEFAULT_WAVEFORM_TRACE_THRESHOLD_PRESENTATION
+            if presentation
+            else DEFAULT_WAVEFORM_TRACE_THRESHOLD
+        )
+    if linewidth is None:
+        linewidth = (
+            DEFAULT_WAVEFORM_LINEWIDTH_PRESENTATION
+            if presentation
+            else DEFAULT_WAVEFORM_LINEWIDTH
+        )
+    if show_backdrop is None:
+        # Kept in both styles, but presentation heavily LIGHTENS it (alpha
+        # below): a faint full-chip electrode grid fills the frame so it does
+        # not read as mostly-empty white — the sparsity Adam flagged — while
+        # the bold coloured traces still dominate it, exactly the structure
+        # that makes the circle reconstruction plot read dense. Pass
+        # show_backdrop=False to drop it entirely.
+        show_backdrop = True
+    if backdrop_alpha is None:
+        backdrop_alpha = 0.30 if presentation else 1.0
+    if zoom_pad_pitches is None:
+        zoom_pad_pitches = _ZOOM_MARGIN_PITCHES
     template_arr = np.nan_to_num(np.asarray(template, dtype=float), nan=0.0)
     locations_arr = np.asarray(locations, dtype=float)[:, :2]
     if template_arr.ndim != 2 or template_arr.shape[0] != locations_arr.shape[0]:
@@ -790,10 +861,11 @@ def plot_unit_waveform_footprint(
     fig = _new_figure(figsize, dpi)
     ax = fig.subplots()
 
-    ax.scatter(
-        context[:, 0], context[:, 1], s=2, c=_CONTEXT_COLOR, linewidths=0,
-        rasterized=True, zorder=0,
-    )
+    if show_backdrop:
+        ax.scatter(
+            context[:, 0], context[:, 1], s=2, c=_CONTEXT_COLOR, linewidths=0,
+            alpha=float(backdrop_alpha), rasterized=True, zorder=0,
+        )
 
     offsets = np.linspace(-width_um / 2.0, width_um / 2.0, n_samples)
     sub = template_arr[selected]  # (n_drawn, n_samples)
@@ -825,7 +897,7 @@ def plot_unit_waveform_footprint(
             edgecolors=_EXTREMUM_COLOR, linewidths=1.2, zorder=3,
         )
 
-    margin = _ZOOM_MARGIN_PITCHES * pitch + max(width_um, height_um)
+    margin = float(zoom_pad_pitches) * pitch + max(width_um, height_um)
     frame = xy if zoom else context
     ax.set_xlim(float(frame[:, 0].min()) - margin, float(frame[:, 0].max()) + margin)
     ax.set_ylim(float(frame[:, 1].min()) - margin, float(frame[:, 1].max()) + margin)
@@ -846,104 +918,130 @@ def plot_unit_waveform_footprint(
 
     if show_colorbar:
         bar = fig.colorbar(collection, ax=ax, fraction=0.04, pad=0.02)
-        bar.set_label("peak-to-peak (PTP) amplitude of that electrode's trace (µV)")
+        bar.set_label(
+            "PTP (µV)"
+            if presentation
+            else "peak-to-peak (PTP) amplitude of that electrode's trace (µV)"
+        )
 
     ax.set_xlabel("x (µm)")
     ax.set_ylabel("y (µm)")
     extent_x = float(xy[:, 0].max() - xy[:, 0].min())
     extent_y = float(xy[:, 1].max() - xy[:, 1].min())
-    # Two SHORT lines at a slightly smaller size: the title is centred on the
-    # AXES, and an aspect-equal frame routinely sits off-centre in the figure,
-    # so a long title runs past the figure edge and matplotlib clips rather
-    # than wraps it (seen on the first poster render). The spread stats live
-    # in the log line instead of the title.
-    ax.set_title(
-        title
-        or (
+    # Standard title only. Presentation mode = the unit id alone (Adam: "keep
+    # the plots standard ... put that [per-unit commentary] on the slide
+    # text"), so no n-of-N electrode count and no peak µV baked into the plot.
+    # Diagnostic keeps the two SHORT lines it had — the title is centred on
+    # the AXES, and an aspect-equal frame routinely sits off-centre in the
+    # figure, so a long title runs past the figure edge and matplotlib clips
+    # rather than wraps it; the spread stats live in the log line either way.
+    if title is not None:
+        title_text = title
+    elif presentation:
+        title_text = f"Unit {unit_id}" if unit_id is not None else ""
+    else:
+        title_text = (
             f"unit {unit_id} waveform footprint\n{n_drawn} of {n_channels} "
             f"electrodes drawn - peak {peak:.0f} µV"
-        ),
-        fontsize=11,
-    )
+        )
+    ax.set_title(title_text, fontsize=13 if presentation else 11)
 
-    # Every encoding gets a legend key (Adam, 2026-08-11), and the omission
-    # rule is an encoding: a reader must know why most electrodes carry no
-    # trace before trusting the spread they see.
-    colour_key = (
-        "one miniature copy of this unit's average waveform per drawn "
-        "electrode, coloured by that trace's peak-to-peak (PTP) amplitude"
-    )
-    colour_key += " — see the colour bar" if show_colorbar else " in microvolts (µV)"
-    subset_words = (
-        f"electrodes below {trace_threshold:.0%} of the unit's loudest "
-        "peak-to-peak (PTP) amplitude"
-    )
-    if trace_radius_um:
-        subset_words += f", or farther than {float(trace_radius_um):.0f} µm from the ringed electrode"
-    handles = [
-        _legend_line(_CMAP_MID_COLOR, colour_key, lw=1.4),
-        _legend_dot(
-            _CONTEXT_COLOR,
-            f"every other electrode ({int(context.shape[0]) - n_drawn}), drawn for "
-            f"position only — {subset_words} carry no trace",
-        ),
-    ]
-    if mark_extremum:
-        handles.append(
-            _legend_ring(
-                _EXTREMUM_COLOR,
-                f"electrode where this unit's signal is largest (peak-to-peak {peak:.0f} µV)",
+    if presentation:
+        # Presentation (Adam, 2026-08-12): no prose caption, no framed legend.
+        # A single compact inline key for the extremum ring — the one genuinely
+        # non-obvious glyph, exactly the "diamond = soma" case Adam allowed a
+        # small key for — and nothing else. The omission rule, the encoding
+        # sentences and the per-unit numbers all move to the slide text.
+        if mark_extremum:
+            ax.legend(
+                handles=[_legend_ring(_EXTREMUM_COLOR, "loudest electrode", size=8.0)],
+                loc="upper right",
+                fontsize=8,
+                framealpha=0.6,
+                handletextpad=0.4,
+                borderpad=0.4,
             )
-        )
-    if normalize == "per_channel":
-        scale_key = (
-            f"scale bar: one trace box spans {time_words} across; its height is "
-            "each trace's own peak, so heights are not comparable between electrodes"
-        )
+        # No `_add_caption` to run `tight_layout` for us in this branch.
+        fig.tight_layout()
     else:
-        scale_key = (
-            f"scale bar: one trace box spans {time_words} across and "
-            f"{uv_label} top to bottom"
+        # Every encoding gets a legend key (Adam, 2026-08-11), and the omission
+        # rule is an encoding: a reader must know why most electrodes carry no
+        # trace before trusting the spread they see.
+        colour_key = (
+            "one miniature copy of this unit's average waveform per drawn "
+            "electrode, coloured by that trace's peak-to-peak (PTP) amplitude"
         )
-    handles.append(_legend_line("black", scale_key, lw=1.2))
+        colour_key += " — see the colour bar" if show_colorbar else " in microvolts (µV)"
+        subset_words = (
+            f"electrodes below {trace_threshold:.0%} of the unit's loudest "
+            "peak-to-peak (PTP) amplitude"
+        )
+        if trace_radius_um:
+            subset_words += f", or farther than {float(trace_radius_um):.0f} µm from the ringed electrode"
+        handles = [
+            _legend_line(_CMAP_MID_COLOR, colour_key, lw=1.4),
+            _legend_dot(
+                _CONTEXT_COLOR,
+                f"every other electrode ({int(context.shape[0]) - n_drawn}), drawn for "
+                f"position only — {subset_words} carry no trace",
+            ),
+        ]
+        if mark_extremum:
+            handles.append(
+                _legend_ring(
+                    _EXTREMUM_COLOR,
+                    f"electrode where this unit's signal is largest (peak-to-peak {peak:.0f} µV)",
+                )
+            )
+        if normalize == "per_channel":
+            scale_key = (
+                f"scale bar: one trace box spans {time_words} across; its height is "
+                "each trace's own peak, so heights are not comparable between electrodes"
+            )
+        else:
+            scale_key = (
+                f"scale bar: one trace box spans {time_words} across and "
+                f"{uv_label} top to bottom"
+            )
+        handles.append(_legend_line("black", scale_key, lw=1.2))
 
-    cap_sentence = (
-        f"Traces are drawn only where this unit's peak-to-peak (PTP) amplitude "
-        f"reaches at least {trace_threshold:.0%} of its loudest electrode"
-    )
-    if trace_radius_um:
-        cap_sentence += f" and within {float(trace_radius_um):.0f} µm of that electrode"
-    if capped:
-        cap_sentence += f", capped at the {int(max_traces)} loudest"
-    cap_sentence += (
-        f"; the other {int(context.shape[0]) - n_drawn} electrodes are grey "
-        "position-only dots, omitted so a full-chip template stays readable."
-    )
-    caption_parts = [
-        "Each drawn electrode carries a miniature copy of the unit's average "
-        "waveform at that electrode's real position on the array (axes are "
-        "micrometres, µm); how far those traces spread IS the footprint.",
-        cap_sentence,
-        acronym_note("PTP"),
-    ]
-    if normalize == "per_channel":
-        caption_parts.append(
-            "Trace HEIGHT is scaled electrode by electrode so small, distant "
-            "deflections stay visible; colour still carries the true amplitude "
-            "in microvolts (µV), so the two together give the real numbers."
+        cap_sentence = (
+            f"Traces are drawn only where this unit's peak-to-peak (PTP) amplitude "
+            f"reaches at least {trace_threshold:.0%} of its loudest electrode"
         )
-    else:
-        caption_parts.append(
-            "Every trace is drawn on one shared microvolt (µV) scale, so trace "
-            "heights are directly comparable between electrodes."
+        if trace_radius_um:
+            cap_sentence += f" and within {float(trace_radius_um):.0f} µm of that electrode"
+        if capped:
+            cap_sentence += f", capped at the {int(max_traces)} loudest"
+        cap_sentence += (
+            f"; the other {int(context.shape[0]) - n_drawn} electrodes are grey "
+            "position-only dots, omitted so a full-chip template stays readable."
         )
-    caption_parts.append(PROXY_NOT_MODEL)
-    caption_parts.append(caption)
-    # Legend goes through `_add_caption`'s bottom margin, not `ax.legend`: on a
-    # full-chip frame there is no in-axes corner these four wrapped keys fit in
-    # without covering array context or the corner scale bar (seen on the first
-    # real render), and the margin owner guarantees data stays uncovered.
-    _add_caption(fig, _fold_caption(caption_parts), legend_handles=handles)
+        caption_parts = [
+            "Each drawn electrode carries a miniature copy of the unit's average "
+            "waveform at that electrode's real position on the array (axes are "
+            "micrometres, µm); how far those traces spread IS the footprint.",
+            cap_sentence,
+            acronym_note("PTP"),
+        ]
+        if normalize == "per_channel":
+            caption_parts.append(
+                "Trace HEIGHT is scaled electrode by electrode so small, distant "
+                "deflections stay visible; colour still carries the true amplitude "
+                "in microvolts (µV), so the two together give the real numbers."
+            )
+        else:
+            caption_parts.append(
+                "Every trace is drawn on one shared microvolt (µV) scale, so trace "
+                "heights are directly comparable between electrodes."
+            )
+        caption_parts.append(PROXY_NOT_MODEL)
+        caption_parts.append(caption)
+        # Legend goes through `_add_caption`'s bottom margin, not `ax.legend`: on a
+        # full-chip frame there is no in-axes corner these four wrapped keys fit in
+        # without covering array context or the corner scale bar (seen on the first
+        # real render), and the margin owner guarantees data stays uncovered.
+        _add_caption(fig, _fold_caption(caption_parts), legend_handles=handles)
 
     out_path = _save_and_release(fig, out_path)
     logger.info(

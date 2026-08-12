@@ -370,6 +370,98 @@ def test_footprint_diagnostic_says_samples_without_a_sampling_rate(tmp_path):
 
 
 # --------------------------------------------------------------------------
+# footprint reconstruction ("circle" plot) — presentation vs diagnostic style
+# --------------------------------------------------------------------------
+
+class _FakeGtr:
+    """Minimal stand-in for an `axon_velocity` GraphAxonTracking result.
+
+    `plot_unit_footprint_reconstruction` reads only `.template`, `.locations`,
+    `.fs` and `.branches` (`branches` via `_branch_channel_paths`, which wants
+    a list of dicts each carrying a `'channels'` array) — so a plain object
+    with those four attributes drives the whole render without SpikeInterface
+    or the real tracker.
+    """
+
+    def __init__(self, template, locations, fs, branches):
+        self.template = template
+        self.locations = locations
+        self.fs = fs
+        self.branches = branches
+
+
+def _recon_gtr():
+    template, locations = _footprint_inputs(n_channels=40, n_samples=60)
+    branches = [
+        {"channels": np.array([0, 1, 2, 3], dtype=int)},
+        {"channels": np.array([10, 11, 12], dtype=int)},
+    ]
+    return _FakeGtr(template, locations, 20_000.0, branches)
+
+
+def _render_recon_capturing(tmp_path, style):
+    """Render the reconstruction plot and snapshot the figure at close time
+    (this family saves with `fig.savefig` + `plt.close`, not `_save_and_release`)."""
+    import matplotlib.pyplot as plt
+
+    cap = {}
+    real_close = plt.close
+
+    def spy(fig):
+        ax = fig.axes[0]
+        cap["title"] = _norm(ax.get_title())
+        cap["legend"] = (
+            [_norm(t.get_text()) for t in ax.get_legend().get_texts()]
+            if ax.get_legend() is not None
+            else []
+        )
+        cap["ax_texts"] = [_norm(t.get_text()) for t in ax.texts]
+        cap["cbar"] = [_norm(a.get_ylabel()) for a in fig.get_axes() if _norm(a.get_ylabel())]
+        return real_close(fig)
+
+    plt.close = spy
+    try:
+        rp.plot_unit_footprint_reconstruction(
+            _recon_gtr(), tmp_path / f"recon_{style}.png",
+            unit_id="7", dpi=110, style=style,
+        )
+    finally:
+        plt.close = real_close
+    return cap
+
+
+def test_footprint_reconstruction_presentation_strips_stats_legend_and_numbers(tmp_path):
+    """style="presentation" (Adam, 2026-08-12): title is the unit id alone
+    with no per-unit stats, no framed branch legend, the scale circle carries
+    no per-unit µV number, and the colour bar gets the compact label."""
+    pres = _render_recon_capturing(tmp_path, "presentation")
+
+    assert pres["title"] == "Unit 7", pres["title"]
+    for banned in ("branch", "electrode", "amplitude", "pitch"):
+        assert banned not in pres["title"], pres["title"]
+    # The branch legend box is gone.
+    assert pres["legend"] == [], pres["legend"]
+    # No per-unit peak-amplitude number baked into the scale circle (or anywhere).
+    assert not any("µV" in t for t in pres["ax_texts"]), pres["ax_texts"]
+    # Compact colour-bar label.
+    assert any(label == "Latency (ms)" for label in pres["cbar"]), pres["cbar"]
+
+
+def test_footprint_reconstruction_diagnostic_default_is_unchanged(tmp_path):
+    """The diagnostic default keeps the verbose review figure verbatim: the
+    stats title, the branch legend, the µV scale-circle reference and the long
+    self-documenting colour-bar label all stay."""
+    diag = _render_recon_capturing(tmp_path, "diagnostic")
+
+    assert "branch(es)" in diag["title"] and "electrode(s)" in diag["title"], diag["title"]
+    assert diag["legend"] and any("branch" in x for x in diag["legend"]), diag["legend"]
+    assert any("µV" in t for t in diag["ax_texts"]), diag["ax_texts"]
+    assert any(
+        "peak time relative to the largest electrode" in label for label in diag["cbar"]
+    ), diag["cbar"]
+
+
+# --------------------------------------------------------------------------
 # figure_text — the shared glossary is the single source of truth
 # --------------------------------------------------------------------------
 

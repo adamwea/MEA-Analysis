@@ -60,6 +60,22 @@ Notable current rulings that live in THIS repo's code:
   annulus meant every pre-ruling run effectively used a global median;
   descriptors now record requested/effective/fallback, and
   `LEGACY_ZERO_WIDTH_RADIUS` exists for byte-faithful replays.
+- **Presentation figure knobs (Adam, 2026-08-12):** the figure functions
+  grew a deck-ready cut, all scoped to `style="presentation"` — **diagnostic
+  style is byte-identical, so the pipeline's review-figure family and its
+  shared `diagnostics/channel_layout` chrome are unchanged**. Black canvas +
+  white chrome on the waveform-footprint (`postprocess/footprints.py`),
+  unit-locations (`diagnostics/unit_locations.py`) and whole-chip activity
+  (`diagnostics/activity_map.py`, newest module — its `background` now
+  defaults None→black for presentation, so capsule 19's run-emitted map goes
+  dark on the next run); an arbor `zoom_bbox` on both the reconstruction
+  (`reconstruction/plots.py`) and the footprint so paired panels frame the
+  same window; `invert_y_axis` on the footprint so it matches the
+  reconstruction/overlay row-0-at-top convention; `channel_layout.
+  _save_and_release` gained an optional `facecolor=`. Capsule-26
+  `reconstruction/overlay.py` is the all-recon overlay. These mid-sprint
+  additions still owe their formal Pass-2 pass — live anchor is the vault
+  `pass2-session-state.md` (review is at capsule 07 next).
 
 **Agents working across these repos follow the binding ops file
 `~/dev/RBS-adamwea/worktrees/WAVE1-AGENT-NOTES.md`** (harness quirks, git
@@ -94,7 +110,7 @@ concluding something is absent.
 **`graphify-out/` is gitignored** (`.gitignore` L53–55) — the graph is a
 per-worktree build artifact, never committed. A fresh worktree has no graph;
 build it with `graphify update .` (~40 s for this repo). This worktree's graph
-was built 2026-08-11: 1533 nodes / 2964 edges / 76 communities. This repo has
+was built 2026-08-12: 1717 nodes / 3362 edges / 86 communities. This repo has
 no `.graphifyignore`, so the graph also covers the legacy `dashboards/`,
 `UnitMatch/` and `helper_functions.py` — per the repo boundary above, those
 nodes are read-only context, never edit targets.

@@ -716,7 +716,7 @@ def _render_footprint_core(
     template_arr, locations_arr, fs, *,
     dpi, figsize, invert_y_axis, cmap_name,
     max_radius_pitch_fraction, min_radius_max_fraction, radius_scaling, background,
-    style="diagnostic",
+    style="diagnostic", zoom_bbox=None,
 ):
     """The amplitude/latency circle footprint alone — no branches, no title,
     not yet saved. Shared by :func:`plot_unit_footprint_reconstruction`
@@ -766,8 +766,21 @@ def _render_footprint_core(
     # Axes.autoscale the way a scatter PathCollection does, so without this
     # the axes can be left at their default (0, 1) view.
     pad = float(np.max(radii_um)) if radii_um.size else 1.0
-    ax.set_xlim(locations_arr[:, 0].min() - pad, locations_arr[:, 0].max() + pad)
-    ax.set_ylim(locations_arr[:, 1].min() - pad, locations_arr[:, 1].max() + pad)
+    if zoom_bbox is not None:
+        # Frame to an explicit box (the unit's ARBOR extent from its
+        # reconstruction, arbor_bbox_from_reconstruction) instead of the full
+        # electrode span, with a pitch-scaled margin matched to the waveform-
+        # footprint's own arbor framing (~6 pitches) so the two panels show the
+        # same window when paired on a slide (Adam, 2026-08-12). Circles outside
+        # the box stay in the collection; matplotlib clips them at the axes edge.
+        bx0, bx1, by0, by1 = (float(v) for v in zoom_bbox)
+        pitch_margin = (6.0 * pitch_um) if np.isfinite(pitch_um) else pad
+        margin = pad + pitch_margin
+        ax.set_xlim(min(bx0, bx1) - margin, max(bx0, bx1) + margin)
+        ax.set_ylim(min(by0, by1) - margin, max(by0, by1) + margin)
+    else:
+        ax.set_xlim(locations_arr[:, 0].min() - pad, locations_arr[:, 0].max() + pad)
+        ax.set_ylim(locations_arr[:, 1].min() - pad, locations_arr[:, 1].max() + pad)
 
     vmin, vmax = _normalize_colorbar_limits(latency)
     diameters_um = 2.0 * radii_um
@@ -961,6 +974,7 @@ def plot_unit_footprint_reconstruction(
         radius_scaling=str(kwargs.get("radius_scaling", DEFAULT_RADIUS_SCALING)),
         background=background,
         style=style,
+        zoom_bbox=kwargs.get("zoom_bbox"),
     )
     try:
         branch_paths = _branch_channel_paths(gtr)

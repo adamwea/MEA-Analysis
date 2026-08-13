@@ -702,6 +702,7 @@ def plot_unit_waveform_footprint(
     backdrop_alpha=None,
     zoom_pad_pitches=None,
     zoom_bbox=None,
+    invert_y_axis=None,
 ):
     """The waveform-footprint style — miniature waveform traces at their true
     electrode positions — rendered from DENSE template arrays instead of a
@@ -822,6 +823,13 @@ def plot_unit_waveform_footprint(
         backdrop_alpha = 0.30 if presentation else 1.0
     if zoom_pad_pitches is None:
         zoom_pad_pitches = _ZOOM_MARGIN_PITCHES
+    if invert_y_axis is None:
+        # Presentation matches the circle reconstruction plot and the overlay,
+        # both of which use the MEA "row 0 at top" convention (invert_y_axis
+        # default True) — so a footprint paired beside its reconstruction on a
+        # slide points the same way instead of being vertically mirrored (Adam,
+        # 2026-08-12). Diagnostic keeps its historical y-up framing.
+        invert_y_axis = presentation
     template_arr = np.nan_to_num(np.asarray(template, dtype=float), nan=0.0)
     locations_arr = np.asarray(locations, dtype=float)[:, :2]
     if template_arr.ndim != 2 or template_arr.shape[0] != locations_arr.shape[0]:
@@ -944,6 +952,11 @@ def plot_unit_waveform_footprint(
         ax.set_xlim(float(frame[:, 0].min()) - margin, float(frame[:, 0].max()) + margin)
         ax.set_ylim(float(frame[:, 1].min()) - margin, float(frame[:, 1].max()) + margin)
     ax.set_aspect("equal", adjustable="box")
+    # Applied AFTER set_ylim so it flips whatever frame was chosen; the corner
+    # scale bar reads ax.get_ylim() afterwards and places itself correctly under
+    # inversion (its offsets are relative to the returned limits).
+    if invert_y_axis:
+        ax.invert_yaxis()
 
     if fs:
         duration_ms = (n_samples / float(fs)) * 1000.0

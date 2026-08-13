@@ -223,7 +223,7 @@ def _draw_footprint(
 
 
 def _add_scale_bar(ax, width_um, height_um, duration_ms, amplitude_scale, normalize="shared",
-                   time_label=None):
+                   time_label=None, color="black"):
     """Corner marker saying what one trace's width and height mean.
 
     Without it the figure has micrometre axes and millivolt-shaped squiggles and
@@ -244,12 +244,12 @@ def _add_scale_bar(ax, width_um, height_um, duration_ms, amplitude_scale, normal
     x0 = x_min + 0.04 * (x_max - x_min)
     y0 = y_min + 0.06 * (y_max - y_min)
 
-    ax.plot([x0, x0 + width_um], [y0, y0], color="black", lw=1.2, zorder=4)
-    ax.plot([x0, x0], [y0, y0 + height_um], color="black", lw=1.2, zorder=4)
+    ax.plot([x0, x0 + width_um], [y0, y0], color=color, lw=1.2, zorder=4)
+    ax.plot([x0, x0], [y0, y0 + height_um], color=color, lw=1.2, zorder=4)
     ax.text(
         x0 + width_um / 2.0, y0 - 0.015 * (y_max - y_min),
         time_label if time_label is not None else f"{duration_ms:.1f} ms",
-        ha="center", va="top", fontsize=7, zorder=4,
+        ha="center", va="top", fontsize=7, zorder=4, color=color,
     )
     if normalize == "per_channel":
         uv_label = "each trace's own peak"
@@ -261,7 +261,7 @@ def _add_scale_bar(ax, width_um, height_um, duration_ms, amplitude_scale, normal
         # in data units, so an axis-fraction pad collides with it whenever the
         # aspect-equal box is tall and narrow.
         x0 - 0.6 * width_um, y0 + height_um / 2.0, uv_label,
-        ha="center", va="center", fontsize=7, rotation=90, zorder=4,
+        ha="center", va="center", fontsize=7, rotation=90, zorder=4, color=color,
     )
     return uv_label
 
@@ -879,6 +879,17 @@ def plot_unit_waveform_footprint(
     fig = _new_figure(figsize, dpi)
     ax = fig.subplots()
 
+    # Presentation renders on a BLACK canvas to match the circle reconstruction
+    # plot (Adam, 2026-08-12: "same or similar colour schemes as circles plot,
+    # dark backgrounds"). Diagnostic is unchanged — white, part of the pipeline's
+    # review-figure family that shares this module's channel_layout chrome.
+    dark = presentation
+    bg = "black" if dark else "white"
+    text_color = "white" if dark else "black"
+    if dark:
+        fig.set_facecolor(bg)
+        ax.set_facecolor(bg)
+
     if show_backdrop:
         ax.scatter(
             context[:, 0], context[:, 1], s=2, c=_CONTEXT_COLOR, linewidths=0,
@@ -944,7 +955,7 @@ def plot_unit_waveform_footprint(
         time_label = f"{n_samples} samples"
     uv_label = _add_scale_bar(
         ax, width_um, height_um, duration_ms, amplitude_scale,
-        normalize=normalize, time_label=time_label,
+        normalize=normalize, time_label=time_label, color=text_color,
     )
 
     if show_colorbar:
@@ -952,11 +963,19 @@ def plot_unit_waveform_footprint(
         bar.set_label(
             "PTP (µV)"
             if presentation
-            else "peak-to-peak (PTP) amplitude of that electrode's trace (µV)"
+            else "peak-to-peak (PTP) amplitude of that electrode's trace (µV)",
+            color=text_color,
         )
+        if dark:
+            bar.ax.tick_params(colors=text_color)
+            bar.outline.set_edgecolor(text_color)
 
-    ax.set_xlabel("x (µm)")
-    ax.set_ylabel("y (µm)")
+    ax.set_xlabel("x (µm)", color=text_color)
+    ax.set_ylabel("y (µm)", color=text_color)
+    if dark:
+        ax.tick_params(colors=text_color)
+        for spine in ax.spines.values():
+            spine.set_color(text_color)
     extent_x = float(xy[:, 0].max() - xy[:, 0].min())
     extent_y = float(xy[:, 1].max() - xy[:, 1].min())
     # Standard title only. Presentation mode = the unit id alone (Adam: "keep
@@ -975,7 +994,7 @@ def plot_unit_waveform_footprint(
             f"unit {unit_id} waveform footprint\n{n_drawn} of {n_channels} "
             f"electrodes drawn - peak {peak:.0f} µV"
         )
-    ax.set_title(title_text, fontsize=13 if presentation else 11)
+    ax.set_title(title_text, fontsize=13 if presentation else 11, color=text_color)
 
     if presentation:
         # Presentation (Adam, 2026-08-12): no prose caption, no framed legend.
@@ -984,7 +1003,7 @@ def plot_unit_waveform_footprint(
         # small key for — and nothing else. The omission rule, the encoding
         # sentences and the per-unit numbers all move to the slide text.
         if mark_extremum:
-            ax.legend(
+            leg = ax.legend(
                 handles=[_legend_ring(_EXTREMUM_COLOR, "loudest electrode", size=8.0)],
                 loc="upper right",
                 fontsize=8,
@@ -992,6 +1011,11 @@ def plot_unit_waveform_footprint(
                 handletextpad=0.4,
                 borderpad=0.4,
             )
+            if dark and leg is not None:
+                leg.get_frame().set_facecolor(bg)
+                leg.get_frame().set_edgecolor(text_color)
+                for t in leg.get_texts():
+                    t.set_color(text_color)
         # No `_add_caption` to run `tight_layout` for us in this branch.
         fig.tight_layout()
     else:
@@ -1074,7 +1098,9 @@ def plot_unit_waveform_footprint(
         # real render), and the margin owner guarantees data stays uncovered.
         _add_caption(fig, _fold_caption(caption_parts), legend_handles=handles)
 
-    out_path = _save_and_release(fig, out_path)
+    out_path = _save_and_release(
+        fig, out_path, facecolor=(fig.get_facecolor() if dark else None)
+    )
     logger.info(
         "wrote waveform footprint: %s (unit=%s drawn=%d/%d extent=%.0fx%.0f um peak=%.1f uV)",
         out_path, unit_id, n_drawn, n_channels, extent_x, extent_y, peak,

@@ -248,6 +248,17 @@ def plot_unit_locations(
     fig = _new_figure(figsize, dpi)
     ax = fig.subplots()
 
+    # Presentation renders on a BLACK canvas to match the circle reconstruction
+    # plot (Adam, 2026-08-12: "same or similar colour schemes as circles plot,
+    # dark backgrounds"). Diagnostic stays white — it is part of the pipeline's
+    # spatial review-figure family (shared channel_layout chrome), unchanged.
+    dark = presentation
+    bg = "black" if dark else "white"
+    text_color = "white" if dark else "black"
+    if dark:
+        fig.set_facecolor(bg)
+        ax.set_facecolor(bg)
+
     # The context layer: every electrode of the union channel set, in the same
     # fixed grey the other layout figures use — the units are the subject.
     ax.scatter(
@@ -319,9 +330,16 @@ def plot_unit_locations(
 
     # Presentation forces a standard, stat-free title (the caller's title
     # carries a per-well unit count that belongs on the slide, Adam 2026-08-12).
-    ax.set_title("Unit locations" if presentation else (title or "Recomputed unit locations"))
-    ax.set_xlabel("x (µm)")
-    ax.set_ylabel("y (µm)")
+    ax.set_title(
+        "Unit locations" if presentation else (title or "Recomputed unit locations"),
+        color=text_color,
+    )
+    ax.set_xlabel("x (µm)", color=text_color)
+    ax.set_ylabel("y (µm)", color=text_color)
+    if dark:
+        ax.tick_params(colors=text_color)
+        for spine in ax.spines.values():
+            spine.set_color(text_color)
     # Electrode spacing is isotropic; a stretched aspect turns a real distance
     # between two estimates into a lie.
     ax.set_aspect("equal", adjustable="box")
@@ -375,11 +393,18 @@ def plot_unit_locations(
                 markerfacecolor="none", markeredgecolor=_COM_COLOR,
                 markeredgewidth=1.2, label="centre of mass (CoM)",
             ))
-        _add_caption(fig, "", legend_handles=pres_handles)
+        legend = _add_caption(fig, "", legend_handles=pres_handles)
+        if dark and legend is not None:
+            legend.get_frame().set_facecolor(bg)
+            legend.get_frame().set_edgecolor(text_color)
+            for t in legend.get_texts():
+                t.set_color(text_color)
     else:
         _add_caption(fig, _fold_caption(caption_parts), legend_handles=handles)
 
-    out_path = _save_and_release(fig, out_path)
+    out_path = _save_and_release(
+        fig, out_path, facecolor=(fig.get_facecolor() if dark else None)
+    )
     logger.info(
         "wrote unit locations plot: %s (%d unit(s): %d triangulated, %d CoM, "
         "%d joined; %d electrodes)",

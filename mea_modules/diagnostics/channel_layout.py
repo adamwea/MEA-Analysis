@@ -400,12 +400,22 @@ def _new_figure(figsize, dpi):
     return fig
 
 
-def _save_and_release(fig, out_path):
-    """Write `fig` to `out_path` and drop its artists. Returns the Path."""
+def _save_and_release(fig, out_path, facecolor=None):
+    """Write `fig` to `out_path` and drop its artists. Returns the Path.
+
+    `facecolor` (default None) is forwarded to ``savefig`` only when given, so a
+    dark-background figure (``style="presentation"`` in the emitters that draw on
+    black) writes with its own face colour instead of the rcParam default. None
+    keeps the historical call byte-for-byte for every existing white-background
+    caller — the diagnostic review-figure family is untouched.
+    """
     out_path = Path(out_path)
     out_path.parent.mkdir(parents=True, exist_ok=True)
     try:
-        fig.savefig(out_path)
+        if facecolor is not None:
+            fig.savefig(out_path, facecolor=facecolor)
+        else:
+            fig.savefig(out_path)
     finally:
         # Called in a loop over segments; releasing artists here keeps peak RSS
         # flat instead of growing with the segment count.

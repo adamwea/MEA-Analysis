@@ -241,7 +241,7 @@ def plot_whole_chip_activity(
     colorbar_label=None,
     units_label="µV·Hz",
     figsize=None,
-    background="#ffffff",
+    background=None,
     svg_path=None,
 ):
     """Draw the whole-chip activity field to `out_path`; return a manifest dict.
@@ -278,8 +278,11 @@ def plot_whole_chip_activity(
         Text overrides. ``units_label`` names the activity unit (µV·Hz).
     figsize : tuple or None
         Overrides the near-square default.
-    background : str
-        Figure/axes face colour.
+    background : str or None
+        Figure/axes face colour. ``None`` (default) ties it to ``style``: black
+        for ``"presentation"`` (matching the circle reconstruction plot — Adam,
+        2026-08-12: "dark backgrounds") and white for ``"diagnostic"``. An
+        explicit colour always wins.
     svg_path : path-like or None
         If given, also write a vector SVG (for poster use).
 
@@ -334,6 +337,14 @@ def plot_whole_chip_activity(
     else:  # auto
         use_image = grid is not None
 
+    # Background follows style unless the caller overrides it: presentation is a
+    # black canvas to match the circle reconstruction plot (Adam, 2026-08-12);
+    # diagnostic stays white. text_color tracks it so every mark reads.
+    if background is None:
+        background = "black" if style == "presentation" else "#ffffff"
+    dark = str(background).strip().lower() in {"black", "k", "#000", "#000000"}
+    text_color = "white" if dark else "black"
+
     fig = _new_figure(figsize or _PRESENTATION_FIGSIZE, dpi)
     fig.set_facecolor(background)
     ax = fig.subplots()
@@ -376,21 +387,29 @@ def plot_whole_chip_activity(
     pad = 0.015 * max(xmax - xmin, ymax - ymin, 1.0)
     ax.add_patch(Rectangle(
         (xmin - pad, ymin - pad), (xmax - xmin) + 2 * pad, (ymax - ymin) + 2 * pad,
-        fill=False, edgecolor="0.4", linestyle="--", linewidth=1.0, zorder=5,
+        fill=False, edgecolor=("0.6" if dark else "0.4"), linestyle="--",
+        linewidth=1.0, zorder=5,
     ))
 
-    ax.set_xlabel("x (µm)")
-    ax.set_ylabel("y (µm)")
+    ax.set_xlabel("x (µm)", color=text_color)
+    ax.set_ylabel("y (µm)", color=text_color)
+    if dark:
+        ax.tick_params(colors=text_color)
+        for spine in ax.spines.values():
+            spine.set_color(text_color)
 
     if title is None:
         title = ("Whole-chip activity" if style == "presentation"
                  else "Whole-chip template-projected activity (rate × template amplitude)")
-    ax.set_title(title, fontsize=(14 if style == "presentation" else 12))
+    ax.set_title(title, fontsize=(14 if style == "presentation" else 12), color=text_color)
 
     if colorbar_label is None:
         colorbar_label = f"activity ({units_label})" + (" — log scale" if use_log else "")
     cbar = fig.colorbar(mappable, ax=ax, fraction=0.046, pad=0.02)
-    cbar.set_label(colorbar_label, fontsize=11)
+    cbar.set_label(colorbar_label, fontsize=11, color=text_color)
+    if dark:
+        cbar.ax.tick_params(colors=text_color)
+        cbar.outline.set_edgecolor(text_color)
 
     if style == "diagnostic" and caption:
         import textwrap

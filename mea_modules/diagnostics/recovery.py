@@ -1,6 +1,6 @@
-"""Look at what the recovery actually recovered.
+"""Look at what the honestly-stitched template actually measured.
 
-Three questions a reviewer has about a synthesized sorting, and one plot each:
+Two questions a reviewer has about a stitched sorting, and one plot each:
 
 * **Where is the array sampled well?** :func:`plot_coverage_map` colours every
   electrode by how many segments routed it. On an AxonTracking scan this is
@@ -8,15 +8,11 @@ Three questions a reviewer has about a synthesized sorting, and one plot each:
   rest tiled one configuration each — and that shape is worth seeing, because it
   is also the map of how reliable each electrode's template is.
 
-* **Did the correction do anything?** :func:`plot_rescale_effect` shows the
-  per-electrode factor between the raw union-recording average and the
-  corrected one. Anything far from 1.0 is an electrode that only some segments
-  saw, and the histogram is the honest summary of how wrong the uncorrected
-  template would have been.
-
-* **Does a unit's footprint reach past the backbone?** :func:`plot_footprint_gain`
-  draws one unit twice — on the electrodes the sort could see, and on the union —
-  which is the whole point of the exercise made visible.
+* **How much data backs this unit's footprint, electrode by electrode?**
+  :func:`plot_footprint_gain` draws one unit's coverage-weighted footprint —
+  the measured amplitude at every electrode, alongside how many spikes or
+  segments were averaged into each value — so a reader can tell a
+  well-supported measurement from one resting on a single spike.
 
 Pure plotting: every function takes arrays the caller already holds, writes a
 PNG, and returns its path. No file reading, no argparse.
@@ -27,7 +23,6 @@ import logging
 from .channel_layout import (
     _add_caption,
     _fold_caption,
-    _legend_dot,
     _legend_line,
     _legend_patch,
     _new_figure,
@@ -38,7 +33,6 @@ from .figure_text import (
     BACKBONE_CHANNELS,
     DENSE_STITCH,
     PROXY_NOT_MODEL,
-    acronym_note,
 )
 
 logger = logging.getLogger(__name__)
@@ -58,25 +52,11 @@ _COLORBAR_LABEL_FONTSIZE = 8
 # --------------------------------------------------------------------------- #
 #
 # Named constants rather than inline literals, for the reason `figure_text`
-# exists at all (Adam, 2026-08-11): the same quantity is drawn on three figures
-# here and two more in `stitch_wiring`, and a reader who meets it under three
-# different names has to work out for themselves whether it is the same number.
-# Every one of these carries a unit or says explicitly that it has none.
-
-#: What `coverage` / `contributing_weight` actually counts — and it is NOT
-#: always spikes. Capsule 10's ``averaging_method="uniform"`` stores the number
-#: of contributing SEGMENTS in the very same array, so a figure that says
-#: "spikes" unconditionally is wrong on every uniform stitch. A caller that
-#: knows its weighting passes a narrower `weight_label`.
-COVERAGE_WEIGHT_LABEL = (
-    "data behind one unit-electrode average\n"
-    "(count: spikes averaged in, or contributing segments under uniform weighting)"
-)
-
-#: Same quantity, one line, for panels whose x axis is already narrow.
-COVERAGE_WEIGHT_SHORT_LABEL = (
-    "data behind the average (count of spikes,\nor of segments under uniform weighting)"
-)
+# exists at all (Adam, 2026-08-11): the same quantity is drawn on this
+# module's footprint figure and again in `stitch_wiring`, and a reader who
+# meets it under two different names has to work out for themselves whether
+# it is the same number. Every one of these carries a unit or says explicitly
+# that it has none.
 
 SEGMENTS_ROUTED_COLORBAR_LABEL = (
     "segments that routed this electrode\n(count of segments, not a segment number)"
@@ -268,184 +248,11 @@ def plot_coverage_map(positions, n_segments_routed, out_path, title=None,
     return _save_and_release(fig, out_path)
 
 
-def plot_rescale_effect(coverage, totals, out_path, templates=None, nbefore=None,
-                        title=None, figsize=(16.0, 5.4), dpi=DEFAULT_DPI,
-                        weight_label=None, caption=None):
-    """How much data stands behind each averaged unit-electrode value.
-
-    The rescale factor on its own answers nothing: a factor of 21 backed by 100
-    spikes is a good estimate, and a factor of 2000 backed by 1 spike is noise
-    at full amplitude. Both are "large corrections". What decides trust is how
-    many spikes stand behind each unit-electrode average, so that is what these
-    panels are keyed on.
-
-    1. **How much data backs each estimate.** The coverage distribution, with
-       the counts a reader would threshold on.
-    2. **What that buys, measured.** The pre-spike baseline of a template is
-       signal-free, so its RMS IS the residual noise left after averaging. Plotted
-       against coverage it shows the precision actually achieved — no assumption
-       about the noise level, and it should fall as 1/sqrt(n).
-    3. **What a threshold costs.** How much of the array survives at each
-       minimum-coverage cut, which is the decision being made.
-
-    `templates` is ``(n_units, n_samples, n_channels)``; without it panel 2 is
-    skipped. `nbefore` is how many leading samples precede the spike (default:
-    a third of the window).
-
-    `weight_label` overrides the x-axis wording for the coverage quantity. The
-    default (:data:`COVERAGE_WEIGHT_LABEL`) is deliberately hedged, because the
-    same array holds a spike count under ``spike_count`` weighting and a segment
-    count under ``uniform``; a caller that knows which one it has should say so
-    outright. `caption` appends a line under the axes.
-    """
-    import numpy as np
-
-    coverage = np.asarray(coverage, dtype=float)
-    totals = np.asarray(totals, dtype=float)
-    live = coverage > 0
-    counts = coverage[live]
-
-    weight_axis = weight_label or COVERAGE_WEIGHT_LABEL
-    weight_axis_short = weight_label or COVERAGE_WEIGHT_SHORT_LABEL
-
-    fig = _new_figure(figsize, dpi)
-    axes = fig.subplots(1, 3)
-
-    # --- 1. how many spikes back each estimate ---------------------------
-    ax = axes[0]
-    bins = np.logspace(0, np.log10(max(counts.max(), 10.0)), 40)
-    ax.hist(counts, bins=bins, color="0.35")
-    ax.set_xscale("log"); ax.set_yscale("log")
-    ax.set_xlabel(weight_axis, fontsize=_AXIS_NOTE_FONTSIZE)
-    ax.set_ylabel("unit-electrode pairs (count, logarithmic axis)")
-    ax.set_title("how much data backs each averaged value")
-    # The summary numbers ride IN the legend label rather than in a floating text
-    # box, the way plot_channel_layout carries its counts: a separate box has to
-    # be placed somewhere, and wherever that is, the legend wants it too.
-    handles = [_legend_patch(
-        "0.35",
-        f"unit-electrode pairs with this much data behind them "
-        f"(median {int(np.median(counts))}, minimum {int(counts.min())}; "
-        f"{int((counts == 1).sum()):,} rest on a single one)",
-    )]
-    for n, c in ((1, "red"), (10, "darkorange"), (100, "green")):
-        if counts.max() >= n:
-            ax.axvline(n, color=c, ls="--", lw=1.0)
-            ax.text(n, ax.get_ylim()[1] * 0.5, f" n={n}", color=c, fontsize=8, rotation=90)
-            handles.append(_legend_line(
-                c, f"reference mark at n = {n}", lw=1.0, linestyle="--",
-            ))
-    ax.legend(handles=handles, loc="best", fontsize=_LEGEND_FONTSIZE,
-              framealpha=_LEGEND_FRAMEALPHA)
-
-    # --- 2. measured precision vs coverage -------------------------------
-    ax = axes[1]
-    if templates is not None:
-        templates = np.asarray(templates)
-        pre = int(nbefore if nbefore is not None else max(2, templates.shape[1] // 3))
-        # The window before the spike carries no signal, so whatever is left in
-        # it is the noise that survived averaging.
-        baseline = np.sqrt((templates[:, :pre, :] ** 2).mean(axis=1))   # (units, chans)
-        noise = baseline[live]
-        edges = np.unique(np.round(np.logspace(0, np.log10(max(counts.max(), 10.0)), 18)))
-        mids, meds = [], []
-        for lo, hi in zip(edges[:-1], edges[1:]):
-            m = (counts >= lo) & (counts < hi)
-            if m.sum() > 20:
-                mids.append(np.sqrt(lo * hi)); meds.append(float(np.median(noise[m])))
-        if mids:
-            mids, meds = np.array(mids), np.array(meds)
-            ax.loglog(mids, meds, "o-", color="0.2")
-            # 1/sqrt(n) anchored on the first bin — the shape averaging should give.
-            ax.loglog(mids, meds[0] * np.sqrt(mids[0] / mids), "--", color="red")
-            ax.legend(
-                handles=[
-                    _legend_line(
-                        "0.2",
-                        "noise left in the pre-spike baseline, median of the pairs "
-                        "in each bin (µV RMS)",
-                        lw=1.4,
-                    ),
-                    _legend_line(
-                        "red",
-                        r"1/$\sqrt{n}$ reference curve, anchored on the first bin "
-                        "— drawn, not fitted",
-                        lw=1.4, linestyle="--",
-                    ),
-                ],
-                loc="best", fontsize=_LEGEND_FONTSIZE, framealpha=_LEGEND_FRAMEALPHA,
-            )
-        ax.set_xlabel(weight_axis_short, fontsize=_AXIS_NOTE_FONTSIZE)
-        ax.set_ylabel("noise left after averaging (µV RMS)")
-        ax.set_title("precision actually achieved")
-    else:
-        ax.set_axis_off()
-        ax.text(0.5, 0.5,
-                "The measured-precision panel needs the\naveraged waveforms; "
-                "they were not supplied\nfor this run.",
-                ha="center", va="center", transform=ax.transAxes, fontsize=9)
-
-    # --- 3. what a coverage threshold costs -------------------------------
-    ax = axes[2]
-    thresholds = np.array([1, 2, 5, 10, 20, 50, 100, 200, 500])
-    thresholds = thresholds[thresholds <= counts.max()]
-    kept = [100.0 * (counts >= t).sum() / coverage.size for t in thresholds]
-    ax.plot(thresholds, kept, "o-", color="0.2")
-    ax.set_xscale("log")
-    ax.set_xlabel("minimum amount of data required to keep a value\n"
-                  "(count, the same quantity as the left panel's x axis)",
-                  fontsize=_AXIS_NOTE_FONTSIZE)
-    ax.set_ylabel("unit-electrode pairs kept (% of all pairs)")
-    ax.set_title("what a minimum-data cut would cost")
-    ax.grid(alpha=0.3)
-    ax.legend(
-        handles=[_legend_line(
-            "0.2", "share of unit-electrode pairs surviving this minimum (%)", lw=1.4,
-        )],
-        loc="best", fontsize=_LEGEND_FONTSIZE, framealpha=_LEGEND_FRAMEALPHA,
-    )
-    for t, k in zip(thresholds, kept):
-        if t in (1, 10, 100):
-            ax.annotate(f"{k:.0f}%", (t, k), textcoords="offset points",
-                        xytext=(4, 6), fontsize=8)
-
-    # The correction's size belongs here as context, not as its own panel: it
-    # is what the rescale bought, but it is not what decides trust.
-    with np.errstate(divide="ignore", invalid="ignore"):
-        retained = np.where(live, coverage / totals[:, None], np.nan)
-    med = float(np.nanmedian(retained))
-    if title:
-        fig.suptitle(f"{title}\nwithout the coverage correction each value would have "
-                     f"kept a median {med:.4f} of its corrected amplitude "
-                     f"(a fraction between 0 and 1, no unit)", fontsize=10)
-
-    caption_parts = [
-        "Every panel is keyed on the same quantity: how much data was averaged "
-        "into one (unit, electrode) value. Nothing here is filtered, thresholded "
-        "or hidden — the dashed lines are reference marks, and the right-hand "
-        "panel only asks what a cut WOULD cost.",
-        DENSE_STITCH,
-    ]
-    if templates is not None:
-        caption_parts.append(acronym_note("RMS"))
-    caption_parts.append(PROXY_NOT_MODEL)
-    if caption:
-        caption_parts.append(caption)
-    _add_caption(fig, _fold_caption(caption_parts, width=_caption_width(figsize)))
-
-    logger.info(
-        "estimate reliability: coverage median %d, min %d, %d pair(s) rest on a "
-        "single spike; uncorrected would have kept a median %.4f of amplitude",
-        int(np.median(counts)), int(counts.min()), int((counts == 1).sum()), med,
-    )
-    return _save_and_release(fig, out_path)
-
-
 def plot_footprint_gain(positions, template, out_path, backbone_mask=None,
                         unit_id=None, coverage=None, title=None,
                         figsize=(15.0, 7.0), dpi=DEFAULT_DPI,
                         highlight_label=None, weight_label=None, caption=None):
-    """One unit on the union array: what was measured, and how much backs it.
+    """One unit's coverage-weighted footprint: what was measured, and how much data backs it.
 
     **Descriptive only — nothing is thresholded, masked, or hidden.** This runs
     before any post-sort QC, so every electrode is drawn at whatever amplitude
@@ -457,24 +264,28 @@ def plot_footprint_gain(positions, template, out_path, backbone_mask=None,
     Two maps of the same array, which is what makes the plot readable without a
     threshold:
 
-    * **amplitude** — peak |value| per electrode, all of them;
-    * **coverage** — how many spikes stand behind each electrode's average.
+    * **amplitude** — peak |value| per electrode, all of them, from the honest
+      per-channel stitch: each electrode's value is a weighted average over
+      only the segments that actually measured it, nothing extrapolated onto
+      an electrode the unit was never recorded on;
+    * **coverage** — how many spikes (or segments, under uniform weighting)
+      stand behind each electrode's average.
 
     Read together they answer the only question that matters here: a distant
     electrode showing signal is interesting if its coverage is high and is
     probably one noisy snippet if its coverage is 1. Neither map decides that
     for the reader; putting them side by side lets the reader decide.
 
-    `backbone_mask` outlines the electrodes the sorter could actually see, so
-    the recovered extent is visible as the difference. That outlined set is the
-    one a sibling figure compares across segments, so `highlight_label` names
-    the sibling by its real emitted filename::
+    `backbone_mask`, when supplied, outlines the electrodes routed in every
+    segment, so a caller can compare the footprint against that anchor set.
+    That outlined set is the one a sibling figure compares across segments, so
+    `highlight_label` names the sibling by its real emitted filename::
 
         highlight_label="electrodes routed in every segment — compared across "
                         "segments in backbone_agreement.png"
 
-    `weight_label` overrides the coverage colour bar's wording (see
-    :func:`plot_rescale_effect`); `caption` appends a line under the axes.
+    `weight_label` overrides the coverage colour bar's default wording
+    (:data:`COVERAGE_COLORBAR_LABEL`); `caption` appends a line under the axes.
     """
     import numpy as np
 
@@ -573,121 +384,6 @@ def plot_footprint_gain(positions, template, out_path, backbone_mask=None,
     return _save_and_release(fig, out_path)
 
 
-def plot_rescale_before_after(positions, templates, coverage, totals, out_path,
-                              unit_ids=None, title=None, dpi=DEFAULT_DPI,
-                              caption=None):
-    """The same units with and without the coverage correction, side by side.
-
-    The uncorrected template is recovered exactly, without recomputing anything:
-    the correction is a per-(unit, electrode) multiply, so dividing it back out
-    reproduces what SpikeInterface originally averaged.
-
-    This is the plot that shows what the correction is FOR. An uncorrected
-    template keeps only the fraction of its amplitude contributed by segments
-    that routed each electrode — about 1/21 on the tiled electrodes of an
-    AxonTracking scan — so the arbor sits at the noise floor and the footprint
-    collapses to whatever happens to sit on the always-on electrodes. The
-    always-on electrodes themselves are untouched by the correction (their
-    coverage IS the total, so the factor is exactly 1), which is why the two
-    panels agree there and diverge everywhere else.
-
-    Each unit gets ONE colour scale shared by its before and after panel, so the
-    difference is the data and not the normalisation — which is why every panel
-    carries its own colour bar rather than one shared bar for the whole figure.
-
-    `caption` appends a line under the axes.
-    """
-    import numpy as np
-
-    positions = np.asarray(positions, dtype=float)[:, :2]
-    templates = np.asarray(templates)
-    coverage = np.asarray(coverage, dtype=float)
-    totals = np.asarray(totals, dtype=float)
-    n_units = templates.shape[0]
-    labels = list(unit_ids) if unit_ids is not None else list(range(n_units))
-
-    xs, ys = np.unique(positions[:, 0]), np.unique(positions[:, 1])
-    col = np.searchsorted(xs, positions[:, 0])
-    row = np.searchsorted(ys, positions[:, 1])
-    extent = [xs[0] - 8.75, xs[-1] + 8.75, ys[0] - 8.75, ys[-1] + 8.75]
-
-    import matplotlib.pyplot as plt
-    from matplotlib.colors import LogNorm
-
-    cmap = plt.get_cmap("magma").copy()
-    cmap.set_bad("#ffffff")
-
-    fig = _new_figure((4.1 * n_units, 8.6), dpi)
-    axes = np.atleast_2d(fig.subplots(2, n_units))
-    if axes.shape[0] == 1:
-        axes = axes.T if n_units == 1 else axes
-
-    for j in range(n_units):
-        corrected = templates[j]
-        with np.errstate(divide="ignore", invalid="ignore"):
-            undo = np.where(coverage[j] > 0, coverage[j] / max(totals[j], 1.0), 0.0)
-        uncorrected = corrected * undo[None, :]
-
-        pc = np.abs(corrected).max(axis=0)
-        pu = np.abs(uncorrected).max(axis=0)
-        vmax = max(pc.max(), pu.max())
-        live = pc[pc > 0]
-        vmin = max(np.percentile(live, 1) if live.size else vmax * 1e-4, vmax * 1e-4)
-        norm = LogNorm(vmin=vmin, vmax=vmax)
-
-        for k, (peak, label) in enumerate(
-            ((pu, "before the coverage correction"), (pc, "after the coverage correction"))
-        ):
-            ax = axes[k, j]
-            img = np.full((ys.size, xs.size), np.nan)
-            img[row, col] = peak
-            image = ax.imshow(img, origin="lower", extent=extent, cmap=cmap, norm=norm,
-                              interpolation="nearest", aspect="equal")
-            ax.set_xticks([]); ax.set_yticks([])
-            if k == 0:
-                ax.set_title(f"unit {labels[j]}", fontsize=12, pad=5)
-            ax.set_xlabel(f"{label}\npeak {peak.max():.0f} µV", fontsize=8.5)
-            # One colour bar per panel: the two panels of a column share a norm,
-            # but no two COLUMNS do, so a single figure-wide bar would be a lie.
-            bar = fig.colorbar(image, ax=ax, shrink=0.82, pad=0.02)
-            bar.set_label(AMPLITUDE_COLORBAR_LABEL, fontsize=6.5)
-            bar.ax.tick_params(labelsize=6)
-
-    axes[0, 0].set_ylabel(
-        "BEFORE\n(plain average over the segments\nthat measured each electrode)",
-        fontsize=9.5,
-    )
-    axes[1, 0].set_ylabel(
-        "AFTER\n(corrected for how many segments\ncould see each electrode)",
-        fontsize=9.5,
-    )
-    # The one categorical colour on the figure. It is white on a white page, so
-    # the key spells out that white is the mark rather than relying on the swatch.
-    axes[0, -1].legend(
-        handles=[_legend_patch("#ffffff", NO_ELECTRODE_LEGEND_LABEL)],
-        loc="upper right", fontsize=6, framealpha=_LEGEND_FRAMEALPHA,
-    )
-    if title:
-        fig.suptitle(title, fontsize=13)
-
-    caption_parts = [
-        "Both rows are the same unit on the same array; only the correction "
-        "differs. Each column's two panels share one colour scale, so a change "
-        "between the rows is the data and not the scaling — but colour scales are "
-        "NOT comparable between columns.",
-        AMPLITUDE_FLOOR_NOTE,
-        DENSE_STITCH,
-        PROXY_NOT_MODEL,
-    ]
-    if caption:
-        caption_parts.append(caption)
-    _add_caption(fig, _fold_caption(caption_parts,
-                                    width=_caption_width((4.1 * n_units, 8.6))))
-
-    logger.info("rescale before/after: %d unit(s) -> %s", n_units, out_path)
-    return _save_and_release(fig, out_path)
-
-
 def _finish_axis(ax, backbone_mask, positions, backbone_label=None):
     """Shared axis dressing for the footprint panels.
 
@@ -714,96 +410,15 @@ def _finish_axis(ax, backbone_mask, positions, backbone_label=None):
     ax.set_ylabel("y (µm)")
 
 
-def plot_template_agreement(reference, candidate, out_path, coverage=None,
-                            labels=("per-segment merge", "union + rescale"),
-                            title=None, figsize=DEFAULT_FIGSIZE, dpi=DEFAULT_DPI,
-                            caption=None):
-    """Do two routes to the same template agree? Scatter plus residual.
-
-    Written for the comparison that matters here — fusing per-segment templates
-    against correcting one union pass — where the two should be identical and
-    any structure in the residual is a bug worth finding.
-
-    `labels` names the two routes; both axes are amplitudes in µV whatever the
-    routes are called, and the figure says so. `caption` appends a line under
-    the axes — the place to name the two routes in the reader's terms rather
-    than in ours.
-    """
-    import numpy as np
-
-    a = np.asarray(reference, dtype=float).ravel()
-    b = np.asarray(candidate, dtype=float).ravel()
-    finite = np.isfinite(a) & np.isfinite(b)
-    a, b = a[finite], b[finite]
-
-    fig = _new_figure(figsize, dpi)
-    left, right = fig.subplots(1, 2)
-
-    lim = float(max(np.abs(a).max(), np.abs(b).max())) if a.size else 1.0
-    left.scatter(a, b, s=1, alpha=0.15, c="0.2", rasterized=True)
-    left.plot([-lim, lim], [-lim, lim], color="red", lw=0.8, ls="--")
-    left.set_xlabel(f"{labels[0]} (µV)")
-    left.set_ylabel(f"{labels[1]} (µV)")
-    left.set_aspect("equal"); left.set_title("value by value")
-    left.legend(
-        handles=[
-            _legend_dot("0.2", "one averaged waveform value, on both routes (µV)", size=4.0),
-            _legend_line("red", "exact agreement (the line y = x)", lw=0.8, linestyle="--"),
-        ],
-        loc="best", fontsize=_LEGEND_FONTSIZE, framealpha=_LEGEND_FRAMEALPHA,
-    )
-
-    residual = b - a
-    right.hist(residual, bins=80, color="0.3")
-    right.set_yscale("log")
-    right.set_xlabel(f"{labels[1]} minus {labels[0]} (µV)")
-    right.set_ylabel("waveform values (count, logarithmic axis)")
-    right.set_title("residual")
-    right.legend(
-        handles=[_legend_patch("0.3", "values whose difference falls in this bin")],
-        loc="best", fontsize=_LEGEND_FONTSIZE, framealpha=_LEGEND_FRAMEALPHA,
-    )
-
-    denom = float(np.abs(a).max()) or 1.0
-    stats = (f"max |difference| = {np.abs(residual).max():.3e} µV\n"
-             f"as a fraction of the largest value = "
-             f"{np.abs(residual).max()/denom:.2e} (no unit)")
-    right.text(0.97, 0.62, stats, transform=right.transAxes,
-               ha="right", va="top", fontsize=8, family="monospace")
-
-    if title:
-        fig.suptitle(title)
-
-    caption_parts = [
-        "Both routes compute the same averaged waveforms from the same recording, "
-        "so every point should land on the dashed line and the residual should be "
-        "a spike at zero; anything else is a difference between the two routes, "
-        "not a property of the cells.",
-        "Amplitudes are in microvolts (µV) on both axes.",
-    ]
-    if caption:
-        caption_parts.append(caption)
-    _add_caption(fig, _fold_caption(caption_parts, width=_caption_width(figsize)))
-
-    logger.info("template agreement: max abs diff %.3e (relative %.2e)",
-                float(np.abs(residual).max()), float(np.abs(residual).max()/denom))
-    return _save_and_release(fig, out_path)
-
-
 __all__ = [
     "plot_coverage_map",
-    "plot_rescale_before_after",
-    "plot_rescale_effect",
     "plot_footprint_gain",
-    "plot_template_agreement",
     # Reader-facing wording, exported so a caller (or a test) can assert on the
     # exact string a figure prints instead of re-typing it.
     "AMPLITUDE_COLORBAR_LABEL",
     "AMPLITUDE_FLOOR_NOTE",
     "BACKBONE_LEGEND_LABEL",
     "COVERAGE_COLORBAR_LABEL",
-    "COVERAGE_WEIGHT_LABEL",
-    "COVERAGE_WEIGHT_SHORT_LABEL",
     "MARKER_IS_ELECTRODE_NOTE",
     "NO_ELECTRODE_LEGEND_LABEL",
     "SEGMENTS_ROUTED_COLORBAR_LABEL",

@@ -40,9 +40,6 @@ POSITIONS = np.array(
     [[x * 17.5, y * 17.5] for y in range(3) for x in range(4)], dtype=float
 )
 N_CHANNELS = POSITIONS.shape[0]
-# Enough units that the measured-precision panel's coverage bins clear the ">20
-# pairs per bin" floor it needs before it will draw anything — that panel's
-# legend is part of what these tests guard, so the fixture has to reach it.
 N_UNITS = 60
 N_SEGMENTS = 3
 
@@ -81,7 +78,6 @@ def _templates(coverage):
 
 COVERAGE = _coverage()
 TEMPLATES = _templates(COVERAGE)
-TOTALS = COVERAGE.max(axis=1)
 BACKBONE_MASK = ROUTING.sum(axis=0) == N_SEGMENTS
 
 
@@ -143,7 +139,6 @@ def test_unit_bearing_labels_carry_their_unit():
     """Every drawn quantity names its unit, or says it has none."""
     assert "µV" in recovery.AMPLITUDE_COLORBAR_LABEL
     assert "count" in recovery.SEGMENTS_ROUTED_COLORBAR_LABEL
-    assert "count" in recovery.COVERAGE_WEIGHT_LABEL
     assert "count" in recovery.COVERAGE_COLORBAR_LABEL
     assert "count" in stitch_wiring.UNITS_PER_ELECTRODE_COLORBAR_LABEL
     assert "count" in stitch_wiring.COVERED_CHANNELS_AXIS_LABEL
@@ -215,46 +210,6 @@ def test_coverage_map_without_routing_still_labels_itself(tmp_path, figure_text)
     assert recovery.BACKBONE_LEGEND_LABEL not in blob
 
 
-def test_rescale_effect_stitch_trust_figure(tmp_path, figure_text):
-    blob = figure_text(recovery, lambda: recovery.plot_rescale_effect(
-        COVERAGE, TOTALS, tmp_path / "stitch_trust.png",
-        templates=TEMPLATES, nbefore=NBEFORE,
-        title="toy well — how much data backs each stitched cell",
-    ))
-    _assert_says(
-        blob,
-        recovery.COVERAGE_WEIGHT_LABEL,
-        "unit-electrode pairs with this much data behind them",
-        # the summary numbers ride in the legend label, not a floating text box
-        "rest on a single one)",
-        "reference mark at n = 1",
-        "reference mark at n = 100",
-        "the dashed lines are reference marks",
-        "noise left in the pre-spike baseline",
-        "reference curve, anchored on the first bin — drawn, not fitted",
-        "share of unit-electrode pairs surviving this minimum (%)",
-        "noise left after averaging (µV RMS)",
-        # acronym expanded on the figure, verbatim from figure_text
-        acronym_note("RMS"),
-        # descriptive, not fitted
-        PROXY_NOT_MODEL,
-        DENSE_STITCH,
-    )
-    # the jargon this figure used to print
-    assert "what a trust threshold costs" not in blob
-    assert "(uV RMS)" not in blob
-
-
-def test_rescale_effect_accepts_a_caller_supplied_weight_label(tmp_path, figure_text):
-    blob = figure_text(recovery, lambda: recovery.plot_rescale_effect(
-        COVERAGE, TOTALS, tmp_path / "stitch_trust_2.png",
-        weight_label="spikes averaged into one unit-electrode value (count)",
-    ))
-    _assert_says(blob, "spikes averaged into one unit-electrode value (count)")
-    # RMS is only defined when the panel that prints it was drawn
-    assert acronym_note("RMS") not in blob
-
-
 def test_footprint_gain_legends_and_colorbars(tmp_path, figure_text):
     blob = figure_text(recovery, lambda: recovery.plot_footprint_gain(
         POSITIONS, TEMPLATES[0], tmp_path / "footprint_gain.png",
@@ -286,43 +241,6 @@ def test_footprint_gain_without_coverage_or_backbone(tmp_path, figure_text):
     _assert_says(blob, recovery.AMPLITUDE_COLORBAR_LABEL, recovery.AMPLITUDE_FLOOR_NOTE)
     assert recovery.BACKBONE_LEGEND_LABEL not in blob
     assert recovery.COVERAGE_COLORBAR_LABEL not in blob
-
-
-def test_rescale_before_after_has_a_colorbar_per_panel(tmp_path, figure_text):
-    blob = figure_text(recovery, lambda: recovery.plot_rescale_before_after(
-        POSITIONS, TEMPLATES[:2], COVERAGE[:2], TOTALS[:2],
-        tmp_path / "before_after.png", unit_ids=["u0", "u1"],
-        title="toy well — the coverage correction, before and after",
-    ))
-    _assert_says(
-        blob,
-        recovery.AMPLITUDE_COLORBAR_LABEL,
-        recovery.NO_ELECTRODE_LEGEND_LABEL,
-        "before the coverage correction",
-        "after the coverage correction",
-        "plain average over the segments that measured each electrode",
-        "corrected for how many segments could see each electrode",
-        recovery.AMPLITUDE_FLOOR_NOTE,
-        "colour scales are NOT comparable between columns",
-    )
-    assert "raw SI average" not in blob
-    assert "rescale · peak" not in blob
-
-
-def test_template_agreement_names_both_routes_and_the_identity_line(tmp_path, figure_text):
-    blob = figure_text(recovery, lambda: recovery.plot_template_agreement(
-        TEMPLATES[0], TEMPLATES[0] * 1.001, tmp_path / "agreement.png",
-        labels=("per-segment merge", "one pass over the union, then corrected"),
-    ))
-    _assert_says(
-        blob,
-        "per-segment merge (µV)",
-        "one pass over the union, then corrected (µV)",
-        "one averaged waveform value, on both routes (µV)",
-        "exact agreement (the line y = x)",
-        "values whose difference falls in this bin",
-        "Amplitudes are in microvolts (µV) on both axes.",
-    )
 
 
 # --------------------------------------------------------------------------- #
@@ -416,10 +334,7 @@ def test_new_parameters_are_keyword_optional():
 
     expected_tail = {
         recovery.plot_coverage_map: ["highlight_label", "caption"],
-        recovery.plot_rescale_effect: ["weight_label", "caption"],
         recovery.plot_footprint_gain: ["highlight_label", "weight_label", "caption"],
-        recovery.plot_rescale_before_after: ["caption"],
-        recovery.plot_template_agreement: ["caption"],
         stitch_wiring.plot_nan_coverage_summary: ["highlight_label", "caption"],
         stitch_wiring.plot_stitch_comparison: ["weight_label", "caption"],
     }

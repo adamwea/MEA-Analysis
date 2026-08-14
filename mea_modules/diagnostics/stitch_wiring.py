@@ -1,21 +1,22 @@
-"""Point the union-route diagnostics at `stitch_templates`' outputs instead.
+"""Adapt the per-segment-weighted stitch's outputs for the coverage-aware diagnostics.
 
-`recovery.py` (490 lines) and `sensitivity.py` (1067 lines) were written for
-the abandoned union+rescale route and orphaned when it was retired — but the
-maths never depended on the route, only on five inputs. This module is the
-input mapping from the diagnostics catalog (`docs/diagnostics-catalog.md`
-§3.5, on the MEA-recon-pipeline `docs/diagnostics-catalog` branch), made
-executable:
+`recovery.py` (~425 lines) and `sensitivity.py` (~1080 lines) test whether a
+stitched footprint's amplitude and reach clear the statistical noise floor set
+by how much data backs each electrode — maths that depends only on five
+inputs, not on how those inputs were produced. This module is the mapping
+from the diagnostics catalog (`docs/diagnostics-catalog.md` §3.5, on the
+MEA-recon-pipeline `docs/diagnostics-catalog` branch) onto capsule 10's
+`stitch_templates` outputs, made executable:
 
-    union-route input          round-2 equivalent (capsule 10 stitch_templates)
+    diagnostics input          round-2 source (capsule 10 stitch_templates)
     -------------------------  ------------------------------------------------
-    coverage[u, c]             contributing_weight.npy  (n_units, n_ch_union)
-    templates[u, c-as-LAST]    merged_templates.npy — BUT the axis order moved:
-                               the union route used SpikeInterface's
+    coverage[u, c]             contributing_weight.npy  (n_units, n_channels)
+    templates[u, c-as-LAST]    merged_templates.npy — BUT the axis order moves:
+                               the diagnostics expect SpikeInterface's
                                (n_units, n_samples, n_channels); the stitch
                                writes (n_units, n_channels, n_samples).
                                :func:`sensitivity_templates` does the transpose.
-    positions                  channel_locations_xy.npy (n_ch_union, 2)
+    positions                  channel_locations_xy.npy (n_channels, 2)
     routing[s, c]              segment_contributions/<seg>/channel_ids.json
                                when capsule 10 ran with --retain-segments;
                                otherwise a column-sum-faithful surrogate — see
@@ -29,23 +30,22 @@ executable:
 Two representation differences the mapping has to absorb, both handled here so
 `recovery`/`sensitivity` stay byte-for-byte untouched (re-wire, not rewrite):
 
-* **NaN vs zero.** The union route zero-filled electrodes a unit never
-  covered; the stitch writes `NaN` there (with `contributing_weight` exactly
-  0.0 — E1's R14① validation confirmed the two masks agree cell-for-cell).
-  The orphaned code was written against the zero convention, and a bare
+* **NaN vs zero.** The stitch writes `NaN` on an electrode a unit was never
+  measured on, with `contributing_weight` exactly 0.0 there — E1's R14①
+  validation confirmed the two masks agree cell-for-cell.
+  `recovery`/`sensitivity` are written against a zero convention, and a bare
   `argmax` over a NaN-carrying row returns the first NaN index, so
-  :func:`sensitivity_templates` restores the zero convention. The NaN mask
-  itself is NOT lost — :func:`nan_coverage_summary` reports it as its own
-  diagnostic (it feeds `15 post_bombcell_diagnostics` later).
+  :func:`sensitivity_templates` converts NaN to zero for their benefit. The
+  NaN mask itself is NOT lost — :func:`nan_coverage_summary` reports it as
+  its own diagnostic (it feeds `15 post_bombcell_diagnostics` later).
 
 * **What `coverage` counts.** Under `averaging_method="spike_count"` (the
-  Round-2 default) `contributing_weight` is the summed selected-spike count —
-  exactly the union route's `coverage` semantics, so the `1/sqrt(n)` variance
-  model reads as before. Under `"uniform"` it is the number of contributing
-  SEGMENTS; the model then describes averaging n per-segment estimates, whose
-  own precision varies with each segment's spike count — expect a noisier
-  variance-model panel on `uniform` stitches (the KCNT1 reference run) and
-  read it accordingly.
+  Round-2 default) `contributing_weight` is the summed selected-spike count,
+  so the `1/sqrt(n)` variance model reads directly. Under `"uniform"` it is
+  the number of contributing SEGMENTS; the model then describes averaging n
+  per-segment estimates, whose own precision varies with each segment's spike
+  count — expect a noisier variance-model panel on `uniform` stitches (the
+  KCNT1 reference run) and read it accordingly.
 
 Pure library: no argparse, no printing, no ``__main__``.
 """
@@ -159,7 +159,7 @@ def sensitivity_templates(templates, contributing_weight=None, dtype=np.float32)
     Takes the stitch's `(n_units, n_channels, n_samples)` array (NaN where no
     segment measured a unit on a channel) and returns
     `(n_units, n_samples, n_channels)` with the NaNs replaced by 0.0 — the two
-    conventions the union-route diagnostics were written against (see the
+    conventions `recovery`/`sensitivity` were written against (see the
     module docstring). float32 by default: this is a diagnostic input, the
     halved footprint matters at (780, 13384, 60), and every consumer casts
     per-unit slices to float anyway.

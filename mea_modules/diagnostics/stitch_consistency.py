@@ -300,7 +300,10 @@ def peak_consistency(retention_dir, *, index=None):
     peak_channel = np.full((n_units, n_segments), -1, dtype=int)
     peak_uv = np.full((n_units, n_segments), np.nan)
     native_uv = np.full((n_units, n_segments), np.nan)
+    native_peak_channel = np.full((n_units, n_segments), -1, dtype=int)
+    native_peak_xy = np.full((n_units, n_segments, 2), np.nan)
     backbone_xy = None
+    union_xy_by_id = {}
 
     for s, entry in enumerate(index):
         seg_dir = retention_dir / entry["dirname"]
@@ -321,7 +324,21 @@ def peak_consistency(retention_dir, *, index=None):
 
         peak_channel[fired, s] = np.argmax(seg_bb_amp[fired], axis=1)
         peak_uv[fired, s] = seg_bb_amp[fired, peak_channel[fired, s]]
-        native_uv[fired, s] = native_amp[fired].max(axis=1)
+
+        # Dense (full-tile) peak: the electrode a unit is actually loudest on in
+        # this segment, argmax over ALL ~1k routed channels — NOT restricted to
+        # the shared backbone. The backbone argmax above only makes sense if the
+        # soma sits on the backbone; this one does not assume that, so a unit
+        # whose true maximum lives off the backbone is visible. Kept as the real
+        # channel id + xy so peaks from segments measuring different tiles land
+        # on one union geometry.
+        seg_channels_arr = np.asarray(seg_channels)
+        native_local = np.argmax(native_amp[fired], axis=1)
+        native_uv[fired, s] = native_amp[fired, native_local]
+        native_peak_channel[fired, s] = seg_channels_arr[native_local]
+        native_peak_xy[fired, s] = np.asarray(locations[native_local, :2], dtype=float)
+        for cid, xy in zip(seg_channels, np.asarray(locations[:, :2], dtype=float)):
+            union_xy_by_id.setdefault(int(cid), (float(xy[0]), float(xy[1])))
 
     n_active = (peak_channel >= 0).sum(axis=1)
     n_distinct = np.zeros(n_units, dtype=int)
@@ -337,6 +354,21 @@ def peak_consistency(retention_dir, *, index=None):
             diff = xy[:, None, :] - xy[None, :, :]
             max_spread_um[u] = float(np.sqrt((diff ** 2).sum(axis=2)).max())
 
+    # Union geometry (every electrode any segment measured) + the dense-peak
+    # spread — the off-backbone analogue of max_spread_um.
+    union_channel_ids = np.asarray(sorted(union_xy_by_id), dtype=int)
+    union_xy = np.asarray([union_xy_by_id[int(c)] for c in union_channel_ids],
+                          dtype=float)
+    native_max_spread_um = np.zeros(n_units)
+    for u in range(n_units):
+        pts = native_peak_xy[u][~np.isnan(native_peak_xy[u]).any(axis=1)]
+        if pts.shape[0] > 1:
+            uniq = np.unique(np.round(pts, 3), axis=0)
+            if uniq.shape[0] > 1:
+                diff = uniq[:, None, :] - uniq[None, :, :]
+                native_max_spread_um[u] = float(
+                    np.sqrt((diff ** 2).sum(axis=2)).max())
+
     logger.info(
         "peak consistency: %d unit(s); %d with a single backbone peak electrode "
         "across every active segment, %d moving > 50 um (max spread %.0f um)",
@@ -349,6 +381,11 @@ def peak_consistency(retention_dir, *, index=None):
         "peak_channel": peak_channel,
         "peak_uv": peak_uv,
         "native_peak_uv": native_uv,
+        "native_peak_channel": native_peak_channel,
+        "native_peak_xy": native_peak_xy,
+        "native_max_spread_um": native_max_spread_um,
+        "union_channel_ids": union_channel_ids,
+        "union_xy": union_xy,
         "n_active_segments": n_active,
         "n_distinct_peaks": n_distinct,
         "max_spread_um": max_spread_um,
@@ -405,36 +442,63 @@ def plot_peak_consistency(result, out_path, unit_ids=None, spread_flag_um=50.0,
 
 def plot_unit_peak_map(result, unit_index, out_path, unit_id=None,
                        title=None, figsize=(7.5, 7.0), dpi=170):
-    """One flagged unit's per-segment backbone peaks on the array.
+    """One unit's per-segment peak electrodes on the FULL (dense) array.
 
-    Backbone electrodes in grey; each active segment's peak electrode drawn
-    at its position, coloured by segment index and sized by that segment's
-    peak amplitude — the direct picture of WHERE the disagreement lives.
+    Every electrode any segment measured (the union of all tiles) in light grey,
+    the shared backbone electrodes in darker grey, and each active segment's
+    DENSE peak electrode — argmax over that segment's whole ~1k-channel tile, not
+    just the backbone — drawn at its position, coloured by segment index and
+    sized by peak amplitude. Small hollow rings are the same segments' BACKBONE
+    peaks; where a ring sits far from its filled dense marker, that segment's
+    true maximum lives OFF the backbone. This does not assume the soma/AIS is on
+    the backbone — the assumption Adam flagged (2026-08-14).
     """
-    xy = np.asarray(result["backbone_xy"])
-    peaks = np.asarray(result["peak_channel"][unit_index])
-    amps = np.asarray(result["peak_uv"][unit_index])
-    active = peaks >= 0
+    bb_xy = np.asarray(result["backbone_xy"])
+    union_xy = result.get("union_xy")
 
     fig = _new_figure(figsize, dpi)
     ax = fig.subplots(1, 1)
-    ax.scatter(xy[:, 0], xy[:, 1], s=6, c="0.85", marker="s", linewidths=0,
-               rasterized=True, label=f"backbone ({xy.shape[0]})")
-    if active.any():
-        seg_idx = np.flatnonzero(active)
-        amp = amps[seg_idx]
-        size = 30 + 120 * (amp / max(float(amp.max()), 1e-9))
-        sc = ax.scatter(xy[peaks[seg_idx], 0], xy[peaks[seg_idx], 1], s=size,
-                        c=seg_idx, cmap="plasma", edgecolors="k", linewidths=0.4)
-        fig.colorbar(sc, ax=ax, label="segment index", shrink=0.8)
+    if union_xy is not None and np.asarray(union_xy).size:
+        union_xy = np.asarray(union_xy)
+        ax.scatter(union_xy[:, 0], union_xy[:, 1], s=3, c="0.90", marker="s",
+                   linewidths=0, rasterized=True,
+                   label=f"measured electrodes ({union_xy.shape[0]})")
+    ax.scatter(bb_xy[:, 0], bb_xy[:, 1], s=6, c="0.70", marker="s", linewidths=0,
+               rasterized=True, label=f"backbone ({bb_xy.shape[0]})")
+
+    nat_xy = result.get("native_peak_xy")
+    if nat_xy is not None:
+        nat_xy = np.asarray(nat_xy)[unit_index]
+        nat_amp = np.asarray(result["native_peak_uv"])[unit_index]
+        active = ~np.isnan(nat_xy).any(axis=1)
+        if active.any():
+            seg_idx = np.flatnonzero(active)
+            amp = np.nan_to_num(nat_amp[seg_idx])
+            size = 30 + 130 * (amp / max(float(amp.max()), 1e-9))
+            sc = ax.scatter(nat_xy[seg_idx, 0], nat_xy[seg_idx, 1], s=size,
+                            c=seg_idx, cmap="plasma", edgecolors="k",
+                            linewidths=0.4, zorder=3, label="dense peak / segment")
+            fig.colorbar(sc, ax=ax, label="segment index", shrink=0.8)
+
+    bb_peaks = np.asarray(result["peak_channel"][unit_index])
+    bb_active = bb_peaks >= 0
+    if bb_active.any():
+        idx = bb_peaks[bb_active]
+        ax.scatter(bb_xy[idx, 0], bb_xy[idx, 1], s=55, facecolors="none",
+                   edgecolors="0.25", linewidths=0.8, marker="o", zorder=2,
+                   label="backbone peak / segment")
+
     ax.set_aspect("equal")
     ax.set_xlabel("x (um)")
     ax.set_ylabel("y (um)")
     label = unit_id if unit_id is not None else unit_index
+    nat_spread = float(np.asarray(
+        result.get("native_max_spread_um", result["max_spread_um"]))[unit_index])
+    bb_spread = float(result["max_spread_um"][unit_index])
     ax.set_title(title or
-                 f"unit {label}: backbone peak electrode per segment "
-                 f"(size = peak uV, spread {result['max_spread_um'][unit_index]:.0f} um)")
-    ax.legend(fontsize=8, loc="upper right")
+                 f"unit {label}: dense peak electrode per segment "
+                 f"(dense spread {nat_spread:.0f} um, backbone {bb_spread:.0f} um)")
+    ax.legend(fontsize=7, loc="upper right")
     fig.tight_layout()
     return _save_and_release(fig, out_path)
 

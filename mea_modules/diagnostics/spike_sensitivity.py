@@ -1,28 +1,43 @@
 """How many spikes a per-segment template needs, and which units are spike-starved.
 
-Two questions, two costs.
+This is a PRE-BUILD calibration: it runs per-well on the post-sort sort, BEFORE
+`build_segment_analyzers` and `stitch_templates` exist, and answers two
+questions, two costs.
 
-  1. CENSUS (cheap, every unit). Read capsule 10's `segment_contributions/`
-     `spike_counts.npy` and tabulate, per unit, how many spikes each segment
-     actually caught. This is a plain array read — no recording is touched — so
-     it always runs and always covers every unit. Its product is the
-     spike-starved roster: units whose per-segment spike counts sit below the
-     calibrated "enough" threshold, ranked worst-first for curation.
+  1. CENSUS (cheap, every unit). Tabulate, per unit, how many spikes each
+     segment actually caught — a ``(n_units, n_segments)`` count matrix. The
+     capsule bins the post-sort sort's spike times against the concatenate
+     manifest's segment boundaries (``spike_accounting.per_unit_segment_matrix``)
+     and hands the matrix to :func:`spike_census_from_counts`; no recording is
+     touched, so the census always runs and covers every unit. Its product is
+     the spike-starved roster: units whose per-segment spike counts sit below
+     the calibrated "enough" threshold, ranked worst-first for curation.
 
-  2. CONVERGENCE SWEEP (expensive, sampled). For a SAMPLE of segments, reload
-     the capsule 08 segment analyzer, and for a grid of subsample sizes N
-     recompute each unit's average template from N randomly chosen spikes.
-     Correlate the N-spike template against the unit's fullest available
-     template; the correlation rising toward 1 as N grows is the convergence
-     curve. Where it plateaus is "enough spikes", which calibrates both the
-     recommended `max_spikes_per_unit` default and the census's starved
-     threshold.
+  2. CONVERGENCE SWEEP (expensive, sampled). The capsule builds its OWN small
+     sample of dense per-segment analyzers (via `build_segment_analyzers`, which
+     `stitch_templates` later reuses — so no compute is wasted) and hands their
+     dirs to :func:`convergence_sweep`. For a grid of subsample sizes N it
+     recomputes each unit's average template from N randomly chosen spikes and
+     correlates (Pearson) the N-spike template against the unit's fullest
+     available template. That correlation rising toward 1 as N grows is the
+     convergence curve; where the MEDIAN unit's curve plateaus is "enough
+     spikes", which is the recommended `max_spikes_per_unit` default and the
+     census's starved threshold.
+
+Adaptive climb. The bare dense analyzer already holds ALL of each unit's spikes;
+the sweep only SUBSAMPLES it at each grid N, so pushing N higher never rebuilds
+anything — it just draws more of the spikes already there. When a sweep still
+reports unstable units (units that HAD >= the top grid point's spikes yet whose
+template kept moving), the caller EXTENDS the grid (:func:`next_climb_grid`) and
+re-runs, up to a cap, rather than rebuilding. On spike-starved data no unit
+reaches the top grid point, so there are no unstable units and the climb never
+fires (correct: a 44-spike unit cannot be pushed to 500).
 
 Why the sweep must sample, and why it cannot crash the node. Recomputing
-templates at seven grid points for 322 units on ONE segment takes ~6 minutes
-and holds one segment's recording plus template arrays in memory. So the sweep
-walks its segment sample STRICTLY SEQUENTIALLY, drops each analyzer before the
-next, and computes templates with `operators=["average"]` only — an in-place
+templates at every grid point for hundreds of units on ONE segment takes
+minutes and holds one segment's recording plus template arrays in memory. So the
+sweep walks its segment sample STRICTLY SEQUENTIALLY, drops each analyzer before
+the next, and computes templates with `operators=["average"]` only — an in-place
 running mean, never a materialised waveform buffer — so peak memory is one
 segment's traces, not `n_units x n_spikes x n_channels x n_samples`. The number
 of segments and units swept is bounded by the caller; the default is a few
@@ -64,30 +79,29 @@ SPIKE_COUNTS_FILENAME = "spike_counts.npy"
 
 
 # ---------------------------------------------------------------------------
-# 1. Census — cheap, every unit. Reads only spike_counts.npy.
+# 1. Census — cheap, every unit. A plain count-matrix read, no recording.
 # ---------------------------------------------------------------------------
 
-def spike_census(segment_contributions_dir, unit_ids=None, starved_threshold=None):
-    """Per-unit spike inventory over capsule 10's retained segments.
+def spike_census_from_counts(counts, unit_ids=None, starved_threshold=None):
+    """Per-unit spike inventory from a ``(n_units, n_segments)`` count matrix.
 
-    Reads every `segment_*/spike_counts.npy` under `segment_contributions_dir`
-    (each a ``(n_units,)`` int array in the shared retained-unit row order) and
-    stacks them to ``(n_units, n_segments)``. Touches no recording — this is the
-    always-on leg.
+    ``counts[u, s]`` is how many spikes unit ``u`` fired in segment ``s``. This
+    is the numeric core of the census: it touches no files, so it serves equally
+    the capsule's live source (the post-sort sort binned against the concat
+    manifest — ``spike_accounting.per_unit_segment_matrix``'s ``matrix_counts``)
+    and the file-backed :func:`spike_census` wrapper below.
 
     ``starved_threshold`` (spikes per active segment) is applied if given —
-    normally the sweep's recommended N — to flag and rank spike-starved units.
-    Returns a JSON-safe dict; the ranked ``starved`` roster is worst-first.
+    normally the sweep's calibrated soft plateau — to flag and rank
+    spike-starved units. Returns a JSON-safe dict; the ranked ``starved`` roster
+    is worst-first.
     """
-    seg_dirs = sorted(Path(segment_contributions_dir).glob("segment_*"))
-    if not seg_dirs:
-        raise FileNotFoundError(
-            f"no segment_*/ under {segment_contributions_dir}; capsule 10 must run "
-            "with --retain-segments before the spike census can read spike_counts"
+    counts = np.asarray(counts, dtype=np.int64)
+    if counts.ndim != 2:
+        raise ValueError(
+            f"spike_census_from_counts expects a 2-D (n_units, n_segments) "
+            f"count matrix; got shape {counts.shape!r}"
         )
-    counts = np.stack(
-        [np.load(d / SPIKE_COUNTS_FILENAME) for d in seg_dirs], axis=1
-    ).astype(np.int64)  # (units, segments)
     n_units, n_segments = counts.shape
 
     if n_units == 0:
@@ -144,6 +158,30 @@ def spike_census(segment_contributions_dir, unit_ids=None, starved_threshold=Non
     if starved_threshold is not None:
         census.update(_flag_starved(census, float(starved_threshold)))
     return census
+
+
+def spike_census(segment_contributions_dir, unit_ids=None, starved_threshold=None):
+    """Per-unit spike inventory over a retained ``segment_contributions`` tree.
+
+    Reads every `segment_*/spike_counts.npy` under `segment_contributions_dir`
+    (each a ``(n_units,)`` int array in the shared retained-unit row order),
+    stacks them to ``(n_units, n_segments)``, and delegates to
+    :func:`spike_census_from_counts`. Retained as the file-backed entry point
+    for older on-disk runs and the pure tests; the capsule itself now sources
+    its counts from the sort + concat manifest instead of a retained tree.
+    """
+    seg_dirs = sorted(Path(segment_contributions_dir).glob("segment_*"))
+    if not seg_dirs:
+        raise FileNotFoundError(
+            f"no segment_*/ under {segment_contributions_dir}; a retained "
+            "segment_contributions tree is required for the file-backed census"
+        )
+    counts = np.stack(
+        [np.load(d / SPIKE_COUNTS_FILENAME) for d in seg_dirs], axis=1
+    ).astype(np.int64)  # (units, segments)
+    return spike_census_from_counts(
+        counts, unit_ids=unit_ids, starved_threshold=starved_threshold,
+    )
 
 
 def _flag_starved(census, threshold):
@@ -413,11 +451,51 @@ def recommend_default(sweep, corr_target=None):
     }
 
 
+def next_climb_grid(grid, n_unstable, max_cap):
+    """One step of the adaptive climb: an EXTENDED grid, or ``None`` to stop.
+
+    The bare dense analyzer already holds every one of a unit's spikes, so a
+    larger grid point only subsamples MORE of them — the "climb" extends the
+    grid, it never rebuilds. Given the current `grid`, the sweep's `n_unstable`
+    count (units that had >= the top grid point's spikes yet whose template was
+    still moving), and the `max_cap` ceiling, return ``grid`` with one point
+    appended — ``min(grid[-1] * 2, max_cap)`` — when the climb should continue,
+    or ``None`` when it should stop:
+
+      * no unstable units (``n_unstable <= 0``) — the sweep already converged, so
+        on spike-starved data (where nothing reaches the top grid point) the
+        climb never fires;
+      * the top grid point already sits at/above `max_cap`;
+      * the doubled point would not actually advance the grid.
+    """
+    if n_unstable is None or n_unstable <= 0:
+        return None
+    grid = [int(n) for n in grid]
+    if not grid:
+        return None
+    top = grid[-1]
+    max_cap = int(max_cap)
+    if top >= max_cap:
+        return None
+    nxt = min(top * 2, max_cap)
+    if nxt <= top:
+        return None
+    return grid + [nxt]
+
+
 def plot_convergence(sweep, out_path, configured_default=None, title=None,
-                     figsize=(10, 4.2), dpi=140):
-    """Two panels: the median-correlation-vs-N curve (with soft/strict bars and
-    the recommended + configured defaults) and the converged-fraction-vs-N
-    curve."""
+                     figsize=(14, 4.2), dpi=140):
+    """Three panels that make the calibration legible.
+
+    1. MEDIAN template-correlation vs N, with the soft/strict target bars, the
+       recommended cap, the configured default, and — as a text box — the
+       data-capped vs unstable split and the adaptive climb (when one happened).
+    2. a sample of PER-UNIT correlation-vs-N traces (from the sweep's retained
+       ``_conv``), so "the template stops changing as N grows" is literally
+       visible: each faint line is one (unit, segment) rising toward its own
+       asymptote; the bold line is the median.
+    3. the converged-fraction vs N curve.
+    """
     grid = np.asarray(sweep["grid"])
     med = np.array([pt["median_corr"] if pt["median_corr"] is not None else np.nan
                     for pt in sweep["curve"]])
@@ -427,10 +505,13 @@ def plot_convergence(sweep, out_path, configured_default=None, title=None,
     target = sweep.get("corr_target", DEFAULT_CORR_TARGET)
     strict = sweep.get("strict_corr_target", STRICT_CORR_TARGET)
     rec = sweep.get("recommended_max_spikes_per_unit")
+    conv = sweep.get("_conv")
+    conv = np.asarray(conv) if conv is not None else np.empty((0, grid.size))
 
     fig = _new_figure(figsize, dpi)
-    ax1, ax2 = fig.add_subplot(1, 2, 1), fig.add_subplot(1, 2, 2)
+    ax1, ax2, ax3 = (fig.add_subplot(1, 3, i) for i in (1, 2, 3))
 
+    # --- panel 1: median convergence curve + calibration annotations ---
     ax1.plot(grid, med, "-o", color="#4C72B0")
     ax1.axhline(target, color="#DD8452", ls="--", lw=1, label=f"soft {target:g}")
     ax1.axhline(strict, color="#C44E52", ls=":", lw=1, label=f"strict {strict:g}")
@@ -443,17 +524,54 @@ def plot_convergence(sweep, out_path, configured_default=None, title=None,
         if np.isfinite(y):
             ax1.annotate(f"n={cnt}", (x, y), textcoords="offset points",
                          xytext=(0, 6), fontsize=7, ha="center", color="#555")
+    split_lines = []
+    n_dc, n_un = sweep.get("n_data_capped"), sweep.get("n_unstable")
+    if n_dc is not None or n_un is not None:
+        split_lines.append(f"data-capped {n_dc}, unstable {n_un}")
+    climb = sweep.get("climb") or {}
+    caps_tried = climb.get("caps_tried") or []
+    if len(caps_tried) > 1:
+        split_lines.append(f"climb {caps_tried} → {climb.get('stopped_because')}")
+    if split_lines:
+        ax1.text(0.03, 0.03, "\n".join(split_lines), transform=ax1.transAxes,
+                 fontsize=7, va="bottom", ha="left", color="#555",
+                 bbox=dict(boxstyle="round", fc="white", ec="#cccccc", alpha=0.85))
     ax1.set_xscale("log")
     ax1.set_xlabel("spikes subsampled (N)")
     ax1.set_ylabel("median corr to asymptote")
     ax1.set_title("template convergence", fontsize=10)
     ax1.legend(fontsize=7, loc="lower right")
 
-    ax2.plot(grid, frac * 100.0, "-o", color="#C44E52")
+    # --- panel 2: a sample of per-unit corr-vs-N traces ---
+    if conv.size and conv.shape[1] == grid.size:
+        rng = np.random.default_rng(0)
+        n_show = min(40, conv.shape[0])
+        rows = (rng.choice(conv.shape[0], size=n_show, replace=False)
+                if conv.shape[0] > n_show else range(conv.shape[0]))
+        for i in rows:
+            row = conv[i]
+            mask = np.isfinite(row)
+            if mask.any():
+                ax2.plot(grid[mask], row[mask], "-", color="#4C72B0",
+                         alpha=0.15, lw=0.8)
+        ax2.plot(grid, med, "-o", color="#C44E52", lw=1.5, label="median")
+        ax2.axhline(target, color="#DD8452", ls="--", lw=1)
+        ax2.legend(fontsize=7, loc="lower right")
+    else:
+        ax2.text(0.5, 0.5, "no per-unit traces\n(no unit reached the grid)",
+                 transform=ax2.transAxes, ha="center", va="center",
+                 fontsize=8, color="#999")
     ax2.set_xscale("log")
     ax2.set_xlabel("spikes subsampled (N)")
-    ax2.set_ylabel(f"% of unit-segments converged (>= {strict:g})")
-    ax2.set_title("converged fraction", fontsize=10)
+    ax2.set_ylabel("corr to asymptote")
+    ax2.set_title("per-unit convergence (sample)", fontsize=10)
+
+    # --- panel 3: converged fraction ---
+    ax3.plot(grid, frac * 100.0, "-o", color="#C44E52")
+    ax3.set_xscale("log")
+    ax3.set_xlabel("spikes subsampled (N)")
+    ax3.set_ylabel(f"% of unit-segments converged (>= {strict:g})")
+    ax3.set_title("converged fraction", fontsize=10)
 
     if title:
         fig.suptitle(title, fontsize=11)

@@ -8,7 +8,7 @@ from the diagnostics catalog (`docs/diagnostics-catalog.md` §3.5, on the
 MEA-recon-pipeline `docs/diagnostics-catalog` branch) onto capsule 10's
 `stitch_templates` outputs, made executable:
 
-    diagnostics input          round-2 source (capsule 10 stitch_templates)
+    diagnostics input          round-2 source (capsule 11 stitch_templates)
     -------------------------  ------------------------------------------------
     coverage[u, c]             contributing_weight.npy  (n_units, n_channels)
     templates[u, c-as-LAST]    merged_templates.npy — BUT the axis order moves:
@@ -37,7 +37,7 @@ Two representation differences the mapping has to absorb, both handled here so
   `argmax` over a NaN-carrying row returns the first NaN index, so
   :func:`sensitivity_templates` converts NaN to zero for their benefit. The
   NaN mask itself is NOT lost — :func:`nan_coverage_summary` reports it as
-  its own diagnostic (it feeds `20 post_bombcell_diagnostics` later).
+  its own diagnostic (it feeds `21 post_bombcell_diagnostics` later).
 
 * **What `coverage` counts.** Under `averaging_method="spike_count"` (the
   Round-2 default) `contributing_weight` is the summed selected-spike count,

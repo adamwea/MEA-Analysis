@@ -77,7 +77,7 @@ def template_projected_activity(templates, weight, rates, *, chunk=32):
     Parameters
     ----------
     templates : array-like, shape (n_units, n_channels, n_samples)
-        The curated dense bundle's templates (23 dense_merge_apply's
+        The curated dense bundle's templates (24 dense_merge_apply's
         ``merged_templates.npy`` orientation). May be a memmap and may carry
         NaNs on uncovered channels; both are handled.
     weight : array-like, shape (n_units, n_channels)

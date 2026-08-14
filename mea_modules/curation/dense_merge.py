@@ -1,7 +1,7 @@
 """Closed-form per-channel dense merge of stitched templates, plus spike dedup.
 
 The math (the round-2 planning note's TOPOLOGY-RESOLVED block). Capsule
-`10 stitch_templates` computes, per (unit, channel),
+`11 stitch_templates` computes, per (unit, channel),
 
     T[u, c] = sum_s(w_s[u] * template_s[u, c]) / sum_s(w_s[u])
 
@@ -31,7 +31,7 @@ channel no member covers stays NaN with weight 0.0, preserving the stitch's
 "no data is not zero" convention.
 
 Pure library: numpy only, no SpikeInterface, no disk, no argparse. Capsule
-`23 dense_merge_apply` streams these functions over memory-mapped arrays.
+`24 dense_merge_apply` streams these functions over memory-mapped arrays.
 """
 
 import numpy as np

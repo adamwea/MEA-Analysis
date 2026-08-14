@@ -9,7 +9,7 @@ Public API::
         DEFAULT_CENSOR_SAMPLES,
     )
 
-SLAy (capsule `21 slay_propose_merges`) proposes merge GROUPS and stops --
+SLAy (capsule `22 slay_propose_merges`) proposes merge GROUPS and stops --
 the SpikeInterface re-implementation has no apply path. SpikeInterface's own
 `merge_units` is the wrong applier for this pipeline: it would re-derive
 merged templates from the analyzer it is given -- the ~350-channel backbone
@@ -21,7 +21,7 @@ the coincident-spike dedup SLAy's old version applied and the new one
 dropped.
 
 Pure by construction: nothing here reads a file, opens a SortingAnalyzer, or
-imports SpikeInterface. Capsule `22 dense_merge_apply` owns the disk/stream
+imports SpikeInterface. Capsule `23 dense_merge_apply` owns the disk/stream
 orchestration (capsules wire modules to disk; the science lives here).
 """
 

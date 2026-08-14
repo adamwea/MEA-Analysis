@@ -31,7 +31,7 @@ channel no member covers stays NaN with weight 0.0, preserving the stitch's
 "no data is not zero" convention.
 
 Pure library: numpy only, no SpikeInterface, no disk, no argparse. Capsule
-`22 dense_merge_apply` streams these functions over memory-mapped arrays.
+`23 dense_merge_apply` streams these functions over memory-mapped arrays.
 """
 
 import numpy as np

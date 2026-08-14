@@ -37,7 +37,7 @@ Two representation differences the mapping has to absorb, both handled here so
   `argmax` over a NaN-carrying row returns the first NaN index, so
   :func:`sensitivity_templates` converts NaN to zero for their benefit. The
   NaN mask itself is NOT lost — :func:`nan_coverage_summary` reports it as
-  its own diagnostic (it feeds `19 post_bombcell_diagnostics` later).
+  its own diagnostic (it feeds `20 post_bombcell_diagnostics` later).
 
 * **What `coverage` counts.** Under `averaging_method="spike_count"` (the
   Round-2 default) `contributing_weight` is the summed selected-spike count,

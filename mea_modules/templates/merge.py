@@ -102,7 +102,7 @@ DEFAULT_SEED = 0
 # segment's contribution by its selected spike count makes the merged value
 # equal a re-derivation from the pooled spikes — which in turn is what makes
 # the downstream closed-form dense merge of curated units EXACT (capsule
-# `22 dense_merge_apply`: T_merged[c] = Σ tᵤ[c]·wᵤ[c] / Σ wᵤ[c] over the
+# `23 dense_merge_apply`: T_merged[c] = Σ tᵤ[c]·wᵤ[c] / Σ wᵤ[c] over the
 # stitched outputs — exact only when w IS the spike count). "uniform" (every
 # contributing segment counts equally — a plain mean) is kept for parity with
 # the published per-configuration protocol (Buccino et al. 2022) and with the

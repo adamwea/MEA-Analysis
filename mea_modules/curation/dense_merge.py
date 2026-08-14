@@ -20,7 +20,7 @@ re-stitching the combined unit from the per-segment analyzers would produce
 average). The weight algebra needs `W` to be the summed per-(unit, channel)
 spike counts; under `uniform` averaging `contributing_weight` is a segment
 COUNT instead, the substitution no longer telescopes, and this merge is an
-approximation -- which is why capsule 18 asserts the stitch manifest records
+approximation -- which is why capsule 22 asserts the stitch manifest records
 `averaging_method == "spike_count"` before applying (round-2 revision R14:
 the stitch default was flipped to `spike_count` for exactly this reason).
 
@@ -31,7 +31,7 @@ channel no member covers stays NaN with weight 0.0, preserving the stitch's
 "no data is not zero" convention.
 
 Pure library: numpy only, no SpikeInterface, no disk, no argparse. Capsule
-`18 dense_merge_apply` streams these functions over memory-mapped arrays.
+`22 dense_merge_apply` streams these functions over memory-mapped arrays.
 """
 
 import numpy as np

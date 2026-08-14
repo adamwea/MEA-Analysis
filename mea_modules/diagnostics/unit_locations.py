@@ -1,5 +1,5 @@
 """Where the recomputed units sit on the array — the standard figure for the
-pipeline's `recompute_unit_locations` capsule (stage 20).
+pipeline's `recompute_unit_locations` capsule (stage 24).
 
 One emitter: :func:`plot_unit_locations`. It scatters every unit's recomputed
 location over the routed-electrode geometry, so a reviewer can see at a glance

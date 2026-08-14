@@ -8,7 +8,7 @@ Public API::
         plot_all_reconstructions,
     )
 
-`capsules/all_recon_overlay/run_capsule.py` (pipeline repo, capsule 26) is the
+`capsules/all_recon_overlay/run_capsule.py` (pipeline repo, capsule 30) is the
 thin CLI adapter: it walks `reconstruct_axons`' per-unit `gtr.pkl` files,
 squeezes each one into a lightweight :func:`unit_arbor_record` (so 40+ dense
 full-array templates are never held in memory together — one pickled `gtr`

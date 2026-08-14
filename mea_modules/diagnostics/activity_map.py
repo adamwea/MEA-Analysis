@@ -1,6 +1,6 @@
 """Whole-chip activity map — the amplitude-weighted firing-rate field.
 
-The per-unit "global firing rate" map (capsule 19) draws one marker per unit at
+The per-unit "global firing rate" map (capsule 23) draws one marker per unit at
 that unit's template extremum. Adam's review of it (2026-08-12) asked for the
 other thing: *information at all channels, not at unit locations only*. This
 module builds that — a value for **every electrode in the dense union**, so the
@@ -13,7 +13,7 @@ The quantity (Adam's choice) is **template-projected activity**::
 
 where ``rate_u`` is unit *u*'s firing rate (spikes / recorded second) and
 ``ptp_u[e]`` is the peak-to-peak amplitude of *u*'s DENSE template on electrode
-*e* (over the covered channels of 18's curated bundle). Units are microvolt-
+*e* (over the covered channels of 22's curated bundle). Units are microvolt-
 hertz (µV·Hz): an amplitude-weighted firing-rate field that projects all
 reconstructed spiking onto the array. A loud, fast unit lights up its whole
 footprint; a quiet or small one barely registers; a channel no unit's footprint
@@ -48,7 +48,7 @@ logger = logging.getLogger(__name__)
 WHOLE_CHIP_ACTIVITY_FILENAME = "whole_chip_activity_map.png"
 
 # `scale="auto"` switches to a log colour scale when the ratio of the largest
-# to the smallest positive activity exceeds this. Matches capsule 19's rate-map
+# to the smallest positive activity exceeds this. Matches capsule 23's rate-map
 # threshold so the two figures make the same call on the same data.
 DEFAULT_LOG_RATIO = 20.0
 
@@ -77,7 +77,7 @@ def template_projected_activity(templates, weight, rates, *, chunk=32):
     Parameters
     ----------
     templates : array-like, shape (n_units, n_channels, n_samples)
-        The curated dense bundle's templates (18 dense_merge_apply's
+        The curated dense bundle's templates (22 dense_merge_apply's
         ``merged_templates.npy`` orientation). May be a memmap and may carry
         NaNs on uncovered channels; both are handled.
     weight : array-like, shape (n_units, n_channels)

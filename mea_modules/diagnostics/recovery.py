@@ -131,7 +131,7 @@ def plot_coverage_map(positions, n_segments_routed, out_path, title=None,
     third panel is omitted.
 
     The red rule on the third panel marks the electrode set that every segment
-    routed — the set capsule 11 compares across segments in a sibling figure —
+    routed — the set capsule 12 compares across segments in a sibling figure —
     so `highlight_label` names that sibling by its real emitted filename, the
     way :func:`~mea_modules.diagnostics.channel_layout.plot_channel_layout`
     does::

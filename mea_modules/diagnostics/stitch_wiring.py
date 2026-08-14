@@ -37,7 +37,7 @@ Two representation differences the mapping has to absorb, both handled here so
   `argmax` over a NaN-carrying row returns the first NaN index, so
   :func:`sensitivity_templates` converts NaN to zero for their benefit. The
   NaN mask itself is NOT lost — :func:`nan_coverage_summary` reports it as
-  its own diagnostic (it feeds `15 post_bombcell_diagnostics` later).
+  its own diagnostic (it feeds `19 post_bombcell_diagnostics` later).
 
 * **What `coverage` counts.** Under `averaging_method="spike_count"` (the
   Round-2 default) `contributing_weight` is the summed selected-spike count,
@@ -372,7 +372,7 @@ def plot_nan_coverage_summary(contributing_weight, positions, out_path,
     at n_units). Right — the per-unit covered-channel histogram (the per-unit
     view; a unit at the left edge is a candidate for the zero/low-coverage
     report). Together they are the honest picture of what the stitch did NOT
-    measure — the mask capsule 15's label x footprint-extent cross-tab later
+    measure — the mask capsule 19's label x footprint-extent cross-tab later
     reads.
 
     The units with no measurement anywhere are called out with a rule at zero,

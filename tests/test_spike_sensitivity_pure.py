@@ -159,3 +159,23 @@ def test_next_climb_grid_stops_at_cap():
 
 def test_next_climb_grid_handles_none_unstable():
     assert ss.next_climb_grid([12, 100], n_unstable=None, max_cap=2000) is None
+
+
+def test_carry_forward_rows_fills_trailing_nans_with_last_measured():
+    # A data-capped unit keeps contributing its last MEASURED stability value
+    # at every higher grid point (the inclusive convergence metric).
+    mat = [[0.5, 0.8, np.nan, np.nan],
+           [0.2, np.nan, 0.6, np.nan]]
+    out = ss.carry_forward_rows(mat)
+    assert out[0].tolist() == [0.5, 0.8, 0.8, 0.8]
+    # interior NaN (degenerate template mid-grid) is preserved; only the tail fills
+    assert out[1][0] == 0.2 and np.isnan(out[1][1])
+    assert out[1][2] == 0.6 and out[1][3] == 0.6
+
+
+def test_carry_forward_rows_leaves_all_nan_rows_and_input_untouched():
+    mat = np.array([[np.nan, np.nan], [0.4, np.nan]])
+    out = ss.carry_forward_rows(mat)
+    assert np.isnan(out[0]).all()          # nothing measured -> nothing to carry
+    assert np.isnan(mat[1][1])             # input not mutated (copy semantics)
+    assert out[1].tolist() == [0.4, 0.4]

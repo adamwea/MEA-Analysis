@@ -266,14 +266,15 @@ def convergence_sweep(segment_analyzer_dirs, *, grid=DEFAULT_GRID, max_units=Non
                       corr_target=DEFAULT_CORR_TARGET, progress=None):
     """Subsample-convergence of per-segment average templates.
 
-    For each analyzer dir in `segment_analyzer_dirs` (a capsule 08
+    For each analyzer dir in `segment_analyzer_dirs` (a build_segment_analyzers
     `.../analyzer`, walked STRICTLY SEQUENTIALLY so only one recording is ever
     resident), copy it to an in-memory analyzer and, for each N in `grid`,
     recompute every unit's average template from N uniformly-chosen spikes.
-    Correlate each unit's N-spike template against its fullest template
-    (``grid[-1]``, which for a unit with fewer than that many spikes is simply
-    its full template). ``operators=["average"]`` keeps this an in-place mean —
-    no waveform buffer — so the sweep is memory-safe on a headless node.
+    Correlate each unit's N-spike template against its ALL-spikes template —
+    the true asymptote, computed as one extra template pass — so every grid
+    point below a unit's own spike count is a real measurement, including the
+    top one. ``operators=["average"]`` keeps this an in-place mean — no
+    waveform buffer — so the sweep is memory-safe on a headless node.
 
     `max_units` caps the per-segment unit count (None = all). `progress(msg)`,
     if given, is called once per segment for a heartbeat.
@@ -281,7 +282,10 @@ def convergence_sweep(segment_analyzer_dirs, *, grid=DEFAULT_GRID, max_units=Non
     Returns a JSON-safe dict: the median-correlation curve and converged
     fraction per N, the per-(unit,segment) "enough N", and — via
     :func:`recommend_default` — the recommended `max_spikes_per_unit` and the
-    strict/soft crossing points.
+    strict/soft crossing points. Non-JSON extras kept for the plots: ``_conv``
+    (per-unit correlation rows) and ``_exemplars`` (peak-channel waveform
+    evolution for a few representative units — see
+    :func:`plot_template_evolution`).
     """
     from mea_modules.postprocess.analyzer import (
         DEFAULT_MS_AFTER, DEFAULT_MS_BEFORE, load_analyzer,
@@ -298,6 +302,7 @@ def convergence_sweep(segment_analyzer_dirs, *, grid=DEFAULT_GRID, max_units=Non
     ceilings = []            # each (unit, seg)'s own spike count (its data ceiling)
     n_segments_swept = 0
     swept_dirs = []
+    exemplars = []           # peak-channel waveform evolution for a few units
 
     for seg_dir in segment_analyzer_dirs:
         seg_dir = Path(seg_dir)
@@ -317,10 +322,19 @@ def convergence_sweep(segment_analyzer_dirs, *, grid=DEFAULT_GRID, max_units=Non
             az.compute("templates", ms_before=ms_before, ms_after=ms_after,
                        operators=["average"])
             tmpl[n] = np.asarray(az.get_extension("templates").get_data(), dtype=np.float32)
-        ref = tmpl[nmax]
+        # The asymptote is each unit's ALL-spikes template — not the grid-top
+        # subsample — so every grid point below a unit's own spike count is a
+        # real measurement (for a unit with more spikes than the top grid point
+        # the top point is now informative rather than trivially corr==1).
+        az.compute("random_spikes", method="all")
+        az.compute("templates", ms_before=ms_before, ms_after=ms_after,
+                   operators=["average"])
+        ref = np.asarray(az.get_extension("templates").get_data(), dtype=np.float32)
         nspikes = np.asarray(list(az.sorting.count_num_spikes_per_unit().values()))
         n_units = ref.shape[0]
         unit_iter = range(n_units if max_units is None else min(n_units, max_units))
+        first_seg = n_segments_swept == 0
+        seg_candidates = []  # (unit_index, ceiling) rows this segment could exemplify
         for u in unit_iter:
             r = ref[u].ravel()
             if not np.any(r):
@@ -348,9 +362,36 @@ def convergence_sweep(segment_analyzer_dirs, *, grid=DEFAULT_GRID, max_units=Non
             reached_strict = [grid[i] for i, c in enumerate(corrs)
                               if np.isfinite(c) and c >= STRICT_CORR_TARGET]
             strict_N.append(reached_strict[0] if reached_strict else np.nan)
+            if first_seg and np.isfinite(corrs).any():
+                seg_candidates.append((u, ceiling))
+
+        seg_label = seg_dir.parent.name if seg_dir.name == "analyzer" else seg_dir.name
+        if first_seg and seg_candidates:
+            # Retain the actual waveform evolution for a few exemplar units so
+            # the plot can SHOW a template settling as N grows, not just its
+            # correlation. Candidates are spread across the spike-count range
+            # (low = data-capped ... high = converged); peak channel only.
+            seg_candidates.sort(key=lambda t: t[1])
+            n_ex = min(6, len(seg_candidates))
+            picks = sorted({int(round(i * (len(seg_candidates) - 1) / max(n_ex - 1, 1)))
+                            for i in range(n_ex)})
+            unit_ids = list(az.sorting.unit_ids)
+            for idx in picks:
+                u, ceiling = seg_candidates[idx]
+                peak_ch = int(np.argmax(np.ptp(ref[u], axis=0)))
+                exemplars.append({
+                    "unit_id": str(unit_ids[u]) if u < len(unit_ids) else str(u),
+                    "n_spikes": ceiling,
+                    "segment": seg_label,
+                    "peak_channel": peak_ch,
+                    "sampling_frequency": float(az.sampling_frequency),
+                    "by_n": {int(n): np.array(tmpl[n][u][:, peak_ch], dtype=np.float32)
+                             for n in grid if n <= ceiling},
+                    "asymptote": np.array(ref[u][:, peak_ch], dtype=np.float32),
+                })
 
         n_segments_swept += 1
-        swept_dirs.append(seg_dir.parent.name if seg_dir.name == "analyzer" else seg_dir.name)
+        swept_dirs.append(seg_label)
         if progress is not None:
             progress(f"swept {seg_dir.parent.name}: {n_units} units")
         del az, tmpl, ref
@@ -358,20 +399,40 @@ def convergence_sweep(segment_analyzer_dirs, *, grid=DEFAULT_GRID, max_units=Non
         gc.collect()
 
     conv = np.array(per_unit_seg_conv) if per_unit_seg_conv else np.empty((0, len(grid)))
+    ceil_arr = np.array(ceilings, dtype=float)
+
+    # The INCLUSIVE curve: dropping a unit once N exceeds its spike count would
+    # bias the metric toward spike-rich survivors — exactly the units the cap
+    # matters least for — while the starved majority silently leaves the median
+    # that sets the cap (Adam, 2026-08-14). Instead, past its data ceiling a
+    # unit CARRIES FORWARD its last MEASURED stability value: a 44-spike unit
+    # whose subsampled averages only correlate 0.84 with its full template
+    # stays an 0.84 drag on every higher grid point (more cap cannot help it;
+    # scoring it a trivial 1.0 would hide that its template is the noisy one).
+    filled = carry_forward_rows(conv)
+
     curve = []
     for i, n in enumerate(grid):
-        col = conv[:, i] if conv.size else np.array([])
-        col = col[np.isfinite(col)]
+        tested = conv[:, i] if conv.size else np.array([])
+        tested = tested[np.isfinite(tested)]
+        incl = filled[:, i] if filled.size else np.array([])
+        incl = incl[np.isfinite(incl)]
         curve.append({
             "n_spikes": int(n),
-            "median_corr": float(np.median(col)) if col.size else None,
-            "frac_converged": float((col >= STRICT_CORR_TARGET).mean()) if col.size else None,
-            "n_unit_segments": int(col.size),
+            # all units (capped ones at their last measured value) — this is
+            # the median the recommendation reads
+            "median_corr": float(np.median(incl)) if incl.size else None,
+            # spike-rich survivors only (units with >= n spikes) — kept so the
+            # bias the inclusive curve removes stays visible
+            "median_corr_tested": float(np.median(tested)) if tested.size else None,
+            "frac_converged": float((incl >= STRICT_CORR_TARGET).mean()) if incl.size else None,
+            "n_unit_segments": int(tested.size),
+            "n_with_spikes": int((ceil_arr >= n).sum()) if ceil_arr.size else 0,
+            "n_without_spikes": int((ceil_arr < n).sum()) if ceil_arr.size else 0,
         })
 
     enough = np.array(enough_N, dtype=float)
     strict = np.array(strict_N, dtype=float)
-    ceil_arr = np.array(ceilings, dtype=float)
     top = grid[-1]
     # A unit that never reaches the soft target within its AVAILABLE spikes is
     # either DATA-CAPPED (too few spikes to even test the high-N grid — the
@@ -400,7 +461,8 @@ def convergence_sweep(segment_analyzer_dirs, *, grid=DEFAULT_GRID, max_units=Non
         "n_unstable": n_unstable,
         "frac_data_capped": float(n_data_capped / enough.size) if enough.size else None,
         "frac_unstable": float(n_unstable / enough.size) if enough.size else None,
-        "_conv": conv,       # (unit_seg, grid) — kept for the plot
+        "_conv": conv,        # (unit_seg, grid) — kept for the plot
+        "_exemplars": exemplars,  # waveform evolution rows — kept for the plot
     }
     result.update(recommend_default(result))
     return result
@@ -411,13 +473,34 @@ def _pct(arr, q):
     return int(np.percentile(finite, q)) if finite.size else None
 
 
+def carry_forward_rows(mat):
+    """Each row's trailing NaNs replaced by its last finite value.
+
+    The inclusive convergence metric: a (unit, segment) whose spike count the
+    grid has passed keeps contributing its last MEASURED stability value to
+    every higher grid point, instead of silently leaving the median (which
+    would bias the curve toward spike-rich survivors). Interior NaNs (a
+    degenerate template mid-grid) stay NaN. Returns a copy.
+    """
+    mat = np.array(mat, dtype=float, copy=True)
+    for r in range(mat.shape[0]):
+        row = mat[r]
+        finite = np.where(np.isfinite(row))[0]
+        if finite.size:
+            row[finite[-1] + 1:] = row[finite[-1]]
+    return mat
+
+
 def recommend_default(sweep, corr_target=None):
     """Turn a convergence curve into a recommended `max_spikes_per_unit`.
 
     The recommendation is the smallest grid N whose MEDIAN template correlation
-    clears `corr_target` (default: the sweep's own). Also reports the strict
-    (0.99) crossing and the enough-N p90, so the caller can choose a coverage
-    stance rather than a single number.
+    clears `corr_target` (default: the sweep's own). That median is the
+    INCLUSIVE one — every (unit, segment) counts at every N, with those past
+    their own spike count carrying their last measured value — so spike-starved
+    units keep weighing on the cap they will be extracted under. Also reports
+    the strict (0.99) crossing and the enough-N p90, so the caller can choose a
+    coverage stance rather than a single number.
     """
     grid = sweep["grid"]
     target = sweep.get("corr_target", DEFAULT_CORR_TARGET) if corr_target is None else corr_target
@@ -499,9 +582,13 @@ def plot_convergence(sweep, out_path, configured_default=None, title=None,
     grid = np.asarray(sweep["grid"])
     med = np.array([pt["median_corr"] if pt["median_corr"] is not None else np.nan
                     for pt in sweep["curve"]])
+    med_tested = np.array(
+        [pt.get("median_corr_tested") if pt.get("median_corr_tested") is not None
+         else np.nan for pt in sweep["curve"]])
     frac = np.array([pt["frac_converged"] if pt["frac_converged"] is not None else np.nan
                      for pt in sweep["curve"]])
-    n = np.array([pt["n_unit_segments"] for pt in sweep["curve"]])
+    n_with = np.array([pt.get("n_with_spikes", 0) for pt in sweep["curve"]])
+    n_without = np.array([pt.get("n_without_spikes", 0) for pt in sweep["curve"]])
     target = sweep.get("corr_target", DEFAULT_CORR_TARGET)
     strict = sweep.get("strict_corr_target", STRICT_CORR_TARGET)
     rec = sweep.get("recommended_max_spikes_per_unit")
@@ -512,7 +599,11 @@ def plot_convergence(sweep, out_path, configured_default=None, title=None,
     ax1, ax2, ax3 = (fig.add_subplot(1, 3, i) for i in (1, 2, 3))
 
     # --- panel 1: median convergence curve + calibration annotations ---
-    ax1.plot(grid, med, "-o", color="#4C72B0")
+    ax1.plot(grid, med, "-o", color="#4C72B0",
+             label="all units (capped carry last measured)")
+    if np.isfinite(med_tested).any():
+        ax1.plot(grid, med_tested, "--o", color="#4C72B0", alpha=0.45, ms=3,
+                 label="only units with ≥N spikes (biased)")
     ax1.axhline(target, color="#DD8452", ls="--", lw=1, label=f"soft {target:g}")
     ax1.axhline(strict, color="#C44E52", ls=":", lw=1, label=f"strict {strict:g}")
     if rec is not None:
@@ -520,10 +611,14 @@ def plot_convergence(sweep, out_path, configured_default=None, title=None,
     if configured_default is not None:
         ax1.axvline(configured_default, color="#8172B3", lw=1.2, ls="-.",
                     label=f"configured {configured_default}")
-    for x, y, cnt in zip(grid, med, n):
+    # Per point: how many unit-segments HAVE >= N spikes vs how many do not
+    # (the latter carry their last measured value into the solid curve) — NOT
+    # the subsample size N on the x-axis.
+    for x, y, cw, cwo in zip(grid, med, n_with, n_without):
         if np.isfinite(y):
-            ax1.annotate(f"n={cnt}", (x, y), textcoords="offset points",
-                         xytext=(0, 6), fontsize=7, ha="center", color="#555")
+            ax1.annotate(f"≥N: {cw}\n<N: {cwo}", (x, y),
+                         textcoords="offset points", xytext=(0, 7),
+                         fontsize=6, ha="center", color="#555")
     split_lines = []
     n_dc, n_un = sweep.get("n_data_capped"), sweep.get("n_unstable")
     if n_dc is not None or n_un is not None:
@@ -537,10 +632,10 @@ def plot_convergence(sweep, out_path, configured_default=None, title=None,
                  fontsize=7, va="bottom", ha="left", color="#555",
                  bbox=dict(boxstyle="round", fc="white", ec="#cccccc", alpha=0.85))
     ax1.set_xscale("log")
-    ax1.set_xlabel("spikes subsampled (N)")
-    ax1.set_ylabel("median corr to asymptote")
-    ax1.set_title("template convergence", fontsize=10)
-    ax1.legend(fontsize=7, loc="lower right")
+    ax1.set_xlabel("spikes subsampled per unit (N)")
+    ax1.set_ylabel("median corr to all-spikes template — ALL units")
+    ax1.set_title("template convergence (capped units included)", fontsize=10)
+    ax1.legend(fontsize=6, loc="lower right")
 
     # --- panel 2: a sample of per-unit corr-vs-N traces ---
     if conv.size and conv.shape[1] == grid.size:
@@ -562,16 +657,65 @@ def plot_convergence(sweep, out_path, configured_default=None, title=None,
                  transform=ax2.transAxes, ha="center", va="center",
                  fontsize=8, color="#999")
     ax2.set_xscale("log")
-    ax2.set_xlabel("spikes subsampled (N)")
-    ax2.set_ylabel("corr to asymptote")
-    ax2.set_title("per-unit convergence (sample)", fontsize=10)
+    ax2.set_xlabel("spikes subsampled per unit (N)")
+    ax2.set_ylabel("corr to all-spikes template")
+    ax2.set_title("per-unit convergence (sample; measured points only)",
+                  fontsize=10)
 
     # --- panel 3: converged fraction ---
     ax3.plot(grid, frac * 100.0, "-o", color="#C44E52")
     ax3.set_xscale("log")
-    ax3.set_xlabel("spikes subsampled (N)")
-    ax3.set_ylabel(f"% of unit-segments converged (>= {strict:g})")
-    ax3.set_title("converged fraction", fontsize=10)
+    ax3.set_xlabel("spikes subsampled per unit (N)")
+    ax3.set_ylabel(f"% of ALL unit-segments converged (>= {strict:g})")
+    ax3.set_title("converged fraction (capped units included)", fontsize=10)
+
+    if title:
+        fig.suptitle(title, fontsize=11)
+    fig.tight_layout(rect=(0, 0, 1, 0.95 if title else 1.0))
+    return _save_and_release(fig, out_path)
+
+
+def plot_template_evolution(sweep, out_path, title=None, figsize=(14, 7), dpi=140):
+    """Exemplar units' peak-channel templates overlaid per subsample size N.
+
+    One subplot per exemplar (up to 6, chosen by :func:`convergence_sweep` to
+    span the spike-count range): each colored trace is the unit's average
+    template rebuilt from N spikes (color ramps with N), the black trace is the
+    ALL-spikes asymptote. Convergence is the colored traces settling onto the
+    black one — the thing the correlation curves summarize, shown literally.
+
+    Returns the written path, or None when the sweep retained no exemplars.
+    """
+    exemplars = sweep.get("_exemplars") or []
+    if not exemplars:
+        return None
+    import matplotlib as mpl
+
+    n_ex = len(exemplars)
+    ncols = min(3, n_ex)
+    nrows = (n_ex + ncols - 1) // ncols
+    fig = _new_figure(figsize, dpi)
+    grid_all = sorted({int(n) for ex in exemplars for n in ex["by_n"]})
+    cmap = mpl.colormaps["viridis"].resampled(max(len(grid_all), 2))
+    n_color = {n: cmap(i) for i, n in enumerate(grid_all)}
+
+    for k, ex in enumerate(exemplars):
+        ax = fig.add_subplot(nrows, ncols, k + 1)
+        fs = ex.get("sampling_frequency")
+        asym = np.asarray(ex["asymptote"])
+        t = (np.arange(asym.size) / fs * 1000.0) if fs else np.arange(asym.size)
+        for n in sorted(ex["by_n"]):
+            wf = np.asarray(ex["by_n"][n])
+            ax.plot(t[: wf.size], wf, color=n_color[int(n)], lw=1.0, alpha=0.9,
+                    label=f"N={n}")
+        ax.plot(t, asym, color="black", lw=1.8,
+                label=f"all {ex['n_spikes']} spikes")
+        ax.set_title(
+            f"unit {ex['unit_id']} — {ex['n_spikes']} spikes "
+            f"({ex['segment']}, ch {ex['peak_channel']})", fontsize=9)
+        ax.set_xlabel("time (ms)" if fs else "sample")
+        ax.set_ylabel("amplitude (uV)")
+        ax.legend(fontsize=6, loc="lower right", ncol=2)
 
     if title:
         fig.suptitle(title, fontsize=11)

@@ -139,6 +139,84 @@ def _cluster_labels(sorter_output_dir):
 # 2. Per-unit x per-segment spike counts — cheap, from the sort + manifest.
 # ---------------------------------------------------------------------------
 
+def per_unit_segment_matrix_from_si(sorting_dir, concat_manifest):
+    """Like :func:`per_unit_segment_matrix`, but for an SI NumpySorting folder.
+
+    `dense_merge_apply` persists its merged sorting as a SpikeInterface
+    NumpySorting (`spikes.npy` structured array with sample_index on the
+    concatenated timeline + `numpysorting_info.json` carrying unit_ids), not a
+    KiloSort `sorter_output`. Bin the same way so the post-merge re-census is
+    directly comparable to the pre-merge one. Returns None on missing/empty
+    inputs, like the KiloSort reader.
+    """
+    d = Path(sorting_dir)
+    info_path = d / "numpysorting_info.json"
+    spikes_path = d / "spikes.npy"
+    if not info_path.is_file() or not spikes_path.is_file():
+        return None
+    try:
+        info = json.loads(info_path.read_text())
+        spikes = np.load(spikes_path)
+    except (OSError, ValueError) as exc:
+        logger.warning("cannot read SI sorting at %s: %s", d, exc)
+        return None
+    if spikes.size == 0 or "sample_index" not in (spikes.dtype.names or ()):
+        return None
+    st = np.asarray(spikes["sample_index"], dtype=np.int64)
+    # unit_index rows index info["unit_ids"] — map through so the census talks
+    # in the sorting's REAL unit ids (post-merge these are surviving member ids)
+    unit_id_list = [int(u) for u in info.get("unit_ids", [])]
+    if not unit_id_list:
+        return None
+    sc = np.asarray([unit_id_list[i] for i in spikes["unit_index"]], dtype=np.int64)
+
+    manifest = (
+        concat_manifest if isinstance(concat_manifest, dict)
+        else json.loads(Path(concat_manifest).read_text())
+    )
+    segs = manifest.get("segments") or []
+    if not segs or any(s.get("start_frame") is None or s.get("end_frame") is None
+                       for s in segs):
+        return None
+    fs = float(manifest.get("fs_hz") or info.get("sampling_frequency") or 20000.0)
+    starts = np.array([int(s["start_frame"]) for s in segs], dtype=np.int64)
+    ends = np.array([int(s["end_frame"]) for s in segs], dtype=np.int64)
+    seg_labels = [str(s.get("rec")) for s in segs]
+    order = np.argsort(starts)
+    starts, ends = starts[order], ends[order]
+    seg_labels = [seg_labels[i] for i in order]
+    durations = np.maximum((ends - starts), 1) / fs
+    n_seg = len(segs)
+
+    seg_idx = np.clip(np.searchsorted(starts, st, side="right") - 1, 0, n_seg - 1)
+    unit_ids = np.unique(sc)
+    rows = np.searchsorted(unit_ids, sc)
+    matrix = np.zeros((unit_ids.size, n_seg), dtype=np.int64)
+    np.add.at(matrix, (rows, seg_idx), 1)
+    totals = matrix.sum(axis=1)
+    active = (matrix > 0).sum(axis=1)
+    n_units = unit_ids.size
+    return {
+        "n_units": int(n_units),
+        "n_segments": int(n_seg),
+        "fs_hz": fs,
+        "segment_labels": seg_labels,
+        "segment_durations_s": [round(float(x), 3) for x in durations],
+        "unit_ids": [int(u) for u in unit_ids],
+        "unit_labels": [None] * int(n_units),
+        "unit_total_spikes": totals.tolist(),
+        "unit_active_segments": active.tolist(),
+        "median_active_segments": float(np.median(active)) if n_units else None,
+        "mean_active_segments": float(active.mean()) if n_units else None,
+        "n_units_1_segment": int((active == 1).sum()),
+        "n_units_le2_segments": int((active <= 2).sum()),
+        "frac_le2_segments": float((active <= 2).mean()) if n_units else None,
+        "n_units_all_segments": int((active == n_seg).sum()),
+        "matrix_counts": matrix.tolist(),
+        "matrix_rate_hz": (matrix / durations[None, :]).tolist(),
+    }
+
+
 def per_unit_segment_matrix(sorter_output_dir, concat_manifest):
     """A units x segments matrix of per-unit spike counts across the scan.
 

@@ -250,11 +250,14 @@ def _id_key(unit_id):
 def noise_gate_template(template, k=8.0, baseline_samples=8):
     """NaN-out channels whose deflection never clears their own noise floor.
 
-    **Wired at the SOURCE — capsule 12 stitch_templates** (Adam, 2026-08-14:
-    "turn that shit off" — no noise blanket leaves the stitch; every
-    downstream template consumer sees gated templates). Deliberately NOT
-    applied again at the dense merge (24): post-processing there was
-    rejected the same day; gating once at the source is the whole design.
+    **OPT-IN ONLY (capsule 12's --noise-gate; default OFF).** STANDING RULE
+    (Adam, 2026-08-14, supersedes the same-day "turn it off" ruling): NOISE
+    IS A DIAGNOSTIC. No filtering/post-processing that can eliminate data at
+    a channel runs anywhere in the template path before the raw
+    stitched/labeled/curated/merged picture has been SEEN — a unit with data
+    in every segment must show data at every channel those segments cover,
+    all the way through post_merge_diagnostics. This gate exists for the
+    explicit, after-the-raw-look opt-in only.
 
     `template` is one unit, ``(channels, samples)``, NaN where uncovered. The
     per-channel noise floor is estimated from the template's own edges (the

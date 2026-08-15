@@ -6,6 +6,21 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 End-to-end pipeline for neuronal spike sorting and network burst analysis on **Maxwell Biosystems MEA** (Microelectrode Array) recordings. Built on [SpikeInterface](https://github.com/SpikeInterface/spikeinterface) with Kilosort4 as the default sorter.
 
+## STANDING RULE — NOISE IS A DIAGNOSTIC (Adam, 2026-08-14, BINDING)
+
+Adam: **"NOISE IS A DIAGNOSTIC. I want to see templates stitched, labeled,
+curated, and merged BEFORE applying any filtering or post processing. I want
+to see what the data look like at each channel before doing any
+post-processing that might eliminate data at a given channel. Templates with
+data in every segment should have data at every channel across those segments
+in post_merge_diagnostics."**
+
+For this repo: no function in `mea_modules/` that feeds the template path
+(stitch → bombcell → slay → dense merge → post-merge diagnostics) may remove
+or zero channel data by default. `curation.noise_gate_template` is an
+explicit after-the-raw-look opt-in only — never call it by default, never add
+sibling gating without Adam's explicit go.
+
 ## THE REPO BOUNDARY — read this before touching ANY file (Adam, 2026-08-11, BINDING)
 
 **Everything in this repo OUTSIDE `mea_modules/` is the lab's SHARED legacy

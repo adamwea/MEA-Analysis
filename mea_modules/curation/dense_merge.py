@@ -250,11 +250,11 @@ def _id_key(unit_id):
 def noise_gate_template(template, k=8.0, baseline_samples=8):
     """NaN-out channels whose deflection never clears their own noise floor.
 
-    **NOT WIRED into any capsule** (Adam, 2026-08-14: no template
-    post-processing at the merge step — the noise blanket on spike-starved
-    templates is an UPSTREAM property, to be addressed at its source when
-    that decision is ready). Retained as a tested pure utility for that
-    future decision; wiring it anywhere needs Adam's explicit go.
+    **Wired at the SOURCE — capsule 12 stitch_templates** (Adam, 2026-08-14:
+    "turn that shit off" — no noise blanket leaves the stitch; every
+    downstream template consumer sees gated templates). Deliberately NOT
+    applied again at the dense merge (24): post-processing there was
+    rejected the same day; gating once at the source is the whole design.
 
     `template` is one unit, ``(channels, samples)``, NaN where uncovered. The
     per-channel noise floor is estimated from the template's own edges (the

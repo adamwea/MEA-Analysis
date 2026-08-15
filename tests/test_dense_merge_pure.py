@@ -173,18 +173,40 @@ def test_empty_group_raises():
 # --------------------------------------------------------------------------- #
 
 
-def test_plan_orders_and_survivor_ids():
+def test_plan_orders_and_fresh_merged_ids():
+    # Default policy (Adam, 2026-08-14): a merged unit gets a NEW id strictly
+    # above every pre-merge id, so it can never shadow a pre-merge unit.
     unit_ids = [10, 20, 30, 40, 50]
     plan = plan_merge_output(unit_ids, [[40, 20]])
-    assert [entry["unit_id"] for entry in plan] == [10, 20, 30, 50]
+    assert [entry["unit_id"] for entry in plan] == [10, 51, 30, 50]
     merged_entry = plan[1]
     assert merged_entry["merged"] is True
     assert merged_entry["member_ids"] == [40, 20]
     assert merged_entry["member_indices"] == [3, 1]
-    assert merged_entry["unit_id"] == 20  # lowest member id survives
+    assert merged_entry["unit_id"] == 51  # max(pre-merge) + 1
+    assert merged_entry["unit_id"] > max(unit_ids)
     for entry in (plan[0], plan[2], plan[3]):
         assert entry["merged"] is False
         assert entry["member_ids"] == [entry["unit_id"]]
+
+
+def test_plan_fresh_ids_increment_per_group_in_plan_order():
+    plan = plan_merge_output([1, 2, 3, 4, 5, 6], [[5, 2], [4, 1]])
+    merged = [e for e in plan if e["merged"]]
+    # plan order: group of first-encountered member — 1's group first, then 2's
+    assert [e["unit_id"] for e in merged] == [7, 8]
+    assert [e["member_ids"] for e in merged] == [[4, 1], [5, 2]]
+
+
+def test_plan_legacy_lowest_policy_still_available():
+    plan = plan_merge_output([10, 20, 30, 40, 50], [[40, 20]],
+                             merged_id_policy="lowest")
+    assert plan[1]["unit_id"] == 20  # lowest member id survives (pre-2026-08-14)
+
+
+def test_plan_rejects_unknown_policy():
+    with pytest.raises(ValueError):
+        plan_merge_output([1, 2], [[1, 2]], merged_id_policy="banana")
 
 
 def test_plan_str_int_id_tolerance():
@@ -193,8 +215,23 @@ def test_plan_str_int_id_tolerance():
     assert len(plan) == 2
     assert plan[0]["merged"] is True
     assert plan[0]["member_indices"] == [2, 0]
-    assert plan[0]["unit_id"] == 10
+    assert plan[0]["unit_id"] == 31  # fresh: above the max pre-merge id
     assert plan[1]["merged"] is False
+
+
+def test_noise_gate_kills_blanket_keeps_signal():
+    import numpy as np
+    from mea_modules.curation import noise_gate_template
+    rng = np.random.default_rng(0)
+    t = rng.normal(0, 1.0, size=(4, 60))          # 4 channels of pure noise
+    t[1, 25:35] -= 40.0                            # channel 1 carries a spike
+    t[3, :] = np.nan                               # channel 3 uncovered
+    gated, kept = noise_gate_template(t)  # default k: calibrated above the
+    # expected noise ptp (~5.4 sigma for 60 samples), so pure noise is gated
+    assert kept.tolist() == [False, True, False, False]
+    assert np.isnan(gated[0]).all() and np.isnan(gated[2]).all()
+    assert np.isfinite(gated[1]).all()             # signal channel untouched
+    assert np.isnan(gated[3]).all()
 
 
 def test_plan_rejects_bad_maps():

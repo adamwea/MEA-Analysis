@@ -122,7 +122,7 @@ def merge_group_dense(templates, contributing_weight, member_indices):
     return merged, weight_total
 
 
-def plan_merge_output(unit_ids, groups):
+def plan_merge_output(unit_ids, groups, merged_id_policy="fresh", id_floor=None):
     """Validate a merge map against a unit-id list and plan the output set.
 
     Parameters
@@ -131,22 +131,36 @@ def plan_merge_output(unit_ids, groups):
         Unit ids in stitch row order (the unit axis of the template arrays).
     groups : sequence of sequences
         SLAy merge groups, unit IDS (not indices), disjoint.
+    merged_id_policy : {"fresh", "lowest"}
+        "fresh" (default; Adam, 2026-08-14): every merged unit gets a NEW id
+        strictly greater than the maximal numeric pre-merge id, assigned in
+        plan order — a post-merge id can never be confused with any pre-merge
+        unit. "lowest" is the legacy policy (survivor = the group's lowest
+        member id), kept for reproducing pre-2026-08-14 outputs.
+    id_floor : int, optional
+        Fresh ids start strictly above ``max(id_floor, numeric unit_ids)``.
+        Callers whose `unit_ids` is a SELECTION (e.g. bombcell-accepted units)
+        MUST pass the maximal id of the FULL pre-merge population here, or a
+        fresh id can collide with an unselected pre-merge unit.
 
     Returns
     -------
     plan : list of dict, one per OUTPUT unit, in a deterministic order:
         input order, with a merged group appearing at the position of its
         first-encountered member (later members are consumed silently).
-        Each entry: {"unit_id": survivor id (the group's LOWEST member id;
-        input id for passthrough units), "member_ids": [...],
-        "member_indices": [...], "merged": bool}.
+        Each entry: {"unit_id": merged id per the policy (input id for
+        passthrough units), "member_ids": [...], "member_indices": [...],
+        "merged": bool}.
 
     Raises
     ------
     ValueError
         On a group member missing from `unit_ids`, appearing in two groups,
-        appearing twice in one group, or a group of fewer than two units.
+        appearing twice in one group, a group of fewer than two units, or an
+        unknown `merged_id_policy`.
     """
+    if merged_id_policy not in ("fresh", "lowest"):
+        raise ValueError(f"unknown merged_id_policy {merged_id_policy!r}")
     index_of = {}
     for index, unit_id in enumerate(unit_ids):
         index_of[_id_key(unit_id)] = index
@@ -178,6 +192,13 @@ def plan_merge_output(unit_ids, groups):
             member_to_group[member] = group_number
         normalized_groups.append(members)
 
+    # "fresh" ids start strictly above every numeric pre-merge id, so a merged
+    # unit can never shadow a pre-merge one.
+    numeric = [k for k in index_of if isinstance(k, int)]
+    if id_floor is not None:
+        numeric.append(int(id_floor))
+    next_fresh = (max(numeric) + 1) if numeric else 0
+
     plan = []
     emitted_groups = set()
     for unit_id in unit_ids:
@@ -195,8 +216,13 @@ def plan_merge_output(unit_ids, groups):
             continue
         emitted_groups.add(group_number)
         members = normalized_groups[group_number]
+        if merged_id_policy == "fresh":
+            out_id = next_fresh
+            next_fresh += 1
+        else:
+            out_id = min(members)
         plan.append({
-            "unit_id": min(members),
+            "unit_id": out_id,
             "member_ids": list(members),
             "member_indices": [index_of[member] for member in members],
             "merged": True,
@@ -219,6 +245,46 @@ def _id_key(unit_id):
         return int(unit_id)
     except (TypeError, ValueError):
         return str(unit_id)
+
+
+def noise_gate_template(template, k=8.0, baseline_samples=8):
+    """NaN-out channels whose deflection never clears their own noise floor.
+
+    **NOT WIRED into any capsule** (Adam, 2026-08-14: no template
+    post-processing at the merge step — the noise blanket on spike-starved
+    templates is an UPSTREAM property, to be addressed at its source when
+    that decision is ready). Retained as a tested pure utility for that
+    future decision; wiring it anywhere needs Adam's explicit go.
+
+    `template` is one unit, ``(channels, samples)``, NaN where uncovered. The
+    per-channel noise floor is estimated from the template's own edges (the
+    first and last `baseline_samples` samples, away from the centered
+    deflection): sigma = 1.4826 * MAD. A channel is kept only when its
+    peak-to-peak exceeds ``k * sigma``; gated channels become NaN (the same
+    "uncovered" semantics the stitch uses). Already-NaN channels stay NaN.
+    ``k`` must exceed the EXPECTED noise peak-to-peak for the sample count —
+    max-min of ~60 gaussian samples is already ~5.4 sigma, hence the default
+    of 8 rather than a naive 5.
+
+    Returns ``(gated_template, kept_mask)`` — a copy and a boolean per
+    channel (True = kept).
+    """
+    t = np.array(template, dtype=float, copy=True)
+    n_samples = t.shape[1]
+    b = min(int(baseline_samples), max(n_samples // 4, 1))
+    edges = np.concatenate([t[:, :b], t[:, -b:]], axis=1)
+    med = np.nanmedian(edges, axis=1, keepdims=True)
+    with np.errstate(invalid="ignore"):
+        sigma = 1.4826 * np.nanmedian(np.abs(edges - med), axis=1)
+        ptp = np.nanmax(t, axis=1) - np.nanmin(t, axis=1)
+    covered = np.isfinite(ptp)
+    kept = covered & (ptp > float(k) * np.where(sigma > 0, sigma, np.inf))
+    # A zero-MAD channel (flat baseline) with a real deflection must survive:
+    # fall back to comparing against the unit's own noisiest kept estimate.
+    zero_mad = covered & (sigma <= 0) & (ptp > 0)
+    kept |= zero_mad
+    t[~kept] = np.nan
+    return t, kept
 
 
 def dedup_coincident_spikes(spike_times, spike_sources, censor_samples=DEFAULT_CENSOR_SAMPLES):

@@ -29,6 +29,7 @@ from .dense_merge import (
     DEFAULT_CENSOR_SAMPLES,
     dedup_coincident_spikes,
     merge_group_dense,
+    noise_gate_template,
     plan_merge_output,
 )
 

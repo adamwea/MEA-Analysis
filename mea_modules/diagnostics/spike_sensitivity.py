@@ -297,6 +297,7 @@ def convergence_sweep(segment_analyzer_dirs, *, grid=DEFAULT_GRID, max_units=Non
     nmax = grid[-1]
 
     per_unit_seg_conv = []   # one row per (unit, seg): corr to asymptote at each N
+    row_tags = []            # parallel to per_unit_seg_conv: {segment, unit_id, ceiling}
     enough_N = []            # first N reaching corr_target, per (unit, seg)
     strict_N = []            # first N reaching STRICT_CORR_TARGET
     ceilings = []            # each (unit, seg)'s own spike count (its data ceiling)
@@ -335,6 +336,8 @@ def convergence_sweep(segment_analyzer_dirs, *, grid=DEFAULT_GRID, max_units=Non
         unit_iter = range(n_units if max_units is None else min(n_units, max_units))
         first_seg = n_segments_swept == 0
         seg_candidates = []  # (unit_index, ceiling) rows this segment could exemplify
+        seg_label = seg_dir.parent.name if seg_dir.name == "analyzer" else seg_dir.name
+        seg_unit_ids = list(az.sorting.unit_ids)
         for u in unit_iter:
             r = ref[u].ravel()
             if not np.any(r):
@@ -355,6 +358,11 @@ def convergence_sweep(segment_analyzer_dirs, *, grid=DEFAULT_GRID, max_units=Non
                     continue
                 corrs[i] = float(np.corrcoef(a, r)[0, 1])
             per_unit_seg_conv.append(corrs)
+            row_tags.append({
+                "segment": seg_label,
+                "unit_id": str(seg_unit_ids[u]) if u < len(seg_unit_ids) else str(u),
+                "ceiling": ceiling,
+            })
             ceilings.append(ceiling)
             reached = [grid[i] for i, c in enumerate(corrs)
                        if np.isfinite(c) and c >= corr_target]
@@ -462,6 +470,7 @@ def convergence_sweep(segment_analyzer_dirs, *, grid=DEFAULT_GRID, max_units=Non
         "frac_data_capped": float(n_data_capped / enough.size) if enough.size else None,
         "frac_unstable": float(n_unstable / enough.size) if enough.size else None,
         "_conv": conv,        # (unit_seg, grid) — kept for the plot
+        "_row_tags": row_tags,  # parallel {segment, unit_id, ceiling} per _conv row
         "_exemplars": exemplars,  # waveform evolution rows — kept for the plot
     }
     result.update(recommend_default(result))

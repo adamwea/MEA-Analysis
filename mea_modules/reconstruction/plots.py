@@ -659,7 +659,7 @@ def _add_scale_bar_um(ax, *, color="white", fontsize=9):
     )
 
 
-def _add_scale_circle_um(ax, *, radius_um, reference_value, color="white", fontsize=9, compact=False):
+def _add_scale_circle_um(ax, *, radius_um, reference_value, color="white", fontsize=9, compact=False, show_value=None):
     """A reference circle (top-left) showing what the MAX amplitude circle
     looks like, labeled with the uV value it represents.
 
@@ -690,21 +690,32 @@ def _add_scale_circle_um(ax, *, radius_um, reference_value, color="white", fonts
     cx = margin + rx_axes
     cy = 1.0 - margin - ry_axes
 
+    # Solid filled disc, not a hollow ring (Adam, 2026-08-25: the ring "looks
+    # like a white border with an empty interior"). A filled swatch reads as a
+    # size legend matching the filled channel circles, and is sized to the
+    # plot's ACTUAL max-amplitude radius — it IS the largest circle drawn.
     patch = Ellipse(
         (cx, cy), width=2.0 * rx_axes, height=2.0 * ry_axes, transform=ax.transAxes,
-        fill=False, edgecolor=color, linewidth=1.8,
+        facecolor=color, edgecolor=color, linewidth=0.8,
     )
     ax.add_patch(patch)
     # The circle is a SIZE legend, and a bare number is not one: without the
     # unit and without saying that size means amplitude, a reader has a ring
-    # with a float under it (Adam, 2026-08-11). In `compact` (presentation)
-    # mode the per-unit µV reference number comes OFF the plot — it belongs on
-    # the slide text (Adam, 2026-08-12) — so the key states only the encoding.
-    label = (
-        "circle = amplitude"
-        if compact
-        else f"circle size = peak amplitude\nlargest drawn: {reference_value:.1f} µV"
-    )
+    # with a float under it (Adam, 2026-08-11). `show_value` controls the µV
+    # reference: None keeps the per-style default (diagnostic states it;
+    # presentation drops it — the slide text carries it, Adam 2026-08-12), while
+    # a presentation-style PANEL that wants the explicit reference passes
+    # show_value=True (Adam, 2026-08-25: the solid circle must map to an explicit
+    # amplitude value so a viewer can read the per-channel amplitudes off it).
+    show_value = (not compact) if show_value is None else bool(show_value)
+    if compact:
+        label = "circle = amplitude" + (
+            f"\nlargest: {reference_value:.0f} µV" if show_value else ""
+        )
+    else:
+        label = "circle size = peak amplitude" + (
+            f"\nlargest drawn: {reference_value:.1f} µV" if show_value else ""
+        )
     ax.text(
         cx, cy - ry_axes - 0.02, label,
         transform=ax.transAxes, color=color, ha="center", va="top", fontsize=fontsize,
@@ -716,7 +727,7 @@ def _render_footprint_core(
     template_arr, locations_arr, fs, *,
     dpi, figsize, invert_y_axis, cmap_name,
     max_radius_pitch_fraction, min_radius_max_fraction, radius_scaling, background,
-    style="diagnostic", zoom_bbox=None,
+    style="diagnostic", zoom_bbox=None, scale_circle_value=None,
 ):
     """The amplitude/latency circle footprint alone — no branches, no title,
     not yet saved. Shared by :func:`plot_unit_footprint_reconstruction`
@@ -825,7 +836,7 @@ def _render_footprint_core(
     max_radius_drawn = float(np.max(radii_um)) if radii_um.size else 0.0
     _add_scale_circle_um(
         ax, radius_um=max_radius_drawn, reference_value=amp_max,
-        color=text_color, compact=presentation,
+        color=text_color, compact=presentation, show_value=scale_circle_value,
     )
     _add_scale_bar_um(ax, color=text_color)
 

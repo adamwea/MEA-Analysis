@@ -708,19 +708,25 @@ def _add_scale_circle_um(ax, *, radius_um, reference_value, color="white", fonts
     # show_value=True (Adam, 2026-08-25: the solid circle must map to an explicit
     # amplitude value so a viewer can read the per-channel amplitudes off it).
     show_value = (not compact) if show_value is None else bool(show_value)
-    if compact:
-        label = "circle = amplitude" + (
-            f"\nlargest: {reference_value:.0f} µV" if show_value else ""
-        )
+    if compact and show_value:
+        # Terse size key for a figure panel (Adam, 2026-08-26): the value + units
+        # ALONE, set just to the RIGHT of the disc — "○ 174 µV". No "circle =
+        # amplitude" prose; a sized swatch beside a µV number reads as the size
+        # legend by itself.
+        ax.text(cx + rx_axes + 0.012, cy, f"{reference_value:.0f} µV",
+                transform=ax.transAxes, color=color, ha="left", va="center", fontsize=fontsize)
     else:
-        label = "circle size = peak amplitude" + (
-            f"\nlargest drawn: {reference_value:.1f} µV" if show_value else ""
+        # Presentation slides (no value — it belongs in the slide text, 2026-08-12)
+        # and the verbose diagnostic key stay below the disc.
+        label = (
+            "circle = amplitude"
+            if compact
+            else "circle size = peak amplitude" + (
+                f"\nlargest drawn: {reference_value:.1f} µV" if show_value else ""
+            )
         )
-    ax.text(
-        cx, cy - ry_axes - 0.02, label,
-        transform=ax.transAxes, color=color, ha="center", va="top", fontsize=fontsize,
-        linespacing=1.25,
-    )
+        ax.text(cx, cy - ry_axes - 0.02, label, transform=ax.transAxes, color=color,
+                ha="center", va="top", fontsize=fontsize, linespacing=1.25)
 
 
 def _render_footprint_core(

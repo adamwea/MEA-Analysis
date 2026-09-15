@@ -55,6 +55,15 @@ def count_segments(h5_path):
 # anything else in a recording's groups/ is invisible to it.
 ROUTED_GROUP = "routed"
 
+# Maxwell's ADC digitizes 10 bits — 1024 levels; neo derives the µV-per-count
+# lsb as 3.3 V / (1024 * amplifier_gain) — parked at mid-scale, so quiescent
+# traces sit near count 2**9 = 512, not 0. Neo reports ``offset_to_uV = 0``,
+# which makes ``return_in_uV`` place that mid-rail at ~+3.2 mV instead of
+# ~0 µV. :func:`load_maxwell` stamps the input-referred offset
+# (``-mid_rail * gain``) so microvolt traces read as signal at the electrode:
+# mid-rail ≈ 0 µV (Adam's unit ruling, 2026-08-10).
+_MAXWELL_ADC_BITS = 10
+
 
 def segment_index(h5_path):
     """Enumerate the file's segments across all three axes.
@@ -137,7 +146,33 @@ def load_maxwell(h5_path, stream_id=None, rec_name=None, hdf5_plugin_path=None, 
         kwargs.pop("install_maxwell_plugin", None)
         recording = reader(file_path=str(h5_path), **kwargs)
 
+    _stamp_midrail_offset(recording)
     return recording
+
+
+def _stamp_midrail_offset(recording):
+    """Give the raw recording an input-referred ``offset_to_uV``.
+
+    Maxwell counts sit on a mid-scale rail (see ``_MAXWELL_ADC_BITS`` above);
+    with neo's placeholder offset of 0, ``return_in_uV`` reports that rail as
+    ~+3.2 mV of apparent signal. Stamping ``-mid_rail * gain`` makes microvolt
+    reads input-referred (mid-rail ≈ 0 µV) for every consumer of this loader.
+
+    Only the all-zero placeholder is replaced — a reader that some day reports
+    a real measured offset is left alone. No gain, nothing to do.
+    """
+    import numpy as np
+
+    gains = recording.get_property("gain_to_uV")
+    if gains is None:
+        return
+    offsets = recording.get_property("offset_to_uV")
+    if offsets is not None and np.any(np.asarray(offsets, dtype="float64") != 0.0):
+        return
+    mid_rail = float(2 ** (_MAXWELL_ADC_BITS - 1))
+    recording.set_property(
+        "offset_to_uV", -mid_rail * np.asarray(gains, dtype="float64")
+    )
 
 
 def iter_segments(h5_path, stream_id=None, hdf5_plugin_path=None, plugin_candidates=(), strict=True):

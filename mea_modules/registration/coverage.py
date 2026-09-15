@@ -1,36 +1,15 @@
-"""Correct templates computed over a zero-padded union recording.
+"""Attribute a sort's selected spikes to the segments they fall in.
 
-A union recording presents every electrode any segment routed, zero-filled where
-a segment did not route one. Templates averaged straight off it are wrong, but
-only in their divisor: SpikeInterface sums the same snippets we want and then
-divides by ALL of a unit's spikes, where the correct divisor counts only the
-spikes from segments that actually routed the electrode. So
-
-    T_true[u, c] = T_si[u, c] * N[u] / N[u, c]
-
-with ``N[u, c]`` the number of unit u's spikes lying in segments that routed
-electrode c. That factor is metadata — no traces involved — and this module
-computes it.
-
-Why the correction cannot live in the recording: a recording holds one value at
-``(sample, channel)`` and knows nothing about units, but the divisor is
-per-(unit, channel). The same electrode needs a different divisor for a unit
-that fired mostly in segment 1 than for one that fired mostly in segment 7. A
-per-sample validity mask would express it, and SpikeInterface has no operation
-that consumes one — ``ComputeTemplates`` takes only ``ms_before``/``ms_after``/
-``operators``, and ``Templates.sparsity_mask`` is per-unit, applied at the wrong
-stage. Hence the closed form here.
-
-The result is identical to extracting a partial template per segment and fusing
-them with a spike-count-weighted mean — the same arithmetic the previous build's
-``templates/core/merge.py`` performed — but it needs one pass over the recording
-instead of one analyzer per segment.
+Concatenation ran the sort on one continuous timeline built from several
+recording segments joined end to end. Per-segment work downstream needs to know
+how many of each unit's spikes landed in each segment, keyed by
+``(unit, segment)``.
 
 **Subsampling matters.** ``random_spikes`` keeps a capped, seeded subset per
-unit, so the divisor must count the SELECTED spikes, not the full trains.
-:func:`selected_spikes_per_segment` reads the selection back off the analyzer
-for exactly that reason; using the full counts silently rescales by the wrong
-factor whenever a unit is capped.
+unit, so a count meant to weight template averages must count the SELECTED
+spikes, not the full trains. :func:`selected_spikes_per_segment` reads the
+selection back off the analyzer for exactly that reason; using the full counts
+silently miscounts whenever a unit is capped.
 
 Pure library: no argparse, no printing, no ``__main__``.
 """
@@ -38,76 +17,6 @@ Pure library: no argparse, no printing, no ``__main__``.
 import logging
 
 logger = logging.getLogger(__name__)
-
-
-def routing_table(grid_positions, segment_locations, tolerance_um=1.0,
-                  grid_ids=None, segment_ids=None):
-    """``(n_segments, n_grid)`` bool — which segment routed which electrode.
-
-    `segment_locations` is one ``(n_local, 2)`` xy array per segment, in the
-    order the segments occupy the concatenated timeline.
-
-    Matching prefers electrode ID over geometry, which is what the previous
-    build did (``electrode_id`` -> ``channel_id`` -> ``location`` priority in
-    ``templates/core/merge.py``). On Maxwell the channel id IS the electrode, so
-    an ID match is exact where a positional match is a nearest-neighbour guess
-    under a tolerance. Pass `grid_ids` and `segment_ids` to get it; without them
-    this falls back to position matching within `tolerance_um`.
-
-    An electrode that matches nothing is reported rather than dropped — it means
-    the grid was not built from these segments, and silently ignoring it would
-    leave a hole in the coverage map that nothing downstream would notice.
-    """
-    import numpy as np
-
-    grid = np.asarray(grid_positions, dtype=float)[:, :2]
-    table = np.zeros((len(segment_locations), grid.shape[0]), dtype=bool)
-
-    by_id = None
-    if grid_ids is not None and segment_ids is not None:
-        by_id = {str(value): index for index, value in enumerate(grid_ids)}
-        if len(by_id) != len(list(grid_ids)):
-            logger.warning(
-                "grid ids are not unique; falling back to position matching"
-            )
-            by_id = None
-
-    unmatched = 0
-    matched_by_id = 0
-    for index, locations in enumerate(segment_locations):
-        locations = np.asarray(locations, dtype=float)[:, :2]
-        ids = list(segment_ids[index]) if (by_id is not None and segment_ids is not None) else None
-
-        for local, point in enumerate(locations):
-            slot = None
-            if ids is not None:
-                slot = by_id.get(str(ids[local]))
-                if slot is not None:
-                    matched_by_id += 1
-            if slot is None:
-                distances = np.sum((grid - point) ** 2, axis=1)
-                nearest = int(np.argmin(distances))
-                if np.sqrt(distances[nearest]) <= float(tolerance_um):
-                    slot = nearest
-            if slot is None:
-                unmatched += 1
-                continue
-            table[index, slot] = True
-
-    if matched_by_id:
-        logger.info("matched %d electrode(s) by id rather than position", matched_by_id)
-    if unmatched:
-        logger.warning(
-            "%d segment electrode(s) matched no grid slot by id or within %.3f um; "
-            "the grid does not describe these segments", unmatched, float(tolerance_um),
-        )
-    logger.info(
-        "routing table: %d segment(s) x %d electrode(s); %d electrode(s) routed once, "
-        "%d routed by every segment",
-        table.shape[0], table.shape[1],
-        int((table.sum(axis=0) == 1).sum()), int((table.sum(axis=0) == table.shape[0]).sum()),
-    )
-    return table
 
 
 def _segment_of(sample_indices, segment_bounds):
@@ -165,61 +74,6 @@ def selected_spikes_per_segment(analyzer, segment_bounds):
     return counts
 
 
-def coverage_counts(selected_per_segment, routing):
-    """``(n_units, n_grid)`` — spikes behind each unit/electrode average.
-
-    One matrix product: for electrode c, sum a unit's selected spikes over the
-    segments that routed c. This is the divisor SpikeInterface should have used.
-    """
-    import numpy as np
-
-    return np.asarray(selected_per_segment, dtype=np.int64) @ np.asarray(routing, dtype=np.int64)
-
-
-def rescale_union_templates(templates, coverage, totals=None):
-    """Turn union-recording templates into correctly-normalised ones.
-
-    `templates` is SpikeInterface's ``(n_units, n_samples, n_channels)``.
-    `coverage` is :func:`coverage_counts`. `totals` defaults to each unit's row
-    sum, i.e. every selected spike.
-
-    Electrodes no segment routed for a unit stay exactly zero — there is no
-    measurement to scale — which is the same convention the per-segment merge
-    uses for a channel nobody reached.
-    """
-    import numpy as np
-
-    templates = np.asarray(templates)
-    coverage = np.asarray(coverage, dtype=float)
-    if totals is None:
-        totals = coverage.max(axis=1)
-    totals = np.asarray(totals, dtype=float)
-
-    if coverage.shape != (templates.shape[0], templates.shape[2]):
-        raise ValueError(
-            f"coverage is {coverage.shape} but templates imply "
-            f"({templates.shape[0]}, {templates.shape[2]})"
-        )
-
-    with np.errstate(divide="ignore", invalid="ignore"):
-        scale = np.where(coverage > 0, totals[:, None] / coverage, 0.0)
-
-    corrected = templates * scale[:, None, :].astype(templates.dtype, copy=False)
-
-    uncovered = int((coverage == 0).sum())
-    logger.info(
-        "rescaled %d unit(s) x %d electrode(s); %d unit-electrode pair(s) had no "
-        "contributing segment and stay zero (median scale %.2f, max %.2f)",
-        templates.shape[0], templates.shape[2], uncovered,
-        float(np.median(scale[coverage > 0])) if (coverage > 0).any() else 0.0,
-        float(scale.max()) if scale.size else 0.0,
-    )
-    return corrected
-
-
 __all__ = [
-    "routing_table",
     "selected_spikes_per_segment",
-    "coverage_counts",
-    "rescale_union_templates",
 ]

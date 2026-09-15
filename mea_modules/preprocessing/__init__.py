@@ -27,6 +27,7 @@ from .filters import (
     ensure_signed,
     highpass,
     preprocess_segment,
+    reference_provenance,
     to_float32,
 )
 
@@ -41,6 +42,8 @@ __all__ = [
     "common_median_reference",
     "center",
     "to_float32",
+    # honest reference provenance (Adam ruling R-B, 2026-08-11)
+    "reference_provenance",
     # artifacts
     "detect_artifacts",
     "blank_artifacts",

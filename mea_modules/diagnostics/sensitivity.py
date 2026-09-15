@@ -1,13 +1,17 @@
-"""Is a recovered footprint's far-field structure real, or made by the rescale?
+"""Is a stitched footprint's far-field structure real, or an artifact of thin coverage?
 
 The question
 ------------
-Recovering the full array means averaging each unit's snippets through a
-zero-padded union recording, then dividing by the number of spikes that actually
-contributed at each electrode. That division is exact, but it multiplies
-*whatever is there* — signal or noise. An electrode backed by one spike is
-scaled by up to 2000x. So a large value can appear far from the soma with no
-axon present, and on a footprint that looks exactly like arbor.
+Per-unit template stitching builds each electrode's average from only the
+segments that actually measured it — nothing is extrapolated onto an
+electrode the unit was never recorded on. But how much data backs that
+average still varies enormously across the array: an electrode routed by
+every segment averages over hundreds or thousands of spikes, while an
+electrode routed by a single segment averages over as few as one. An average
+built from one spike is noisier than one built from hundreds, by ordinary
+1/sqrt(n) averaging, so a large value can appear far from the soma with no
+axon present — simply because that electrode's estimate rests on very little
+data — on a footprint that looks exactly like arbor.
 
 Nothing else in this pipeline tests it. The analyzer-extension audit checked
 whether *derived metrics* were trustworthy; the footprints — the actual product
@@ -17,10 +21,12 @@ What this measures
 ------------------
 Three things, in order of what they establish.
 
-**1. The variance model.** After the rescale, the residual noise of the estimate
-at electrode ``c`` for unit ``u`` should be ``sigma_c / sqrt(coverage[u, c])`` —
-ordinary ``1/sqrt(n)`` averaging. :func:`channel_noise_scale` measures this
-directly from the templates' own pre-spike baselines and reports whether
+**1. The variance model.** The residual noise of the estimate at electrode
+``c`` for unit ``u`` should be ``sigma_c / sqrt(coverage[u, c])`` — ordinary
+``1/sqrt(n)`` averaging, where ``coverage`` counts how many spikes (or
+segments, under uniform weighting) were actually averaged into that
+electrode. :func:`channel_noise_scale` measures this directly from the
+templates' own pre-spike baselines and reports whether
 ``scale * sqrt(coverage)`` is constant. On P003454 it is, within 1.3x across
 coverage from 1 to 2000, and adversarial review confirmed the model holds.
 
@@ -220,8 +226,9 @@ def detection_sweep(
     the pre-spike baseline, where no spike can be, giving the false-positive
     count for that threshold on real noise at real coverage.
 
-    The soma reference is the strongest BACKBONE electrode, so the reference
-    itself cannot be a rescale artefact.
+    The soma reference is the strongest BACKBONE electrode — the best-covered
+    electrode set on the array — so the reference itself cannot be an artifact
+    of thin coverage.
     """
 
     coverage = np.asarray(coverage)
@@ -539,9 +546,9 @@ def plot_amplitude_vs_distance(template, coverage_row, sigma, positions, soma_ch
     The single most informative view: amplitude against distance from the soma,
     with the *predicted noise floor* drawn through it and the signal-free null
     scattered underneath. Real signal appears as points standing clear of the
-    floor; amplified noise appears as points riding along it. A footprint plot
-    cannot show this because it maps amplitude to colour without any reference to
-    what amplitude would have been expected from noise alone.
+    floor; thin-coverage noise appears as points riding along it. A footprint
+    plot cannot show this because it maps amplitude to colour without any
+    reference to what amplitude would have been expected from noise alone.
     """
 
     import matplotlib
@@ -611,8 +618,8 @@ def plot_footprint_threshold_ladder(template, coverage_row, sigma, positions,
 
     This is the plot that answers the question by eye. If the far-field halo is
     real it thins gradually and keeps a connected shape radiating from the soma.
-    If it is amplified noise it evaporates, and the null panel looks much like
-    the mildest real panel. Put the two side by side and no statistics are
+    If it is thin-coverage noise it evaporates, and the null panel looks much
+    like the mildest real panel. Put the two side by side and no statistics are
     needed to see which is happening.
     """
 
@@ -815,11 +822,13 @@ def propagation_test(
 ):
     """Does the far-field signal PROPAGATE, or just appear? The decisive test.
 
-    Amplitude tests cannot separate a real axon from noise the rescale amplified,
-    because the rescale acts on amplitude. Timing is untouched by it, so a
-    propagation test is immune to the transformation that confounds everything
-    else — and a single spike multiplied 2000x cannot manufacture a coherent
-    delay gradient.
+    Amplitude tests cannot fully separate a real axon from noise on a
+    thinly-covered electrode, because both can produce a large peak. Timing —
+    the delay of that peak relative to the soma — is a different axis, largely
+    immune to how much data backs each electrode's average: a noisy
+    single-spike snippet has no reason to peak with a distance-dependent
+    delay, so it cannot manufacture a coherent delay gradient the way real
+    axonal conduction does.
 
     Two statistics, the first of which is the one to trust:
 
@@ -1028,7 +1037,8 @@ def write_sensitivity_plots(
     ))
 
     # Rank units by backbone peak so the examples are chosen on well-supported
-    # evidence rather than on whichever electrode the rescale happened to inflate.
+    # evidence rather than on whichever electrode happened to carry a noisy,
+    # thinly-covered peak.
     bb = np.flatnonzero(backbone)
     strength = np.empty(templates.shape[0])
     for index in range(templates.shape[0]):

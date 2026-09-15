@@ -8,7 +8,12 @@ Public API::
         extremum_channels,     # {unit_id: loudest channel}
         plot_unit_waveform,    # spikes + template on the extremum channel
         plot_unit_footprint,   # the template across the electrode layout
+        plot_unit_waveform_footprint,  # same style, from dense template arrays
         plot_footprint_grid,   # several footprints in one figure
+        plot_waveform_grid,    # several waveforms in one figure
+        plot_unit_trace,       # the recording trace with one unit's spikes marked
+        plot_firing_rate_histogram,  # the raster's ordering key as a distribution
+        plot_spikes_per_segment,     # unit x segment spike counts, heatmap + roll-up
     )
 
 `build_analyzer` is the only expensive call here and the only one that reads
@@ -44,10 +49,21 @@ from .analyzer import (
     unit_random_spike_count,
     unit_template,
 )
-from .footprints import plot_footprint_grid, plot_unit_footprint
+from .footprints import (
+    WAVEFORM_FOOTPRINT_PLOT_FILENAME,
+    plot_footprint_grid,
+    plot_unit_footprint,
+    plot_unit_waveform_footprint,
+)
+from .segment_activity import (
+    plot_spikes_per_segment,
+    segment_activity_summary,
+    spikes_per_segment,
+)
 from .unit_locations import plot_unit_locations, unit_location_array
-from .unit_raster import plot_unit_raster, unit_firing_rates
-from .waveforms import plot_unit_waveform, unit_waveforms
+from .unit_raster import plot_firing_rate_histogram, plot_unit_raster, unit_firing_rates
+from .unit_traces import densest_spike_window, plot_unit_trace
+from .waveforms import plot_unit_waveform, plot_waveform_grid, unit_waveforms
 
 __all__ = [
     # the analyzer, and the things that read structure off it
@@ -61,12 +77,22 @@ __all__ = [
     "template_nbefore",
     # plot emitters
     "plot_unit_waveform",
+    "plot_waveform_grid",
     "plot_unit_locations",
     "unit_location_array",
     "plot_unit_raster",
     "unit_firing_rates",
+    "plot_firing_rate_histogram",
     "plot_unit_footprint",
     "plot_footprint_grid",
+    "plot_unit_waveform_footprint",
+    "WAVEFORM_FOOTPRINT_PLOT_FILENAME",
+    "plot_unit_trace",
+    "densest_spike_window",
+    "plot_spikes_per_segment",
+    # numbers behind the segment-activity plot, for callers that want them raw
+    "spikes_per_segment",
+    "segment_activity_summary",
     # numbers behind the waveform plot, for callers that want them without a PNG
     "unit_waveforms",
     # defaults, so a caller can report what an analyzer was built with

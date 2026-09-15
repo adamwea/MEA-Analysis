@@ -2,6 +2,23 @@
 
 This file provides guidance to AI coding agents (Copilot, Cursor, Codex, Gemini Code Assist, etc.) working in this repository.
 
+## THE REPO BOUNDARY (Adam, 2026-08-11, BINDING) + current branch
+
+**Everything outside `mea_modules/` is the lab's SHARED legacy pipeline** —
+root-level `mea_*.py`, `run_pipeline_driver.py`, `helper_functions.py`,
+`dashboards/`, `workbooks/`, `UnitMatch/`. Lab members still run it for their
+own analyses. **Never edit it, even to fix a confirmed bug** — copy the logic
+into `mea_modules/` and fix the copy; note legacy bugs in run notes for Adam
+to raise with the lab. (Precedent: a 2026-08-11 CMR fix touched
+`mea_preprocessing.py` and was reverted — commit `59909ef`.)
+
+Active development is **only `mea_modules/`**, and all round-2 work is on
+branch **`integration/round2-wave1`** (worktree
+`~/dev/RBS-adamwea/worktrees/mea-a-integration-round2-wave1`); consolidation
+to main is gated on Adam's Pass-2 output review. Everything below documents
+the legacy driver — read `CLAUDE.md` (current-state section) and the binding
+ops file `~/dev/RBS-adamwea/worktrees/WAVE1-AGENT-NOTES.md` before working here.
+
 ## Project Overview
 
 End-to-end pipeline for neuronal spike sorting and network burst analysis on **Maxwell Biosystems MEA** (Microelectrode Array) recordings. Built on [SpikeInterface](https://github.com/SpikeInterface/spikeinterface) with Kilosort4 as the default sorter.

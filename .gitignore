@@ -54,7 +54,11 @@ MaxwellMEA-Toolkit-MATLAB
 graphify-out/
 .graphify/
 
-# harness per-session runtime state
-.claude/state/
-.claude/sessions/
+# Harness / agent artifacts — never committed (the in-repo harness stays out of
+# version control; laid down per-machine, config lives outside git).
+CLAUDE.md
+.claude/
+.claude-plugin/
+harness.toml
+.graphifyignore
 mea_modules/.claude/

@@ -20,7 +20,7 @@ from __future__ import annotations
 import numpy as np
 
 DEFAULT_CLUSTER_RADIUS_UM = 100.0    # a pipeline unit within this of a MaxLive init site
-                                     # is "at the same electrode cluster" (Adam 2026-08-27:
+                                     # is "at the same electrode cluster" (2026-08-27:
                                      # 50 -> 100 µm). Units in overlapping radii go to the
                                      # NEARER soma (the argmin in match_by_cluster).
 
@@ -194,8 +194,8 @@ def shared_recon_frame(ml_well, pl_well, nid: int, matched_uids, margin: float =
     """The single (x0, x1, y0, y1) µm frame that contains BOTH reconstructions at a
     cluster — MaxLive neuron ``nid``'s arbor + soma AND our matched units' arbors +
     init sites. Both F2P1 (our units) and F2P2 (MaxLive) render with THIS frame so
-    the two axon-reconstruction plots share an identical plotting area (Adam,
-    2026-08-27). Deterministic given the same ``matched_uids``."""
+    the two axon-reconstruction plots share an identical plotting area
+    (2026-08-27). Deterministic given the same ``matched_uids``."""
     pts = []
     for b in ml_well.arbors().get(nid, {}).values():
         b = np.asarray(b, float)

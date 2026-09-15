@@ -28,6 +28,12 @@ from .channel_layout import _new_figure, _save_and_release
 
 logger = logging.getLogger(__name__)
 
+# Half the MaxOne electrode pitch (17.5 µm / 2), used to pad an imshow extent by
+# one half-electrode so pixels centre on their contacts. This assumes MaxOne
+# geometry; for other Maxwell chip generations derive it from the data instead,
+# e.g. channel_layout.estimate_electrode_pitch(xs, ys) / 2.
+_MAXONE_HALF_PITCH_UM = 8.75
+
 DEFAULT_FIGSIZE = (14.0, 9.0)
 DEFAULT_DPI = 170
 
@@ -370,7 +376,8 @@ def plot_rescale_before_after(positions, templates, coverage, totals, out_path,
     xs, ys = np.unique(positions[:, 0]), np.unique(positions[:, 1])
     col = np.searchsorted(xs, positions[:, 0])
     row = np.searchsorted(ys, positions[:, 1])
-    extent = [xs[0] - 8.75, xs[-1] + 8.75, ys[0] - 8.75, ys[-1] + 8.75]
+    extent = [xs[0] - _MAXONE_HALF_PITCH_UM, xs[-1] + _MAXONE_HALF_PITCH_UM,
+              ys[0] - _MAXONE_HALF_PITCH_UM, ys[-1] + _MAXONE_HALF_PITCH_UM]
 
     import matplotlib.pyplot as plt
     from matplotlib.colors import LogNorm

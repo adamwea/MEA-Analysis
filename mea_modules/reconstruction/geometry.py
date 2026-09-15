@@ -268,7 +268,7 @@ def rg_circle(points):
     from their centroid. General geometry helper; the recon-vs-maxlive figure
     uses it to draw each arbor's spatial-spread circle at a common scale.
     (Relocated from the figure repo per the mechanics-in-mea_modules policy,
-    Adam 2026-09-11.)
+    2026-09-11.)
     """
     P = np.asarray(points, float)
     cen = P.mean(axis=0)

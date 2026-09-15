@@ -11,10 +11,10 @@ Nothing here reads a well, a run directory, or a manifest — `capsules/
 plot_reconstructions/run_capsule.py` is the thin CLI adapter that discovers
 `gtr.pkl` files on disk and calls this.
 
-**What style this ports, and why.** Adam asked for this to match the
-pre-rebuild build's LATEST reconstruction-plot style, not a new invention.
+**What style this ports, and why.** This ports the pre-rebuild build's
+LATEST reconstruction-plot style, not a new invention.
 Investigated three candidates in
-`~/dev/RBS-adamwea/pkgs/pre-rebuild-28Jul2026/`:
+`~/dev/<org>/pkgs/pre-rebuild-28Jul2026/`:
 
 1. `axon_velocity/axon_velocity/plotting.py::plot_axon_summary` — the
    library's own free function (amplitude map + peak-latency map + one
@@ -75,21 +75,21 @@ Ported #3 near-verbatim: same two-row layout, same panel titles, same
 
 **Correction, same session.** The above ported the WRONG style as the
 *primary* output: `write_unit_axon_reconstruction_diagnostic_figure` is a
-real, load-bearing style from the old build, but Adam's actual request was
-the amplitude/latency circle-footprint style — his own words: "circles would
-scale with amplitude size, colors would scale with timing of the signals,
-and reconstruction would build on top of those." That style is
+real, load-bearing style from the old build, but the actual target was
+the amplitude/latency circle-footprint style: circles scale with amplitude
+size, colors scale with the timing of the signals, and the reconstruction
+builds on top of those. That style is
 :func:`plot_unit_footprint_reconstruction` below, ported from the old
 build's `unit_plots.py`/`templates/core/render.py`
 (`write_unit_amplitude_map_png`, `render_template_circles_plot_v2`,
 `_draw_branch_morphology_overlay`) — see that function's own docstring for
 what was ported verbatim vs. simplified. `plot_unit_reconstruction` above is
 NOT wrong to have and is NOT removed — the 4-panel search-graph diagnostic is
-a real, useful secondary view (Adam: "kind of clunky" refers to the OLD
+a real, useful secondary view ("kind of clunky" refers to the OLD
 BUILD'S IMPLEMENTATION of the circles style, not to this 4-panel figure) —
 it just moved to a different capsule (`capsules/recon_diagnostics`, not
 `capsules/plot_reconstructions`) so `plot_reconstructions` renders only the
-style Adam actually asked to see there.
+style actually wanted there.
 """
 
 import logging
@@ -125,8 +125,8 @@ DEFAULT_FOOTPRINT_DPI = 220.0
 # is exactly why an amplitude-scaled points-based circle could straddle past
 # its own electrode's neighbor and visually overlap it. Points-sizing was
 # already the wrong primitive even after the 8pt->1pt floor fix narrowed the
-# problem down to "less densely solid" rather than "not overlapping" (Adam's
-# real requirement: circles must NEVER overlap a neighbor, by construction,
+# problem down to "less densely solid" rather than "not overlapping" (the
+# actual requirement: circles must NEVER overlap a neighbor, by construction,
 # not just look sparser on average). Kept here, unused, only as the record of
 # what was tried first -- see `_electrode_pitch_um`/`_marker_radii_um` for
 # the data-space replacement, which computes the max radius from the ACTUAL
@@ -135,20 +135,20 @@ DEFAULT_MARKER_MIN_DIAMETER_PT = 1.0
 DEFAULT_MARKER_MAX_DIAMETER_PT = 45.0
 
 # Fraction of the detected electrode pitch used as the maximum circle RADIUS
-# (Adam: "cap the max circle diameter at the electrode pitch... so even the
-# largest-amplitude circle just fits within its electrode spacing and never
-# overlaps a neighbor"). 0.48 rather than the exact 0.5 boundary -- two
+# (the requirement: cap the max circle diameter at the electrode pitch so
+# even the largest-amplitude circle just fits within its electrode spacing
+# and never overlaps a neighbor). 0.48 rather than the exact 0.5 boundary -- two
 # neighboring electrodes each at the true max (radius == pitch/2) would only
 # just TOUCH, not overlap, but float/render rounding at that exact seam can
 # still paint a 1px visual overlap; 0.48 leaves a small, deliberate margin.
 DEFAULT_MAX_RADIUS_PITCH_FRACTION = 0.48
 # Minimum circle radius as a fraction of the max radius (not of pitch
-# directly) -- "small floor" per Adam's "biggest and smallest amps set the
-# scale" framing: the smallest-amplitude channel should read as a small but
-# still-visible dot, not vanish, and this stays proportionate however large
-# or small the detected pitch turns out to be.
-# THIRD CORRECTION (2026-08-04): raised 0.06 -> 0.22 after Adam reviewed
-# unit 154 and reported many circles reading as invisible. 0.06 of an
+# directly) -- "small floor" under the rule that the biggest and smallest
+# observed amplitudes together set the visual scale: the smallest-amplitude
+# channel should read as a small but still-visible dot, not vanish, and this
+# stays proportionate however large or small the detected pitch turns out to be.
+# THIRD CORRECTION (2026-08-04): raised 0.06 -> 0.22 after review of a real
+# render (unit 154) found many circles reading as invisible. 0.06 of an
 # already-small pitch-capped max radius (~8.4um at this array's 17.5um
 # pitch) rounds to a fraction of a pixel at any reasonable DPI -- correct
 # in data-space, but genuinely below the render's visible threshold. 0.22
@@ -162,9 +162,9 @@ DEFAULT_MIN_RADIUS_MAX_FRACTION = 0.22
 # dynamic range real amplitude data can have -- unit 154 alone spans
 # 0.9-320.6, ~356x) so the many low-but-not-minimum electrodes in between
 # read as visibly differentiated dots rather than clustering near the floor.
-# Defaults to "log" per Adam's own suggestion ("perhaps do log scaling or
-# set a floor... so everything remains basically visible") -- paired with
-# the raised floor above so even the true minimum is never sub-visible.
+# Defaults to "log", applying a saturating curve so everything remains
+# basically visible -- paired with the raised floor above so even the true
+# minimum is never sub-visible.
 DEFAULT_RADIUS_SCALING = "log"
 
 
@@ -508,12 +508,12 @@ def _marker_radii_um(
 ):
     """Per-channel circle RADIUS in DATA units (um), capped by electrode pitch.
 
-    Replaces :func:`_marker_areas_pt2` (points^2, figure-space) after Adam's
-    second correction: a points-sized `scatter` has no relationship to how
+    Replaces :func:`_marker_areas_pt2` (points^2, figure-space) after a
+    correction: a points-sized `scatter` has no relationship to how
     far apart two electrodes actually are in data space, so an
     amplitude-scaled points circle could straddle past its own electrode's
-    neighbor -- exactly the overlap Adam flagged. This function instead maps
-    the amplitude data range DIRECTLY onto a radius range that is provably
+    neighbor -- exactly the overlap this was meant to prevent. This function
+    instead maps the amplitude data range DIRECTLY onto a radius range that is provably
     bounded by geometry: `max_radius = pitch_um * max_radius_pitch_fraction`
     (never exceeds roughly half the nearest-neighbor spacing, so even the
     single largest-amplitude circle cannot reach past its neighbor's own
@@ -522,13 +522,13 @@ def _marker_radii_um(
     be).
 
     THIRD CORRECTION (2026-08-04): the amplitude->radius map is no longer
-    strictly linear. Adam reviewed a real render (unit 154, amplitude range
-    0.9-320.6 -- a ~356x spread) and reported many circles reading as
+    strictly linear. Review of a real render (unit 154, amplitude range
+    0.9-320.6 -- a ~356x spread) found many circles reading as
     invisible: a linear min-max map crams the huge majority of ordinary
     (non-peak) electrodes into the bottom sliver of that range, right next
-    to the floor. `scaling="log"` (the new default, per Adam's own
-    suggestion) applies `log1p` to the NORMALIZED [0, 1] position before
-    the radius map, pulling low-but-not-minimum values up toward the max --
+    to the floor. `scaling="log"` (the new default) applies `log1p` to the
+    NORMALIZED [0, 1] position before the radius map, pulling
+    low-but-not-minimum values up toward the max --
     the true minimum still lands exactly on the floor either way, which is
     why the floor itself was ALSO raised (0.06 -> 0.22, see
     `DEFAULT_MIN_RADIUS_MAX_FRACTION`) so nothing, including the true
@@ -654,12 +654,12 @@ def _add_scale_bar_um(ax, *, color="white", fontsize=9):
     transform = blended_transform_factory(ax.transData, ax.transAxes)
     ax.plot([x_left, x_right], [y_bar, y_bar], color=color, lw=2.5, solid_capstyle="butt", transform=transform)
     ax.text(
-        (x_left + x_right) / 2.0, y_bar + 0.015, f"{int(round(bar_um))} um",
+        (x_left + x_right) / 2.0, y_bar + 0.015, f"{int(round(bar_um))} µm",
         transform=transform, color=color, ha="center", va="bottom", fontsize=fontsize,
     )
 
 
-def _add_scale_circle_um(ax, *, radius_um, reference_value, color="white", fontsize=9):
+def _add_scale_circle_um(ax, *, radius_um, reference_value, color="white", fontsize=9, compact=False, show_value=None):
     """A reference circle (top-left) showing what the MAX amplitude circle
     looks like, labeled with the uV value it represents.
 
@@ -690,21 +690,50 @@ def _add_scale_circle_um(ax, *, radius_um, reference_value, color="white", fonts
     cx = margin + rx_axes
     cy = 1.0 - margin - ry_axes
 
+    # Solid filled disc, not a hollow ring (the ring "looks
+    # like a white border with an empty interior"). A filled swatch reads as a
+    # size legend matching the filled channel circles, and is sized to the
+    # plot's ACTUAL max-amplitude radius — it IS the largest circle drawn.
     patch = Ellipse(
         (cx, cy), width=2.0 * rx_axes, height=2.0 * ry_axes, transform=ax.transAxes,
-        fill=False, edgecolor=color, linewidth=1.8,
+        facecolor=color, edgecolor=color, linewidth=0.8,
     )
     ax.add_patch(patch)
-    ax.text(
-        cx, cy - ry_axes - 0.02, f"{reference_value:.1f}",
-        transform=ax.transAxes, color=color, ha="center", va="top", fontsize=fontsize,
-    )
+    # The circle is a SIZE legend, and a bare number is not one: without the
+    # unit and without saying that size means amplitude, a reader has a ring
+    # with a float under it. `show_value` controls the µV
+    # reference: None keeps the per-style default (diagnostic states it;
+    # presentation drops it — the slide text carries it instead), while
+    # a presentation-style PANEL that wants the explicit reference passes
+    # show_value=True (the solid circle must map to an explicit
+    # amplitude value so a viewer can read the per-channel amplitudes off it).
+    show_value = (not compact) if show_value is None else bool(show_value)
+    if compact and show_value:
+        # Terse size key for a figure panel: the value + units
+        # ALONE, set just to the RIGHT of the disc — "○ 174 µV". No "circle =
+        # amplitude" prose; a sized swatch beside a µV number reads as the size
+        # legend by itself.
+        ax.text(cx + rx_axes + 0.012, cy, f"{reference_value:.0f} µV",
+                transform=ax.transAxes, color=color, ha="left", va="center", fontsize=fontsize)
+    else:
+        # Presentation slides (no value — it belongs in the slide text, 2026-08-12)
+        # and the verbose diagnostic key stay below the disc.
+        label = (
+            "circle = amplitude"
+            if compact
+            else "circle size = peak amplitude" + (
+                f"\nlargest drawn: {reference_value:.1f} µV" if show_value else ""
+            )
+        )
+        ax.text(cx, cy - ry_axes - 0.02, label, transform=ax.transAxes, color=color,
+                ha="center", va="top", fontsize=fontsize, linespacing=1.25)
 
 
 def _render_footprint_core(
     template_arr, locations_arr, fs, *,
     dpi, figsize, invert_y_axis, cmap_name,
     max_radius_pitch_fraction, min_radius_max_fraction, radius_scaling, background,
+    style="diagnostic", zoom_bbox=None, scale_circle_value=None,
 ):
     """The amplitude/latency circle footprint alone — no branches, no title,
     not yet saved. Shared by :func:`plot_unit_footprint_reconstruction`
@@ -733,6 +762,7 @@ def _render_footprint_core(
     from matplotlib.collections import EllipseCollection
 
     background = str(background)
+    presentation = str(style).strip().lower() == "presentation"
     text_color = "white" if background.strip().lower() in {"black", "k", "#000", "#000000"} else "black"
 
     amplitude, latency = _channel_amplitude_and_latency(template_arr, fs)
@@ -753,8 +783,21 @@ def _render_footprint_core(
     # Axes.autoscale the way a scatter PathCollection does, so without this
     # the axes can be left at their default (0, 1) view.
     pad = float(np.max(radii_um)) if radii_um.size else 1.0
-    ax.set_xlim(locations_arr[:, 0].min() - pad, locations_arr[:, 0].max() + pad)
-    ax.set_ylim(locations_arr[:, 1].min() - pad, locations_arr[:, 1].max() + pad)
+    if zoom_bbox is not None:
+        # Frame to an explicit box (the unit's ARBOR extent from its
+        # reconstruction, arbor_bbox_from_reconstruction) instead of the full
+        # electrode span, with a pitch-scaled margin matched to the waveform-
+        # footprint's own arbor framing (~6 pitches) so the two panels show the
+        # same window when paired on a slide. Circles outside
+        # the box stay in the collection; matplotlib clips them at the axes edge.
+        bx0, bx1, by0, by1 = (float(v) for v in zoom_bbox)
+        pitch_margin = (6.0 * pitch_um) if np.isfinite(pitch_um) else pad
+        margin = pad + pitch_margin
+        ax.set_xlim(min(bx0, bx1) - margin, max(bx0, bx1) + margin)
+        ax.set_ylim(min(by0, by1) - margin, max(by0, by1) + margin)
+    else:
+        ax.set_xlim(locations_arr[:, 0].min() - pad, locations_arr[:, 0].max() + pad)
+        ax.set_ylim(locations_arr[:, 1].min() - pad, locations_arr[:, 1].max() + pad)
 
     vmin, vmax = _normalize_colorbar_limits(latency)
     diameters_um = 2.0 * radii_um
@@ -766,14 +809,23 @@ def _render_footprint_core(
     )
     ax.add_collection(footprint)
     cbar = fig.colorbar(footprint, ax=ax, fraction=0.045, pad=0.03)
-    cbar.set_label("Latency (ms)" if fs else "Latency (samples)", color=text_color)
+    # Presentation trims the long self-documenting label to a short form
+    # (2026-08-12); diagnostic keeps the full explanation.
+    if presentation:
+        cbar.set_label(f"Latency ({'ms' if fs else 'samples'})", color=text_color)
+    else:
+        cbar.set_label(
+            "Latency: peak time relative to the largest electrode "
+            + ("(ms)" if fs else "(samples — no sampling rate supplied)"),
+            color=text_color,
+        )
     cbar.ax.tick_params(colors=text_color, labelsize=8)
     cbar.outline.set_edgecolor(text_color)
 
     if invert_y_axis:
         ax.invert_yaxis()
-    ax.set_xlabel("x (um)", color=text_color)
-    ax.set_ylabel("y (um)", color=text_color)
+    ax.set_xlabel("x (µm)", color=text_color)
+    ax.set_ylabel("y (µm)", color=text_color)
     ax.tick_params(colors=text_color, labelsize=8)
     for spine in ax.spines.values():
         spine.set_color(text_color)
@@ -788,7 +840,10 @@ def _render_footprint_core(
     # puts a branch legend (top right), so none of the three ever compete.
     amp_max = float(np.max(amplitude)) if amplitude.size else 0.0
     max_radius_drawn = float(np.max(radii_um)) if radii_um.size else 0.0
-    _add_scale_circle_um(ax, radius_um=max_radius_drawn, reference_value=amp_max, color=text_color)
+    _add_scale_circle_um(
+        ax, radius_um=max_radius_drawn, reference_value=amp_max,
+        color=text_color, compact=presentation, show_value=scale_circle_value,
+    )
     _add_scale_bar_um(ax, color=text_color)
 
     return fig, ax, amplitude, latency, pitch_um, radii_um, text_color
@@ -799,9 +854,9 @@ def plot_unit_footprint_reconstruction(
 ) -> Path:
     """Render one unit's amplitude/latency electrode footprint with its
     tracked axon reconstruction overlaid on top — the PRIMARY
-    `plot_reconstructions` output. Adam's own words for the target visual:
-    "circles would scale with amplitude size, colors would scale with timing
-    of the signals, and reconstruction would build on top of those."
+    `plot_reconstructions` output. The target visual: circles scale with
+    amplitude size, colors scale with the timing of the signals, and the
+    reconstruction builds on top of those.
 
     **Where `template`/`locations` come from.** Confirmed directly against
     `axon_velocity.tracking_classes.AxonTracking.__init__` (the base class
@@ -865,7 +920,7 @@ def plot_unit_footprint_reconstruction(
     filtering (`channel_scope` in the old `CircleReconConfig` — restricting
     the footprint to only the tracker's selected/branch channels) — this
     function always plots EVERY electrode `template`/`locations` covers,
-    matching Adam's own description ("each electrode is a circle") rather
+    matching the target description (each electrode is a circle) rather
     than a filtered subset.
 
     `kwargs`: `dpi` (default :data:`DEFAULT_FOOTPRINT_DPI`), `figsize`
@@ -877,7 +932,13 @@ def plot_unit_footprint_reconstruction(
     :data:`DEFAULT_MIN_RADIUS_MAX_FRACTION`/:data:`DEFAULT_RADIUS_SCALING`
     — `radius_scaling` is `"linear"`/`"sqrt"`/`"log"`, see
     :func:`_marker_radii_um`), `fs` (override for `gtr.fs`), `background`
-    (default `"black"`). Unknown kwargs are ignored, matching
+    (default `"black"`), `style` (`"diagnostic"` default / `"presentation"`;
+    presentation gives the deck-ready cut — title is the unit id alone with no
+    per-unit stats, no branch legend box, a compact `"Latency (ms)"` colour-bar
+    label and a `"circle = amplitude"` size key with the µV number dropped;
+    the clean µm axes, scale bar, scale circle and colour bar all stay). The
+    diagnostic default is unchanged — the verbose review figure is still
+    needed for review. Unknown kwargs are ignored, matching
     `plot_unit_reconstruction`'s own plotting-convenience contract.
 
     Always closes the figure before returning (or raising) — same
@@ -905,6 +966,15 @@ def plot_unit_footprint_reconstruction(
         )
     fs = kwargs.get("fs", getattr(gtr, "fs", None))
     background = str(kwargs.get("background", "black"))
+    # style="presentation" (2026-08-12): deck-ready cut of the same plot
+    # — unit-id-only title with no per-unit stats, no branch legend box, a
+    # compact "Latency (ms)" colour-bar label and a "circle = amplitude" scale
+    # key with the µV number dropped. The diagnostic default is unchanged; the
+    # review version still needs the verbose form. `background` stays its own
+    # exposed knob (default black), so presentation keeps this look unless a
+    # caller passes background="white".
+    style = str(kwargs.get("style", "diagnostic")).strip().lower()
+    presentation = style == "presentation"
 
     fig, ax, amplitude, latency, pitch_um, radii_um, text_color = _render_footprint_core(
         template_arr, locations_arr, fs,
@@ -920,12 +990,18 @@ def plot_unit_footprint_reconstruction(
         ),
         radius_scaling=str(kwargs.get("radius_scaling", DEFAULT_RADIUS_SCALING)),
         background=background,
+        style=style,
+        zoom_bbox=kwargs.get("zoom_bbox"),
     )
     try:
         branch_paths = _branch_channel_paths(gtr)
         n_branches = len(branch_paths)
         branch_cmap = plt.get_cmap("tab20")
-        show_legend = 0 < n_branches <= 10
+        # No framed branch legend in presentation mode — the branch count is a
+        # per-unit stat that belongs on the slide, and the box is exactly the
+        # "large legend" presentation mode is meant to remove. The branches
+        # themselves still draw.
+        show_legend = (0 < n_branches <= 10) and not presentation
         for branch_idx, channels in enumerate(branch_paths):
             color = (
                 branch_cmap(branch_idx / max(1, len(branch_paths) - 1))
@@ -944,7 +1020,7 @@ def plot_unit_footprint_reconstruction(
             )
 
         if show_legend:
-            # Adam: branch legend must live in a fixed corner (top right) --
+            # The branch legend must live in a fixed corner (top right) --
             # "best" auto-placement had it landing dead-center on unit 154,
             # on top of the very branches it was labeling. The scale circle
             # (top left) and scale bar (bottom right) already drawn by
@@ -956,15 +1032,18 @@ def plot_unit_footprint_reconstruction(
                     text.set_color(text_color)
 
         n_channels = int(locations_arr.shape[0])
-        amp_min = float(np.min(amplitude)) if amplitude.size else 0.0
-        amp_max = float(np.max(amplitude)) if amplitude.size else 0.0
-        pitch_label = f"{pitch_um:.1f}um" if np.isfinite(pitch_um) else "n/a"
-        title = (
-            f"{n_branches} branch(es), {n_channels} electrode(s), "
-            f"amplitude {amp_min:.1f}-{amp_max:.1f}, pitch {pitch_label}"
-        )
-        if unit_id is not None:
-            title = f"Unit {unit_id} — {title}"
+        if presentation:
+            title = f"Unit {unit_id}" if unit_id is not None else ""
+        else:
+            amp_min = float(np.min(amplitude)) if amplitude.size else 0.0
+            amp_max = float(np.max(amplitude)) if amplitude.size else 0.0
+            pitch_label = f"{pitch_um:.1f}um" if np.isfinite(pitch_um) else "n/a"
+            title = (
+                f"{n_branches} branch(es), {n_channels} electrode(s), "
+                f"amplitude {amp_min:.1f}-{amp_max:.1f}, pitch {pitch_label}"
+            )
+            if unit_id is not None:
+                title = f"Unit {unit_id} — {title}"
         ax.set_title(title, color=text_color, fontsize=12)
 
         out_path.parent.mkdir(parents=True, exist_ok=True)
@@ -985,10 +1064,10 @@ FOOTPRINT_PLOT_FILENAME = "footprint.png"
 def plot_unit_footprint(template, locations, out_path, unit_id=None, fs=None, **kwargs) -> Path:
     """Render one unit's amplitude/latency electrode footprint alone — the
     `footprint_plots` output, inserted as its own pipeline stage right
-    after `merge_templates`. "Basically the same as the recon plot ...
-    but without the branches" (Adam) — this is exactly
+    after `merge_templates`. This is exactly
     :func:`plot_unit_footprint_reconstruction` minus the `gtr`/tracked-
-    branch overlay, sharing the identical circle/color/scale-bar/
+    branch overlay — the recon plot's footprint without the branches,
+    sharing the identical circle/color/scale-bar/
     scale-circle rendering via :func:`_render_footprint_core`. Deliberately
     does NOT need `reconstruct_axons` to have run at all: `template`/
     `locations` come straight from `merge_templates`' own output
@@ -1025,6 +1104,8 @@ def plot_unit_footprint(template, locations, out_path, unit_id=None, fs=None, **
         )
 
     dpi = float(kwargs.get("dpi", DEFAULT_FOOTPRINT_DPI))
+    style = str(kwargs.get("style", "diagnostic")).strip().lower()
+    presentation = style == "presentation"
     fig, ax, amplitude, latency, pitch_um, radii_um, text_color = _render_footprint_core(
         template_arr, locations_arr, fs,
         dpi=dpi,
@@ -1039,15 +1120,19 @@ def plot_unit_footprint(template, locations, out_path, unit_id=None, fs=None, **
         ),
         radius_scaling=str(kwargs.get("radius_scaling", DEFAULT_RADIUS_SCALING)),
         background=str(kwargs.get("background", "black")),
+        style=style,
     )
     try:
         n_channels = int(locations_arr.shape[0])
-        amp_min = float(np.min(amplitude)) if amplitude.size else 0.0
-        amp_max = float(np.max(amplitude)) if amplitude.size else 0.0
-        pitch_label = f"{pitch_um:.1f}um" if np.isfinite(pitch_um) else "n/a"
-        title = f"{n_channels} electrode(s), amplitude {amp_min:.1f}-{amp_max:.1f}, pitch {pitch_label}"
-        if unit_id is not None:
-            title = f"Unit {unit_id} — {title}"
+        if presentation:
+            title = f"Unit {unit_id}" if unit_id is not None else ""
+        else:
+            amp_min = float(np.min(amplitude)) if amplitude.size else 0.0
+            amp_max = float(np.max(amplitude)) if amplitude.size else 0.0
+            pitch_label = f"{pitch_um:.1f}um" if np.isfinite(pitch_um) else "n/a"
+            title = f"{n_channels} electrode(s), amplitude {amp_min:.1f}-{amp_max:.1f}, pitch {pitch_label}"
+            if unit_id is not None:
+                title = f"Unit {unit_id} — {title}"
         ax.set_title(title, color=text_color, fontsize=12)
 
         out_path.parent.mkdir(parents=True, exist_ok=True)
@@ -1084,17 +1169,23 @@ def plot_unit_footprint_diagnostic(template, locations, out_path, unit_id=None, 
     (no per-channel size encoding, no pitch/overlap math): LEFT = amplitude
     (`viridis`), RIGHT = latency (`viridis_r`) — the same two underlying
     per-channel metrics `_channel_amplitude_and_latency` already computes
-    for the presentation plot, just rendered the cheap way. No scale bar,
-    no scale circle, no legend — this is a sanity-check view, not a figure
-    meant to stand alone.
+    for the presentation plot, just rendered the cheap way. No scale bar and
+    no scale circle — this is a sanity-check view, not a presentation figure.
 
-    **Amplitude color scale (Adam, 2026-08-04)**: amplitude is heavy-tailed
+    It does, however, state its own scales: both colorbars
+    carry a label with units (µV for amplitude; milliseconds for latency, or
+    samples when no `fs` was supplied), and a caption says what one dot is and
+    what latency is measured relative to. An unlabelled colorbar shows a range
+    without saying what is ranged, which is exactly the misreading the unit
+    ruling exists to prevent.
+
+    **Amplitude color scale**: amplitude is heavy-tailed
     in real data (unit 154's own real values span 0.9-320.6, a ~356x
     range) — under a LINEAR color scale, a handful of peak channels near
     the axon soak up the whole colorbar and every other channel reads as
     one flat, indistinguishable color (exactly what the first real render
-    of this panel showed). `amplitude_scaling="log"` (the default, per
-    Adam's own request; "linear" restores the old behavior, kept
+    of this panel showed). `amplitude_scaling="log"` (the default;
+    "linear" restores the old behavior, kept
     available/optional for the future rather than hard-coded either way)
     switches ONLY the amplitude panel to `matplotlib.colors.LogNorm` — the
     latency panel stays linear regardless, since latency is signed/
@@ -1139,10 +1230,31 @@ def plot_unit_footprint_diagnostic(template, locations, out_path, unit_id=None, 
 
     fig, (ax_amp, ax_lat) = plt.subplots(1, 2, figsize=figsize)
     try:
+        # Colorbars must carry a labelled scale WITH UNITS: an unlabelled
+        # colorbar states a range without saying what is ranged,
+        # so "Amplitude"/"Latency" alone left a reader unable to tell µV from
+        # device counts, or milliseconds from samples. Latency is honest about
+        # the fs-missing case rather than asserting ms it did not compute.
+        latency_unit = "ms" if fs else "samples"
         fig.patch.set_facecolor(background)
-        for ax, values, cmap, panel_label, use_log in (
-            (ax_amp, amplitude, "viridis", "Amplitude", amplitude_scaling == "log"),
-            (ax_lat, latency, "viridis_r", "Latency", False),
+        for ax, values, cmap, panel_label, cbar_label, use_log in (
+            (
+                ax_amp,
+                amplitude,
+                "viridis",
+                "Amplitude",
+                "peak |amplitude| (µV)"
+                + (", log colour scale" if amplitude_scaling == "log" else ""),
+                amplitude_scaling == "log",
+            ),
+            (
+                ax_lat,
+                latency,
+                "viridis_r",
+                "Latency",
+                f"peak time relative to the largest channel ({latency_unit})",
+                False,
+            ),
         ):
             ax.set_facecolor(background)
             ax.set_aspect("equal", adjustable="box")
@@ -1163,10 +1275,11 @@ def plot_unit_footprint_diagnostic(template, locations, out_path, unit_id=None, 
                 )
             cbar = fig.colorbar(scatter, ax=ax, fraction=0.045, pad=0.03)
             cbar.ax.tick_params(colors=text_color, labelsize=7)
+            cbar.set_label(cbar_label, color=text_color, fontsize=7)
             if invert_y_axis:
                 ax.invert_yaxis()
-            ax.set_xlabel("x (um)", color=text_color, fontsize=8)
-            ax.set_ylabel("y (um)", color=text_color, fontsize=8)
+            ax.set_xlabel("x (µm)", color=text_color, fontsize=8)
+            ax.set_ylabel("y (µm)", color=text_color, fontsize=8)
             ax.tick_params(colors=text_color, labelsize=7)
             for spine in ax.spines.values():
                 spine.set_color(text_color)
@@ -1177,6 +1290,20 @@ def plot_unit_footprint_diagnostic(template, locations, out_path, unit_id=None, 
         if unit_id is not None:
             title = f"Unit {unit_id} — {title}"
         fig.suptitle(title, color=text_color, fontsize=12)
+
+        # One caption for both panels: what a dot is, and what latency zero
+        # means. Fixed position, so the render stays deterministic.
+        fig.text(
+            0.5,
+            0.005,
+            "One dot per electrode, at its position on the array. "
+            "Latency 0 is the peak time of the largest-amplitude electrode, so "
+            "negative means earlier than that electrode and positive means later.",
+            ha="center",
+            va="bottom",
+            color=text_color,
+            fontsize=7,
+        )
 
         out_path.parent.mkdir(parents=True, exist_ok=True)
         fig.savefig(out_path, dpi=dpi, bbox_inches="tight", facecolor=fig.get_facecolor())

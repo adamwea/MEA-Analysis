@@ -59,5 +59,4 @@ pip install -e /path/to/MEA-Analysis/mea_modules
 `spikeinterface` is pinned to `0.103.2`; do not float it without an explicit
 decision.
 
-Started 2026-07-28 (Adam). Vault refs: mea-pipeline-rebuild-scaffold,
-mea-pipeline-rebuild-tracker.
+Started 2026-07-28.

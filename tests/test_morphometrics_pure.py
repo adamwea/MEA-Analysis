@@ -126,6 +126,48 @@ def test_split_branch_polylines_mismatch_raises():
         split_branch_polylines(np.zeros((5, 2)), np.array([2, 2], dtype=np.int64))  # sum 4 != 5
 
 
+def test_total_axon_length_carries_provisional_flag():
+    """The provisional status of total_axon_length_um must be machine-readable in
+    the returned dict, not only in the docstring (a consumer reading the value but
+    not the docs still sees it)."""
+    loc = _grid()
+    branch_points = np.vstack([loc[b, :2] for b in _BRANCHES]).astype(float)
+    node_counts = np.array([len(b) for b in _BRANCHES], dtype=np.int64)
+    m = unit_morphometrics(branch_points, node_counts)
+    assert m["total_axon_length_um_provisional"] is True
+    # ...and on the zero-branch path too.
+    z = unit_morphometrics(np.empty((0, 2)), np.empty((0,), dtype=np.int64))
+    assert z["total_axon_length_um_provisional"] is True
+
+
+def test_single_vertex_branch_contributes_zero_length():
+    # A 1-vertex branch is a real (degenerate) branch: counted in n_branches,
+    # contributes 0.0 length, and pulls the mean down. Mixed with a 2-hop branch.
+    loc = _grid()
+    branches = [[5], [0, 1, 2]]  # 1 vertex (0.0) + 2 hops (35.0)
+    branch_points = np.vstack([loc[b, :2] for b in branches]).astype(float)
+    node_counts = np.array([len(b) for b in branches], dtype=np.int64)
+    m = unit_morphometrics(branch_points, node_counts)
+    assert m["n_branches"] == 2
+    assert m["per_branch_length_um"] == pytest.approx([0.0, 35.0])
+    assert m["mean_branch_length_um"] == pytest.approx(17.5)
+    assert m["longest_branch_um"] == pytest.approx(35.0)
+    assert m["total_axon_length_um"] == pytest.approx(35.0)
+
+
+def test_zero_branches_via_npz_roundtrip(tmp_path):
+    # The empty-unit path end-to-end through a real export, not just direct arrays.
+    loc = _grid()
+    gtr = _FakeGtr(loc, np.int64(5), branches=[])
+    export_reconstruction_geometry(gtr, tmp_path / "none", unit_id=9)
+    m = unit_morphometrics_from_npz(tmp_path / "none")
+    assert m["n_branches"] == 0
+    assert m["per_branch_length_um"] == []
+    assert np.isnan(m["mean_branch_length_um"]) and np.isnan(m["longest_branch_um"])
+    assert m["total_axon_length_um"] == 0.0
+    assert m["total_axon_length_um_provisional"] is True
+
+
 def test_comparison_total_length_delegates_to_canonical():
     """`ReconUnit.total_length_um` must equal the canonical per-branch sum, proving
     the single-definition guard holds (no divergent local length formula)."""

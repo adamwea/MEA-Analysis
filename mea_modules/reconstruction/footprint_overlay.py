@@ -135,7 +135,12 @@ def segment_velocities(polylines, channels_per_branch, channel_indices, template
             continue
         rows = [lookup.get(int(c)) for c in np.asarray(chans).tolist()]
         times = np.array([lat[r] if r is not None else np.nan for r in rows])
-        dd = np.linalg.norm(np.diff(pts, axis=0), axis=1)
+        # Per-segment distances via the canonical primitive (single-definition
+        # guard). pts.shape[0] >= 2 here (guarded above), so this equals the
+        # inline norm(diff) it replaces. Function-local import avoids any
+        # reconstruction<->morphometrics package-init cycle.
+        from ..morphometrics import segment_lengths_um
+        dd = segment_lengths_um(pts)
         dt = np.abs(np.diff(times))
         dt = np.where(np.isfinite(dt) & (dt >= min_dt), dt, min_dt)
         v = dd / dt

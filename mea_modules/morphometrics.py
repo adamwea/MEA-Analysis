@@ -26,6 +26,9 @@ Metrics (per unit):
     sum therefore DOUBLE-COUNTS shared proximal path. Whether "total axon length"
     should dedupe shared segments is a biological definitional choice; treat this
     field as provisional until a domain expert confirms the intended semantics.
+    The returned dict carries ``total_axon_length_um_provisional: True`` as a
+    machine-readable marker, so a consumer that reads the value but not this
+    docstring still cannot mistake it for a validated metric.
 
 ``mean_branch_length_um`` and ``longest_branch_um`` are the uncontroversial
 Euclidean-polyline metrics; only ``total_axon_length_um`` carries the caveat above.
@@ -98,6 +101,11 @@ def unit_morphometrics(branch_points_xy, branch_node_counts):
             "mean_branch_length_um": float("nan"),
             "longest_branch_um": float("nan"),
             "total_axon_length_um": 0.0,
+            # Machine-readable caveat: total_axon_length_um is NOT a validated
+            # metric (see docstring). A consumer that reads the total but not the
+            # docstring still sees this flag, so it cannot silently treat the
+            # total as final.
+            "total_axon_length_um_provisional": True,
         }
     return {
         "n_branches": n,
@@ -106,6 +114,7 @@ def unit_morphometrics(branch_points_xy, branch_node_counts):
         "longest_branch_um": float(np.max(per_branch)),
         # PROVISIONAL: sum double-counts shared proximal segments (see docstring).
         "total_axon_length_um": float(np.sum(per_branch)),
+        "total_axon_length_um_provisional": True,
     }
 
 

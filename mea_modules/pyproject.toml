@@ -33,17 +33,17 @@ build-backend = "setuptools.build_meta"
 # `io` package and shadow nothing good.
 [tool.setuptools]
 # Every importable subpackage on disk is listed explicitly (discovery is not
-# used — see the layout note above). "comparison" is intentionally absent: it is
-# still an uncommitted working module and is not part of a real editable install
-# until it lands.
+# used — see the layout note above).
 packages = [
     "mea_modules",
     "mea_modules.io",
     "mea_modules.preprocessing",
     "mea_modules.quality",
     "mea_modules.concatenation",
+    "mea_modules.comparison",
     "mea_modules.spikesorting",
     "mea_modules.diagnostics",
+    "mea_modules.curation",
     "mea_modules.reconstruction",
     "mea_modules.registration",
     "mea_modules.postprocess",

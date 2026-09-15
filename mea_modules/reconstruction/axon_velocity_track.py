@@ -43,6 +43,7 @@ default until a real consumer asks for one of those private stages back.
 import inspect
 import json
 import logging
+import os
 import pickle
 from pathlib import Path
 
@@ -95,6 +96,27 @@ GTR_FILENAME = "gtr.pkl"
 SUMMARY_FILENAME = "reconstruction_summary.json"
 
 
+class NoAxonFound(RuntimeError):
+    """`axon_velocity` found no axon for this unit under the given params.
+
+    The library reports its no-result outcomes by raising a plain ``Exception``
+    that carries only a message (see :data:`_NO_AXON_MESSAGES`). This wrapper
+    turns those into one typed outcome so a caller can tell "this unit has no
+    trackable axon" — an expected, per-unit result — from a real error (a bug,
+    a bad parameter, a broken input), which keeps propagating unchanged.
+    """
+
+
+# The exact messages `axon_velocity.GraphAxonTracking` raises for a unit that
+# yields no axon (`select_channels`, `find_paths`, `clean_paths`). Matched
+# verbatim because the library defines no exception type for them.
+_NO_AXON_MESSAGES = frozenset({
+    "Not enough channels selected to compute velocity",
+    "No branches found",
+    "No branches left after cleaning",
+})
+
+
 def default_params():
     """A fresh copy of this lab's production `axon_velocity` params.
 
@@ -137,6 +159,10 @@ def track_unit_axon(template, locations, fs, **overrides):
     Returns the `GraphAxonTracking` instance `compute_graph_propagation_velocity`
     itself returns (not a separate result wrapper) — already run through
     `select_channels()` -> `build_graph()` -> `find_paths()` -> `clean_paths()`.
+
+    Raises :class:`NoAxonFound` when the library finds no axon for the unit
+    (its own no-result messages, see :data:`_NO_AXON_MESSAGES`). Every other
+    exception propagates unchanged.
     """
     import axon_velocity as av
 
@@ -166,7 +192,12 @@ def track_unit_axon(template, locations, fs, **overrides):
         "tracking axon: %d channel(s), %d sample(s), fs=%.1f Hz",
         len(template), template.shape[1] if hasattr(template, "shape") else -1, float(fs),
     )
-    gtr = av.compute_graph_propagation_velocity(template, locations, float(fs), **filtered)
+    try:
+        gtr = av.compute_graph_propagation_velocity(template, locations, float(fs), **filtered)
+    except Exception as exc:
+        if str(exc) in _NO_AXON_MESSAGES:
+            raise NoAxonFound(str(exc)) from exc
+        raise
     logger.info(
         "tracked %d branch(es) from %d selected channel(s) (init channel %s)",
         len(gtr.branches), len(gtr.selected_channels), gtr.init_channel,
@@ -196,6 +227,16 @@ def _to_jsonable(value):
     return value
 
 
+def _write_json(path, payload):
+    """Write JSON through a temp file and a rename, so a torn write never
+    leaves a half-written summary: the summary is a caller's resume key and,
+    for a no-axon unit, the only artifact."""
+    path = Path(path)
+    tmp = path.with_name(path.name + ".tmp")
+    tmp.write_text(json.dumps(payload, indent=2))
+    os.replace(tmp, path)
+
+
 def save_reconstruction(gtr, out_dir, unit_id=None):
     """Persist a tracked `gtr`: the full object pickled, plus a JSON summary.
 
@@ -219,6 +260,8 @@ def save_reconstruction(gtr, out_dir, unit_id=None):
 
     summary = {
         "unit_id": unit_id,
+        "status": "ok",
+        "reason": None,
         "n_branches": len(gtr.branches),
         "n_selected_channels": int(len(gtr.selected_channels)),
         "init_channel": _to_jsonable(gtr.init_channel),
@@ -226,8 +269,7 @@ def save_reconstruction(gtr, out_dir, unit_id=None):
         "branches": [_to_jsonable(branch) for branch in gtr.branches],
     }
 
-    summary_path = out_dir / SUMMARY_FILENAME
-    summary_path.write_text(json.dumps(summary, indent=2))
+    _write_json(out_dir / SUMMARY_FILENAME, summary)
 
     logger.info(
         "saved reconstruction%s: %d branch(es), %d selected channel(s) -> %s",
@@ -237,10 +279,45 @@ def save_reconstruction(gtr, out_dir, unit_id=None):
     return summary
 
 
+def save_no_axon(out_dir, unit_id, reason):
+    """Persist the no-axon outcome for one unit: the JSON summary only.
+
+    Same file and the same top-level keys as `save_reconstruction`'s summary,
+    so every reader sees one shape per unit: ``status`` ``"no_axon"``, the
+    library's own ``reason``, zero branches, and ``None`` where a tracked unit
+    would carry a value (the tracker raised before it produced one, so nothing
+    is invented). No `gtr.pkl` is written.
+
+    Returns the summary dict, like `save_reconstruction`.
+    """
+    out_dir = Path(out_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    summary = {
+        "unit_id": unit_id,
+        "status": "no_axon",
+        "reason": str(reason),
+        "n_branches": 0,
+        "n_selected_channels": None,
+        "init_channel": None,
+        "selected_channels": [],
+        "branches": [],
+    }
+    _write_json(out_dir / SUMMARY_FILENAME, summary)
+
+    logger.info(
+        "saved no-axon outcome%s (%s) -> %s",
+        f" for unit {unit_id}" if unit_id is not None else "", reason, out_dir,
+    )
+    return summary
+
+
 __all__ = [
     "default_params",
     "track_unit_axon",
     "save_reconstruction",
+    "save_no_axon",
+    "NoAxonFound",
     "GTR_FILENAME",
     "SUMMARY_FILENAME",
 ]

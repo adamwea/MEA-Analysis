@@ -5,7 +5,9 @@ Public API::
     from mea_modules.reconstruction import (
         default_params,
         track_unit_axon,
+        NoAxonFound,
         save_reconstruction,
+        save_no_axon,
         plot_unit_reconstruction,
     )
 
@@ -22,7 +24,9 @@ a manifest; the merge stage's output is this package's entire input contract.
 from .axon_velocity_track import (
     GTR_FILENAME,
     SUMMARY_FILENAME,
+    NoAxonFound,
     default_params,
+    save_no_axon,
     save_reconstruction,
     track_unit_axon,
 )
@@ -78,7 +82,9 @@ from .plots import (
 __all__ = [
     "default_params",
     "track_unit_axon",
+    "NoAxonFound",
     "save_reconstruction",
+    "save_no_axon",
     "GTR_FILENAME",
     "SUMMARY_FILENAME",
     "export_raw_traces",

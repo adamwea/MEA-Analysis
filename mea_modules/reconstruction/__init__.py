@@ -35,6 +35,7 @@ from .geometry import (
     RECON_GEOMETRY_JSON_FILENAME,
     RECON_GEOMETRY_NPZ_FILENAME,
     export_reconstruction_geometry,
+    split_branch_polylines,
 )
 from .overlay import (
     ALL_RECONSTRUCTIONS_PLOT_FILENAME,
@@ -84,6 +85,7 @@ __all__ = [
     "RAW_TRACES_NPZ_FILENAME",
     "RAW_TRACES_JSON_FILENAME",
     "export_reconstruction_geometry",
+    "split_branch_polylines",
     "RECON_GEOMETRY_NPZ_FILENAME",
     "RECON_GEOMETRY_JSON_FILENAME",
     "plot_unit_reconstruction",

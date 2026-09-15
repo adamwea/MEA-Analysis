@@ -63,12 +63,12 @@ class ReconUnit:
         return [b["xy"] for b in self.branches]
 
     def total_length_um(self) -> float:
-        tot = 0.0
-        for b in self.branches:
-            p = b["xy"]
-            if len(p) > 1:
-                tot += float(np.linalg.norm(np.diff(p, axis=0), axis=1).sum())
-        return tot
+        # PROVISIONAL total-axon-length (sums per-branch lengths, so shared
+        # proximal path is double-counted — pending Roy; see mea_modules
+        # .morphometrics). Delegates to the CANONICAL per-branch length so there
+        # is one definition of branch length in the codebase, never a local copy.
+        from ..morphometrics import polyline_length_um
+        return float(sum(polyline_length_um(b["xy"]) for b in self.branches))
 
     def median_velocity(self) -> float:
         v = np.array([b["velocity"] for b in self.branches

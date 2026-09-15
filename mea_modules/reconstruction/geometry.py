@@ -251,8 +251,40 @@ def export_reconstruction_geometry(gtr, out_dir, unit_id=None):
     return metadata
 
 
+def split_branch_polylines(branch_points_xy, branch_node_counts):
+    """Recover the per-branch polylines from the concatenated schema arrays.
+
+    The exact inverse of the concatenation ``export_reconstruction_geometry``
+    performs: it is THE canonical reader of the ``reconstruction_geometry`` v1
+    split convention (documented in ``_HOW_TO_SPLIT_NOTE``), so consumers split
+    through here rather than re-deriving ``cumsum(node_counts)`` locally.
+
+    ``branch_points_xy``: ``(n_points_total, 2)`` float — all branch vertices
+    concatenated. ``branch_node_counts``: ``(n_branches,)`` int — vertices per
+    branch (the split key). Returns a list of ``(n_nodes_i, 2)`` arrays, one per
+    branch, in branch order; an EMPTY list for a unit with zero branches (a
+    legitimate outcome). Raises ``ValueError`` if the counts don't sum to the
+    number of points (a corrupt/mismatched pair).
+    """
+    pts = np.asarray(branch_points_xy)
+    counts = np.asarray(branch_node_counts, dtype=np.int64)
+    if counts.size == 0:
+        # np.split(pts, []) would return [pts] (one chunk) — a zero-branch unit
+        # must yield zero polylines, so short-circuit.
+        return []
+    total = int(counts.sum())
+    if total != pts.shape[0]:
+        raise ValueError(
+            f"branch_node_counts sum to {total} but branch_points_xy has "
+            f"{pts.shape[0]} rows — mismatched reconstruction_geometry arrays."
+        )
+    offsets = np.cumsum(counts)[:-1]
+    return np.split(pts, offsets)
+
+
 __all__ = [
     "export_reconstruction_geometry",
+    "split_branch_polylines",
     "RECON_GEOMETRY_NPZ_FILENAME",
     "RECON_GEOMETRY_JSON_FILENAME",
     "SCHEMA",

@@ -52,3 +52,9 @@ packages = [
 
 [tool.setuptools.package-dir]
 "mea_modules" = "."
+
+# This package carries its own tests (mea_modules/tests). testpaths makes them
+# discoverable when pytest is rooted at this package (e.g. run from here, or
+# once mea_modules stands alone). Tests are not installed (not in packages above).
+[tool.pytest.ini_options]
+testpaths = ["tests"]

@@ -5,8 +5,9 @@ repo (`MEA-recon-pipeline`), which exercises the streaming orchestrator against
 real synthetic `SortingAnalyzer`s and the capsule wrapped around it. THIS file
 covers only `new_unit_accumulator` / `accumulate_channel_contributions` /
 `finalize_unit_accumulator`: plain-numpy bucket arithmetic with no
-SpikeInterface dependency, so it belongs beside `mea_modules` rather than the
-pipeline, and runs in milliseconds with no fixtures or tmp_path needed. Modeled
+SpikeInterface dependency, so it lives with `mea_modules` (here under
+`mea_modules/tests/`) rather than the pipeline, and runs in milliseconds with no
+fixtures or tmp_path needed. Modeled
 on the old (pre-rebuild) build's own
 `templates/tests/test_merge_core.py::test_merge_sources_per_channel_*`, which
 hand-computed its expected merged values the same way.

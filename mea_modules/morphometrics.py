@@ -41,10 +41,27 @@ from .reconstruction.geometry import (
 )
 
 __all__ = [
+    "segment_lengths_um",
     "polyline_length_um",
     "unit_morphometrics",
     "unit_morphometrics_from_npz",
 ]
+
+
+def segment_lengths_um(points):
+    """Euclidean length of each consecutive-vertex segment of one polyline.
+
+    ``points``: an ``(n, 2)`` array of ordered (x, y) vertices in micrometres.
+    Returns an ``(n-1,)`` float array of per-segment distances (empty for fewer
+    than two vertices). This is the canonical per-segment primitive: the branch
+    LENGTH (``polyline_length_um``) is its sum, and a per-segment DISTRIBUTION
+    metric (e.g. inter-node gap statistics) is built from the array itself --
+    both route through here so the segment-distance computation lives in one place.
+    """
+    p = np.asarray(points, dtype=float)
+    if p.ndim != 2 or p.shape[0] < 2:
+        return np.empty((0,), dtype=float)
+    return np.linalg.norm(np.diff(p, axis=0), axis=1)
 
 
 def polyline_length_um(points):
@@ -55,10 +72,7 @@ def polyline_length_um(points):
     vertices (nothing to measure). This is THE canonical branch-length
     definition -- every branch/axon length in the codebase routes through here.
     """
-    p = np.asarray(points, dtype=float)
-    if p.ndim != 2 or p.shape[0] < 2:
-        return 0.0
-    return float(np.linalg.norm(np.diff(p, axis=0), axis=1).sum())
+    return float(segment_lengths_um(points).sum())
 
 
 def unit_morphometrics(branch_points_xy, branch_node_counts):

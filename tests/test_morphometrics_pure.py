@@ -18,6 +18,7 @@ from mea_modules.reconstruction import (
     split_branch_polylines,
 )
 from mea_modules.morphometrics import (
+    segment_lengths_um,
     polyline_length_um,
     unit_morphometrics,
     unit_morphometrics_from_npz,
@@ -47,6 +48,19 @@ def _branch(channels):
 # on the 17.5 um grid their Euclidean polyline lengths are 52.5, 35.0, 70.0 um.
 _BRANCHES = [[0, 1, 2, 3], [0, 8, 16], [20, 21, 22, 23, 31]]
 _EXPECT_PER_BRANCH = [52.5, 35.0, 70.0]
+
+
+def test_segment_lengths_um_and_length_is_their_sum():
+    # 3 hops of 17.5 um along a row -> three equal segments.
+    p = _grid()[[0, 1, 2, 3], :2]
+    segs = segment_lengths_um(p)
+    assert segs.shape == (3,)
+    assert segs == pytest.approx([17.5, 17.5, 17.5])
+    # polyline_length_um is exactly the sum of the segment lengths (single primitive).
+    assert polyline_length_um(p) == pytest.approx(float(segs.sum()))
+    # Degenerate polylines have no segments.
+    assert segment_lengths_um(np.empty((0, 2))).shape == (0,)
+    assert segment_lengths_um(np.array([[1.0, 2.0]])).shape == (0,)
 
 
 def test_polyline_length_um_basic():

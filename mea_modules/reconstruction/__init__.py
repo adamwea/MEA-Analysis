@@ -26,6 +26,16 @@ from .axon_velocity_track import (
     save_reconstruction,
     track_unit_axon,
 )
+from .raw_traces import (
+    RAW_TRACES_JSON_FILENAME,
+    RAW_TRACES_NPZ_FILENAME,
+    export_raw_traces,
+)
+from .geometry import (
+    RECON_GEOMETRY_JSON_FILENAME,
+    RECON_GEOMETRY_NPZ_FILENAME,
+    export_reconstruction_geometry,
+)
 from .overlay import (
     ALL_RECONSTRUCTIONS_PLOT_FILENAME,
     ALL_RECONSTRUCTIONS_SVG_FILENAME,
@@ -70,6 +80,12 @@ __all__ = [
     "save_reconstruction",
     "GTR_FILENAME",
     "SUMMARY_FILENAME",
+    "export_raw_traces",
+    "RAW_TRACES_NPZ_FILENAME",
+    "RAW_TRACES_JSON_FILENAME",
+    "export_reconstruction_geometry",
+    "RECON_GEOMETRY_NPZ_FILENAME",
+    "RECON_GEOMETRY_JSON_FILENAME",
     "plot_unit_reconstruction",
     "RECONSTRUCTION_PLOT_FILENAME",
     "DEFAULT_FIGSIZE",

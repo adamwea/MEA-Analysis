@@ -57,13 +57,13 @@ def figure_text(monkeypatch):
         real = unit_locations._save_and_release
         seen = {}
 
-        def spy(fig, out_path):
+        def spy(fig, out_path, *args, **kwargs):
             seen["texts"] = [
                 _normalise(artist.get_text())
                 for artist in fig.findobj(Text)
                 if _normalise(artist.get_text())
             ]
-            return real(fig, out_path)
+            return real(fig, out_path, *args, **kwargs)
 
         monkeypatch.setattr(unit_locations, "_save_and_release", spy)
         out_path = call()

@@ -67,7 +67,7 @@ def _spy(monkeypatch):
     captured = {}
     real = footprints._save_and_release
 
-    def spy(fig, out_path):
+    def spy(fig, out_path, *args, **kwargs):
         from matplotlib.collections import LineCollection
 
         ax = fig.axes[0]
@@ -102,7 +102,7 @@ def _spy(monkeypatch):
             _flat(a.get_ylabel()) for a in fig.axes if a.get_ylabel()
         ]
         captured["caption"] = " ".join(_flat(t.get_text()) for t in fig.texts)
-        return real(fig, out_path)
+        return real(fig, out_path, *args, **kwargs)
 
     monkeypatch.setattr(footprints, "_save_and_release", spy)
     return captured

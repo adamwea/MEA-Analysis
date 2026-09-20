@@ -46,7 +46,7 @@ from .activity_map import (
     template_projected_activity,
 )
 from .artifacts import artifact_census
-from .channel_flags import flag_channels, flagged_channel_groups
+from .channel_flags import flag_channels, flagged_channel_groups, flagged_channel_note
 from .channel_layout import (
     cluster_center_channels,
     detect_electrode_clusters,
@@ -114,6 +114,7 @@ __all__ = [
     # numbers without a figure: ids, rails, array-wide events
     "flag_channels",
     "flagged_channel_groups",
+    "flagged_channel_note",
     "clipping_census",
     "artifact_census",
     # channel selection

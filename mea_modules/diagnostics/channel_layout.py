@@ -606,6 +606,7 @@ def plot_channel_layout(
     highlight_label=None,
     groups=None,
     base_label=None,
+    legend_title=None,
     caption=None,
     figsize=_LAYOUT_FIGSIZE,
     dpi=_LAYOUT_DPI,
@@ -729,10 +730,18 @@ def plot_channel_layout(
     # what each colour is. Counts ride in the labels so the reader never has to
     # open a JSON to learn how big each set is. Corner-scored rather than
     # "best": on a dense array "best" routinely parks the box mid-scatter.
+    legend_kwargs = {}
+    if legend_title:
+        # Above the keys rather than as a fourth key: it describes the set the
+        # keys were tested against, and giving it a colour swatch would imply
+        # it names electrodes of its own.
+        legend_kwargs["title"] = _wrap_label(legend_title)
+        legend_kwargs["title_fontsize"] = _LEGEND_FONTSIZE
     legend_corner(
         ax,
         handles=handles,
         fontsize=_LEGEND_FONTSIZE,
+        **legend_kwargs,
         framealpha=_LEGEND_FRAMEALPHA,
         borderpad=0.5,
         labelspacing=0.7,

@@ -100,11 +100,32 @@ def flag_channels(
     def ids_where(mask):
         return [channel_ids[i] for i in np.flatnonzero(mask)]
 
+    # What the data actually spanned, so a reader of a ZERO-flag result can tell
+    # "checked, and nothing came near a cutoff" from "the rules never fired".
+    # Those look identical on the figure otherwise, and only one of them is
+    # reassuring. Recorded as ratios because the rules are ratios.
+    finite = values[np.isfinite(values)]
+    if median > 0 and finite.size:
+        observed = {
+            "median": median,
+            "min_ratio": float(finite.min() / median),
+            "max_ratio": float(finite.max() / median),
+            "n_measured": int(finite.size),
+        }
+    else:
+        observed = {
+            "median": median,
+            "min_ratio": None,
+            "max_ratio": None,
+            "n_measured": int(finite.size),
+        }
+
     return {
         "channel_ids": channel_ids,
         "flagged_channel_ids": ids_where(unusable),
         "n_flagged": int(np.count_nonzero(unusable)),
         "flagged_fraction": float(np.count_nonzero(unusable) / n_channels) if n_channels else 0.0,
+        "observed": observed,
         "by_rule": {
             "dead": ids_where(dead_mask),
             "noisy": ids_where(noisy_mask),
@@ -168,15 +189,36 @@ def flagged_channel_groups(flagged):
 
     labels = {
         "dead": (
-            f"dead: noise ≤ {dead_ratio:g}× median"
+            f"dead ≤{dead_ratio:g}× median"
             if dead_ratio is not None
-            else "dead: noise at/below the median floor"
+            else "dead at the median floor"
         ),
         "noisy": (
-            f"noisy: noise ≥ {noisy_ratio:g}× median"
+            f"noisy ≥{noisy_ratio:g}× median"
             if noisy_ratio is not None
-            else "noisy: noise far above the median"
+            else "noisy above the median"
         ),
-        "detector_bad": "detector-flagged (SpikeInterface)",
+        "detector_bad": "detector-flagged",
     }
     return [(by_rule.get(rule, []), labels[rule], _RULE_COLORS[rule]) for rule in _RULE_ORDER]
+
+
+def flagged_channel_note(flagged):
+    """One line naming the spread the rules were applied to, or None.
+
+    A figure where every rule reads ``(n=0)`` is ambiguous: it looks the same
+    whether the array is genuinely clean or the cutoffs are unreachable. The
+    rules are ratios to the median, so the answer is the range of those ratios
+    the data actually covered -- printed beside the cutoffs, it lets a reader
+    make the one comparison that settles it. A span that never approaches a
+    cutoff is a clean array; a span that crosses one while nothing is flagged
+    is a broken rule.
+
+    Returns None when there is nothing to say (no `observed` block, or a run
+    where nothing was measurable), so a caller can pass it straight through.
+    """
+    observed = (flagged or {}).get("observed") or {}
+    low, high = observed.get("min_ratio"), observed.get("max_ratio")
+    if low is None or high is None:
+        return None
+    return f"observed {low:.2f}–{high:.2f}× median (n={int(observed.get('n_measured', 0))})"

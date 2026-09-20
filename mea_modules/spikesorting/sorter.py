@@ -79,6 +79,18 @@ _CONTAINER_PROBE_MODULES = (
 
 _HASH_CHUNK_BYTES = 1024 * 1024
 
+# Binaries that indicate a GPU can reach a container. Missing all of them is a
+# warning, not an error: the container may still start, it just will not see the
+# GPU, and that is worth saying out loud before an hours-long CPU fallback.
+# `nvidia-smi` is in the list for WSL2, where passthrough works through the
+# Windows driver and none of the Linux toolkit binaries are on PATH.
+GPU_PASSTHROUGH_BINARIES = (
+    "nvidia-container-toolkit",
+    "nvidia-container-runtime",
+    "nvidia-docker",
+    "nvidia-smi",
+)
+
 
 def _normalize_container_image(value):
     """Turn one container request into the value SpikeInterface expects.
@@ -168,6 +180,73 @@ def _container_backend_problem(mode):
     raise ValueError(f"unknown container mode {mode!r}")
 
 
+def container_problem(mode="docker"):
+    """Why `mode` cannot run a sort here, as a sentence, or None when it can.
+
+    The public face of the backend probe. A caller doing its own preflight —
+    a pipeline capsule deciding between a container and a local install, say —
+    asks THIS rather than shelling out to `docker --version` itself: two probes
+    that answer the same question by different means will eventually disagree
+    about the same host, and the one that disagrees with SpikeInterface is the
+    one that is wrong, because SpikeInterface is what actually dispatches.
+    """
+    return _container_backend_problem(mode)
+
+
+def gpu_passthrough_ready():
+    """True when the host looks able to pass a GPU into a container.
+
+    Advisory only, and deliberately not part of :func:`container_problem`: a
+    container with no GPU still runs, just slowly enough that a caller wants to
+    say so before committing hours to it. SpikeInterface exposes no probe for
+    this, so the binary scan is the mechanic — which is exactly why it belongs
+    here, defined once, rather than in each consumer.
+    """
+    import shutil
+
+    return any(shutil.which(binary) for binary in GPU_PASSTHROUGH_BINARIES)
+
+
+def install_hint(sorter_name):
+    """SpikeInterface's own install message for a sorter, folded to one line.
+
+    `installation_mesg` is a multi-line block with doctest prompts in it, so it
+    is folded here to compose with the rest of a sentence. An unknown sorter
+    gets the list of ones SpikeInterface does know, which is the actionable
+    answer to the mistake actually being made (usually a typo).
+    """
+    try:
+        import spikeinterface.sorters as ss
+
+        klass = ss.sorter_dict.get(str(sorter_name))
+        if klass is None:
+            return (
+                f"{sorter_name!r} is not a sorter SpikeInterface knows: "
+                f"{sorted(ss.sorter_dict)}."
+            )
+        hint = " ".join(str(getattr(klass, "installation_mesg", "") or "").split())
+        return hint or f"Install the {sorter_name} package and its dependencies."
+    except Exception:  # noqa: BLE001 - a hint is never worth raising over
+        logger.debug("could not read the install hint for %r", sorter_name, exc_info=True)
+        return f"Install the {sorter_name} package and its dependencies."
+
+
+def sorter_installed_locally(sorter_name):
+    """True when `sorter_name` imports in *this* interpreter, never raising.
+
+    :func:`sorter_is_available` answers the broader "can this host sort", which
+    is a container question once an image is requested. A caller that has
+    already decided to sort natively wants only this half, and wants it to
+    return False rather than raise on a sorter SpikeInterface cannot even
+    import.
+    """
+    try:
+        return _sorter_installed_locally(str(sorter_name))
+    except Exception:  # noqa: BLE001 - an unimportable sorter is an absent one
+        logger.debug("local availability check failed for %r", sorter_name, exc_info=True)
+        return False
+
+
 def _default_container_image(sorter_name):
     """The image SpikeInterface would pick for `sorter_name`, or None.
 
@@ -250,10 +329,8 @@ def require_sorter(sorter_name, docker_image=None, singularity_image=None):
             f"unknown sorter {sorter_name!r}; SpikeInterface knows: {sorted(ss.sorter_dict)}"
         )
 
-    # installation_mesg is a multi-line block with doctest prompts in it; folded
-    # to one line so it composes with the rest of the sentence.
-    install_hint = " ".join(str(getattr(klass, "installation_mesg", "") or "").split())
-    install_hint = install_hint or f"Install the {sorter_name} package and its dependencies."
+    # One definition of the wording, shared with every caller that needs it.
+    hint = install_hint(sorter_name)
     # The image itself is SpikeInterface's problem; only the mode matters here.
     mode, _image = _container_request(docker_image, singularity_image)
 
@@ -267,7 +344,7 @@ def require_sorter(sorter_name, docker_image=None, singularity_image=None):
                 f"{mode}_image argument would run it here instead."
             )
         else:
-            fallback = f"It is not installed locally either, so fix {mode} or: {install_hint}"
+            fallback = f"It is not installed locally either, so fix {mode} or: {hint}"
         raise RuntimeError(
             f"sorter {sorter_name!r} was requested in a {mode} container, "
             f"but {mode} is unusable in this environment: {problem}. {fallback}"
@@ -285,7 +362,7 @@ def require_sorter(sorter_name, docker_image=None, singularity_image=None):
     )
     raise RuntimeError(
         f"sorter {sorter_name!r} is not installed in this environment. "
-        f"{install_hint} {container_hint}"
+        f"{hint} {container_hint}"
     )
 
 

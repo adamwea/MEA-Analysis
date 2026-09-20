@@ -25,6 +25,12 @@ from mea_modules.diagnostics import channel_layout as cl
 from mea_modules.diagnostics import figure_text as ft
 from mea_modules.diagnostics import raster as ra
 from mea_modules.diagnostics import traces as tr
+from mea_modules.diagnostics.timebase import (
+    GAP_LABEL_BETWEEN,
+    GAP_LABEL_WITHIN,
+    JOIN_LABEL_INSTANT,
+    JOIN_LABEL_SPANNING,
+)
 from mea_modules.reconstruction import plots as rp
 
 
@@ -222,7 +228,7 @@ def test_traces_legend_keys_every_encoding(capture, recording, tmp_path):
     labels = " || ".join(capture._frozen_legends)
     assert "one row per channel" in labels
     assert "µV" in labels
-    assert "segment join" in labels
+    assert JOIN_LABEL_INSTANT in labels
 
 
 def test_traces_caption_defines_a_segment_join_in_plain_language(capture, recording, tmp_path):
@@ -257,8 +263,30 @@ def test_traces_real_elapsed_axis_explains_the_shading(capture, recording, tmp_p
         duration_s=1.0, time_gaps=gaps,
     )
     labels = " || ".join(capture._frozen_legends)
-    assert "no data recorded" in labels
+    # A within-segment frame-counter break, so only that key belongs here.
+    assert GAP_LABEL_WITHIN in labels
+    assert GAP_LABEL_BETWEEN not in labels
     assert "real elapsed time" in capture._frozen_text
+
+
+def test_traces_name_the_two_gap_kinds_separately(capture, recording, tmp_path):
+    """A half-minute acquisition gap must not read as one more frame break.
+
+    Both kinds shaded in one grey is what hid the between-segment gap among
+    thousands of microsecond breaks, so each kind now carries its own key.
+    """
+    time_gaps = {
+        "gaps": {"break_sample_indices": [2_000], "break_gap_frames": [400]},
+        "segment_gaps": [{"start_sample": 5_000, "gap_before_s": 30.0}],
+    }
+    tr.plot_traces(
+        recording, tmp_path / "traces_both_kinds.png", channel_ids=["ch0"],
+        duration_s=1.0, time_gaps=time_gaps,
+    )
+    labels = " || ".join(capture._frozen_legends)
+    assert GAP_LABEL_WITHIN in labels
+    assert GAP_LABEL_BETWEEN in labels
+    assert GAP_LABEL_WITHIN != GAP_LABEL_BETWEEN
 
 
 # --------------------------------------------------------------------------
@@ -268,13 +296,13 @@ def test_traces_real_elapsed_axis_explains_the_shading(capture, recording, tmp_p
 def test_raster_legend_states_threshold_and_units(capture, recording, tmp_path):
     ra.plot_raster_threshold(
         recording, tmp_path / "raster_threshold.png",
-        duration_s=1.0, segment_boundaries=(0.2, 0.6),
+        duration_s=1.0, stitch_frames=(4_000, 12_000),
     )
     labels = " || ".join(capture._frozen_legends)
     assert "threshold crossing" in labels
     assert "MAD-sigma" in labels
     assert "refractory" in labels
-    assert "segment join" in labels
+    assert JOIN_LABEL_INSTANT in labels
 
 
 def test_raster_caption_expands_MAD(capture, recording, tmp_path):
@@ -723,7 +751,7 @@ def test_raster_caption_stays_clear_of_the_axes(geometry, recording, tmp_path, f
         recording,
         tmp_path / "raster_threshold.png",
         duration_s=1.0,
-        segment_boundaries=(0.2, 0.6),
+        stitch_frames=(4_000, 12_000),
         figsize=figsize,
     )
     assert geometry["legend"] is None, "the raster key belongs in its axes"
@@ -815,3 +843,359 @@ def test_no_emitter_pins_its_own_figure_legend(recording, tmp_path):
         f"{offenders} call fig.legend directly; pass handles to "
         "_add_caption(legend_handles=...) so caption and legend cannot collide"
     )
+
+
+# --------------------------------------------------------------------------
+# segment joins, the `annotate` switch, and the composed layout+traces sheet
+# --------------------------------------------------------------------------
+#
+# Three conventions are asserted here, all of them Adam's, all of them things a
+# per-figure smoke test would miss:
+#
+# 1. A join is drawn by ONE implementation, `timebase.join_marks`, and on a
+#    real-elapsed axis it is two rules, not one: the earlier segment's end and
+#    the later one's start, with the gap between them. One rule pins the join to
+#    an arbitrary edge of a gap that may be minutes wide.
+# 2. `annotate=False` drops the title and the caption and nothing else. The
+#    amplitude unit is an AXIS label, not chrome — a trace figure that does not
+#    say what its y axis is in cannot be read at all.
+# 3. The composed sheet reddens exactly the channels it traces. That claim is
+#    the reason the composite exists, so it is asserted against the drawn
+#    panels rather than against the call that made them.
+
+def _join_rule_x(axis):
+    """x positions of the red dotted join rules drawn on `axis`."""
+    return sorted(
+        float(line.get_xdata()[0])
+        for line in axis.lines
+        if line.get_color() == "red" and line.get_linestyle() == ":"
+    )
+
+
+def _trace_panels(frozen):
+    """The stack's panels: everything but the layout, which has a µm x axis."""
+    return [panel for panel in frozen["panels"] if "µm" not in panel["xlabel"]]
+
+
+@pytest.fixture
+def drawn(monkeypatch):
+    """Freeze the drawn ARTISTS of whatever figure the emitter saves.
+
+    `capture` freezes the figure's text; these tests also need its rules and its
+    per-panel labels, and `_save_and_release` clears those just as promptly. The
+    text snapshot is taken through `_Captured` rather than re-derived, so the
+    two fixtures cannot read the same figure differently.
+    """
+    frozen = {}
+    for module in (cl, tr, ra):
+        real = module._save_and_release
+
+        def wrapper(fig, out_path, _real=real, _frozen=frozen):
+            snapshot = _Captured()
+            snapshot.figure = fig
+            suptitle = getattr(fig, "_suptitle", None)
+            _frozen.update(
+                text=snapshot.all_text,
+                legends=snapshot.legend_labels,
+                captions=[_norm(t.get_text()) for t in _caption_texts(fig)],
+                suptitle=_norm(suptitle.get_text()) if suptitle is not None else "",
+                panels=[
+                    {
+                        "xlabel": _norm(axis.get_xlabel()),
+                        "ylabel": _norm(axis.get_ylabel()),
+                        "title": _norm(axis.get_title()),
+                        "join_rules": _join_rule_x(axis),
+                        # What the reader can actually see: a figure whose
+                        # limits exclude most of the analysed window is wrong
+                        # however correct everything drawn inside them is.
+                        "xlim": tuple(float(v) for v in axis.get_xlim()),
+                    }
+                    for axis in fig.get_axes()
+                ],
+            )
+            return _real(fig, out_path)
+
+        monkeypatch.setattr(module, "_save_and_release", wrapper)
+    return frozen
+
+
+# The gap sits AT the join: that is the case the two rules exist for, and the
+# one a real concatenation always produces. 20 kHz, a 1 s window, the join at
+# frame 10 000 (0.5 s) and 40 000 frames (2.0 s) of wall clock missing there.
+_JOIN_FRAME = 10_000
+_GAP_AT_THE_JOIN = {"break_sample_indices": [_JOIN_FRAME], "break_gap_frames": [40_000]}
+
+
+def test_real_elapsed_join_draws_the_end_and_the_start(drawn, recording, tmp_path):
+    """Adam, 2026-09-19: with real time in between, a join becomes a segment END
+    and a segment START, and both belong on the figure."""
+    from mea_modules.diagnostics.timebase import join_marks
+
+    tr.plot_traces(
+        recording, tmp_path / "traces_realtime.png",
+        channel_ids=["ch0", "ch5"], duration_s=1.0,
+        stitch_frames=(_JOIN_FRAME,), time_gaps=_GAP_AT_THE_JOIN,
+    )
+
+    expected = join_marks(
+        [_JOIN_FRAME], 20_000.0, gaps=_GAP_AT_THE_JOIN, real_time=True
+    )
+    start_s, stop_s = expected[0]
+    assert stop_s - start_s == pytest.approx(2.0, abs=1e-3), "the fixture lost its gap"
+
+    panels = _trace_panels(drawn)
+    assert len(panels) == 2
+    for panel in panels:
+        # Two rules, at the positions the shared helper places them — not at
+        # some locally recomputed frame/fs.
+        assert panel["join_rules"] == pytest.approx([start_s, stop_s])
+
+    labels = " || ".join(drawn["legends"])
+    assert JOIN_LABEL_SPANNING in labels
+
+
+def test_file_timeline_join_is_a_single_instant(drawn, recording, tmp_path):
+    """On the contiguous axis nothing elapses at a join, so one rule is honest
+    and the key must not promise a span that is not drawn."""
+    tr.plot_traces(
+        recording, tmp_path / "traces.png",
+        channel_ids=["ch0"], duration_s=1.0, stitch_frames=(_JOIN_FRAME,),
+    )
+    panels = _trace_panels(drawn)
+    assert [panel["join_rules"] for panel in panels] == [[0.5]]
+
+    labels = " || ".join(drawn["legends"])
+    assert JOIN_LABEL_INSTANT in labels
+    assert JOIN_LABEL_SPANNING not in labels
+
+
+def test_one_interior_join_does_not_collapse_the_raster_x_axis(drawn, recording, tmp_path):
+    """The defect the frames convention was found by.
+
+    A two-segment concatenation has exactly ONE interior join. The raster used
+    to clip its x limits to the min and max of the join positions, which for one
+    join is ``set_xlim(x, x)`` — a degenerate range matplotlib silently widens by
+    a few percent, putting the rest of the analysed window off-canvas with
+    nothing on the figure admitting it. The limits are the window that was
+    analysed, and a raster where firing stops halfway has to show the silence.
+    """
+    ra.plot_raster_threshold(
+        recording, tmp_path / "raster_threshold.png",
+        duration_s=1.0, stitch_frames=(_JOIN_FRAME,),
+    )
+    (panel,) = drawn["panels"]
+    assert panel["join_rules"] == pytest.approx([0.5])
+
+    # 20 kHz, one second analysed: the last drawn sample is frame 19 999.
+    low, high = panel["xlim"]
+    assert low == pytest.approx(0.0, abs=1e-6)
+    assert high == pytest.approx(1.0, abs=1e-3)
+
+
+def test_traces_annotate_false_drops_the_chrome_and_keeps_the_unit(drawn, recording, tmp_path):
+    """No title, no caption — but the amplitude unit is an axis label, and a
+    trace stack without it is a picture of unnamed numbers."""
+    tr.plot_traces(
+        recording, tmp_path / "traces.png", channel_ids=["ch0", "ch5"],
+        duration_s=1.0, stitch_frames=(_JOIN_FRAME,),
+        title="P0001 well000", caption_extra="pushed off the figure",
+        annotate=False,
+    )
+    assert drawn["suptitle"] == ""
+    assert drawn["captions"] == []
+    assert "pushed off the figure" not in drawn["text"]
+    assert all(not panel["title"] for panel in drawn["panels"])
+
+    # Kept: the unit, the axes and the key.
+    assert "amplitude (µV)" in drawn["text"]
+    assert "time (s)" in drawn["text"]
+    labels = " || ".join(drawn["legends"])
+    assert "one row per channel" in labels
+    assert JOIN_LABEL_INSTANT in labels
+
+
+def test_traces_annotate_true_is_unchanged(drawn, recording, tmp_path):
+    """The default stays exactly what every existing caller already gets."""
+    tr.plot_traces(
+        recording, tmp_path / "traces.png", channel_ids=["ch0"],
+        duration_s=1.0, title="P0001 well000",
+    )
+    assert drawn["suptitle"] == "P0001 well000 [µV]"
+    assert drawn["captions"], "the caption block went missing at annotate=True"
+
+
+def test_traces_without_a_title_still_names_its_unit(drawn, recording, tmp_path):
+    """The invented title is a default, not chrome to be dropped silently."""
+    tr.plot_traces(recording, tmp_path / "traces.png", channel_ids=["ch0"], duration_s=1.0)
+    assert drawn["suptitle"] == "amplitude in µV"
+
+
+def test_channel_layout_annotate_false_keeps_the_key_and_the_units(drawn, recording, tmp_path):
+    cl.plot_channel_layout(
+        recording, tmp_path / "layout.png",
+        highlight_channel_ids=["ch0"],
+        highlight_label="representative channels — traced in traces.png",
+        caption=ft.REPRESENTATIVE_CHANNELS,
+        annotate=False,
+    )
+    assert drawn["captions"] == []
+    assert all(not panel["title"] for panel in drawn["panels"])
+    assert "x (µm)" in drawn["text"] and "y (µm)" in drawn["text"]
+    assert "routed electrodes" in " || ".join(drawn["legends"])
+
+
+def test_traces_refuses_a_panel_count_that_is_not_its_channel_count(recording):
+    """A composing caller builds its grid from a channel list; a mismatch means
+    the two have drifted, and the figure would be silently short a channel."""
+    fig = tr._new_figure((6.0, 4.0), 100)
+    panels = list(fig.subplots(2, 1))
+    with pytest.raises(ValueError, match="one axes per channel"):
+        tr.plot_traces(recording, axes=panels, channel_ids=["ch0"], duration_s=0.5)
+
+
+def test_traces_needs_somewhere_to_draw(recording):
+    with pytest.raises(ValueError, match="out_path.*or axes"):
+        tr.plot_traces(recording, channel_ids=["ch0"], duration_s=0.5)
+
+
+def test_channel_layout_needs_somewhere_to_draw(recording):
+    with pytest.raises(ValueError, match="out_path.*or ax"):
+        cl.plot_channel_layout(recording)
+
+
+def test_drawing_into_a_callers_axes_writes_nothing(recording, tmp_path):
+    """The caller owns the figure, so the caller decides when it is finished."""
+    fig = tr._new_figure((6.0, 4.0), 100)
+    panels = [fig.subplots(1, 1)]
+    assert tr.plot_traces(recording, axes=panels, channel_ids=["ch0"], duration_s=0.5) is None
+    assert cl.plot_channel_layout(recording, ax=fig.add_subplot(111)) is None
+    assert not list(tmp_path.iterdir())
+
+
+# --- the composed sheet ---------------------------------------------------
+
+def test_composite_draws_the_layout_beside_one_row_per_channel(drawn, recording, tmp_path):
+    out_path = tmp_path / "traces_with_layout.png"
+    manifest = tr.plot_traces_with_layout(
+        recording, out_path, channel_ids=["ch0", "ch5", "ch10"], duration_s=1.0,
+    )
+    assert manifest["files"]["png"] == str(out_path)
+    assert manifest["panels"] == ["channel_layout", "traces"]
+    assert manifest["channel_ids"] == ["ch0", "ch5", "ch10"]
+    assert manifest["n_channels"] == 3
+    assert manifest["representative_selection"] is False
+    assert out_path.is_file() and out_path.stat().st_size > 5_000
+
+    # One layout panel plus one trace row per channel.
+    assert len(drawn["panels"]) == 4
+    assert len(_trace_panels(drawn)) == 3
+
+
+def test_composite_reddens_exactly_the_channels_it_traces(drawn, recording, tmp_path):
+    """The whole argument of the figure: the red electrodes on the left ARE the
+    rows on the right. A count that disagrees means the two halves were resolved
+    separately, which is the defect the composite exists to rule out."""
+    manifest = tr.plot_traces_with_layout(
+        recording, tmp_path / "traces_with_layout.png", duration_s=1.0,
+    )
+    assert manifest["representative_selection"] is True
+
+    traced = [panel["ylabel"].split()[1] for panel in _trace_panels(drawn)]
+    assert traced == manifest["channel_ids"]
+
+    labels = " || ".join(drawn["legends"])
+    assert f"(n={len(traced)})" in labels
+    assert ft.TRACED_CHANNELS in labels
+    # ...and the layout key still names grey, which is never dropped.
+    assert "routed electrodes" in labels
+
+
+def test_composite_reuses_the_single_panel_emitters(recording, tmp_path, monkeypatch):
+    """Both halves are drawn by the atomic emitters, into axes this figure owns.
+
+    Guards the reason for the change: a composite that redraws either half is a
+    second definition of the same mechanic, and the two drift.
+    """
+    seen = {}
+    real_layout, real_traces = cl.plot_channel_layout, tr.plot_traces
+
+    def layout_spy(*args, **kwargs):
+        seen["layout"] = kwargs
+        return real_layout(*args, **kwargs)
+
+    def traces_spy(*args, **kwargs):
+        seen["traces"] = kwargs
+        return real_traces(*args, **kwargs)
+
+    monkeypatch.setattr(tr, "plot_channel_layout", layout_spy)
+    monkeypatch.setattr(tr, "plot_traces", traces_spy)
+
+    tr.plot_traces_with_layout(
+        recording, tmp_path / "traces_with_layout.png",
+        channel_ids=["ch0", "ch5"], duration_s=1.0,
+        stitch_frames=(_JOIN_FRAME,), time_gaps=_GAP_AT_THE_JOIN, annotate=False,
+    )
+
+    assert seen["layout"]["ax"] is not None
+    assert len(seen["traces"]["axes"]) == 2
+    # The arguments that decide what is drawn are passed through, not re-decided.
+    assert seen["traces"]["stitch_frames"] == (_JOIN_FRAME,)
+    assert seen["traces"]["time_gaps"] == _GAP_AT_THE_JOIN
+    assert seen["traces"]["annotate"] is False
+    assert seen["layout"]["annotate"] is False
+    assert seen["layout"]["highlight_channel_ids"] == seen["traces"]["channel_ids"]
+
+
+def test_composite_carries_the_joins_and_the_shading_through(drawn, recording, tmp_path):
+    manifest = tr.plot_traces_with_layout(
+        recording, tmp_path / "traces_with_layout.png",
+        channel_ids=["ch0", "ch5"], duration_s=1.0,
+        stitch_frames=(_JOIN_FRAME,), time_gaps=_GAP_AT_THE_JOIN,
+    )
+    assert manifest["real_time"] is True
+
+    for panel in _trace_panels(drawn):
+        assert len(panel["join_rules"]) == 2, "the composed stack lost an edge of the join"
+    labels = " || ".join(drawn["legends"])
+    assert JOIN_LABEL_SPANNING in labels
+    assert GAP_LABEL_WITHIN in labels
+    assert "real elapsed time" in drawn["text"]
+
+
+def test_composite_states_the_pairing_and_the_selection_rule(drawn, recording, tmp_path):
+    tr.plot_traces_with_layout(
+        recording, tmp_path / "traces_with_layout.png", duration_s=1.0,
+        caption_extra="Window: the first second of rec0001.",
+    )
+    caption = " ".join(drawn["captions"])
+    assert "same channels drawn on the right" in caption
+    assert "one channel is taken from each clump" in caption
+    assert "Window: the first second of rec0001." in caption
+
+
+def test_composite_annotate_false_keeps_both_keys_and_the_unit(drawn, recording, tmp_path):
+    tr.plot_traces_with_layout(
+        recording, tmp_path / "traces_with_layout.png",
+        channel_ids=["ch0", "ch5"], duration_s=1.0, title="P0001 well000",
+        annotate=False,
+    )
+    assert drawn["suptitle"] == ""
+    assert drawn["captions"] == []
+    assert all(not panel["title"] for panel in drawn["panels"])
+
+    # The composed sheet has no figure-level y label to hang the unit on, so it
+    # rides on the bottom panel beside the shared time axis.
+    bottom = _trace_panels(drawn)[-1]
+    assert "amplitude (µV)" in bottom["ylabel"]
+    assert "time (s)" in bottom["xlabel"]
+    labels = " || ".join(drawn["legends"])
+    assert "one row per channel" in labels and "routed electrodes" in labels
+
+
+def test_composite_is_deterministic(recording, tmp_path):
+    first = tr.plot_traces_with_layout(
+        recording, tmp_path / "a.png", channel_ids=["ch0", "ch5"], duration_s=1.0)
+    second = tr.plot_traces_with_layout(
+        recording, tmp_path / "b.png", channel_ids=["ch0", "ch5"], duration_s=1.0)
+    assert (tmp_path / "a.png").read_bytes() == (tmp_path / "b.png").read_bytes()
+    assert first["channel_ids"] == second["channel_ids"]

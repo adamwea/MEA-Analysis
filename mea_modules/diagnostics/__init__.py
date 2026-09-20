@@ -7,7 +7,16 @@ Public API::
         plot_traces,           # what the loudest channels look like
         plot_raster_threshold, # whether anything is firing, and when
         plot_unit_locations,   # where the recomputed units sit on the array
+        plot_noise_activity_map,  # both QC metrics on the probe geometry
+        plot_spectra_panels,   # what the filter chain did, raw vs preprocessed
     )
+
+Not everything here renders. Three of the per-recording diagnostics produce
+numbers a report writes rather than a picture — :func:`flag_channels` (which
+channel ids not to trust, and why), :func:`clipping_census` (which channels sat
+on a rail) and :func:`artifact_census` (when the whole array moved at once) —
+and the emitters that do produce both keep the arithmetic in its own function,
+so a number can become a check without dragging a figure along.
 
 Every emitter takes an opened recording (or, for ``plot_unit_locations``, the
 arrays the caller already holds) plus an explicit output path, writes one
@@ -36,15 +45,33 @@ from .activity_map import (
     plot_whole_chip_activity,
     template_projected_activity,
 )
+from .artifacts import artifact_census
+from .channel_flags import flag_channels, flagged_channel_groups
 from .channel_layout import (
+    cluster_center_channels,
     detect_electrode_clusters,
     estimate_electrode_pitch,
     plot_channel_layout,
+    shared_channel_ids,
+)
+from .clipping import clipping_census
+from .figure_style import emptiest_corner, legend_corner, tighten
+from .motion import estimate_motion_over_recording, plot_motion_estimate
+from .metric_maps import (
+    plot_firing_rate_map,
+    plot_metric_maps,
+    plot_noise_activity_map,
+    plot_noise_map,
+    robust_color_limits,
 )
 from .raster import (
     detect_threshold_crossings,
     estimate_channel_thresholds,
     plot_raster_threshold,
+)
+from .spectra import (
+    plot_spectra_panels,
+    welch_spectra,
 )
 from .timebase import (
     gap_spans,
@@ -73,6 +100,23 @@ __all__ = [
     "template_projected_activity",
     "plot_whole_chip_activity",
     "WHOLE_CHIP_ACTIVITY_FILENAME",
+    # per-channel metrics painted on the probe geometry
+    "plot_metric_maps",
+    "plot_noise_activity_map",
+    "plot_noise_map",
+    "plot_firing_rate_map",
+    "robust_color_limits",
+    # power spectra: the numbers, then the raw-vs-preprocessed panel
+    "welch_spectra",
+    "plot_spectra_panels",
+    # drift over a concatenated well: the estimate, then the trace
+    "estimate_motion_over_recording",
+    "plot_motion_estimate",
+    # numbers without a figure: ids, rails, array-wide events
+    "flag_channels",
+    "flagged_channel_groups",
+    "clipping_census",
+    "artifact_census",
     # channel selection
     "select_representative_channels",
     "channel_activity_rms",

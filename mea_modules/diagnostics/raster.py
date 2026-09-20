@@ -23,6 +23,7 @@ from .channel_layout import (
     _new_figure,
     _save_and_release,
 )
+from .figure_style import legend_corner
 from .figure_text import (
     CONTIGUOUS_AXIS,
     NO_DATA_SHADING,
@@ -33,8 +34,17 @@ from .figure_text import (
 from .timebase import (
     _GAP_SHADE_ALPHA,
     _GAP_SHADE_COLOR,
-    _shade_gap_spans,
-    gap_spans,
+    JOIN_LABEL_INSTANT,
+    JOIN_LABEL_SPANNING,
+    GAP_LABEL_BETWEEN,
+    GAP_LABEL_WITHIN,
+    _SEGMENT_GAP_SHADE_ALPHA,
+    _SEGMENT_GAP_SHADE_COLOR,
+    draw_join_marks,
+    gap_spans_by_kind,
+    shade_gap_kinds,
+    join_marks,
+    joins_span_time,
     resolve_time_gaps,
     sample_times,
 )
@@ -113,30 +123,6 @@ def _channel_labels(channel_ids):
         return np.asarray([int(channel_id) for channel_id in channel_ids], dtype=np.int64)
     except (TypeError, ValueError):
         return np.arange(len(channel_ids), dtype=np.int64)
-
-
-def _boundary_times(segment_boundaries):
-    """Normalize boundary markers to a flat list of x positions in seconds.
-
-    Accepts what upstream stages naturally hold: dicts with ``start_s``/
-    ``stop_s``, (start, stop) pairs, or bare times.
-    """
-    times = []
-    for boundary in segment_boundaries or ():
-        if isinstance(boundary, dict):
-            values = [boundary.get("start_s"), boundary.get("stop_s")]
-        elif isinstance(boundary, (list, tuple)):
-            values = list(boundary)
-        else:
-            values = [boundary]
-        for value in values:
-            if value is None:
-                continue
-            try:
-                times.append(float(value))
-            except (TypeError, ValueError):
-                continue
-    return times
 
 
 def _seconds_to_frames(recording, times, fs, has_times):
@@ -325,13 +311,14 @@ def plot_raster_threshold(
     threshold_factor=_DEFAULT_THRESHOLD_FACTOR,
     refractory_period_ms=_DEFAULT_REFRACTORY_MS,
     chunk_frames=_DEFAULT_DETECTION_CHUNK_FRAMES,
-    segment_boundaries=(),
+    stitch_frames=(),
     title=None,
     return_in_uV=False,
     figsize=_RASTER_FIGSIZE,
     dpi=_RASTER_DPI,
     time_gaps=None,
     quality=None,
+    annotate=True,
 ):
     """Write a threshold-crossing raster to `out_path`; return the path.
 
@@ -339,10 +326,18 @@ def plot_raster_threshold(
     seconds from `start_time_s` (None for the whole recording) on at most
     `max_channels` channels, then scatters them as time vs electrode id.
 
-    `segment_boundaries` draws dotted red verticals — pass the per-segment
-    start/stop times of a concatenated recording and the plot shows immediately
-    whether activity dies in a particular segment. Rows are labelled
-    individually only while there are few enough of them to read.
+    `stitch_frames` draws the segment joins as dotted red verticals — pass the
+    concatenation's join offsets in FRAMES (the one convention across every
+    emitter, see :func:`mea_modules.diagnostics.timebase.join_marks`) and the
+    plot shows immediately whether activity dies in a particular segment. On a
+    real-elapsed axis each join is drawn as TWO rules, the earlier segment's end
+    and the later one's start, because minutes of wall clock sit between them.
+    Rows are labelled individually only while there are few enough to read.
+
+    `annotate` controls the explanatory chrome. True keeps the title and the
+    caption block. False draws neither, leaving axes, units and the legend —
+    the presentation-plot register the pipeline's own figures use, where the
+    title's information lives in the filename instead.
 
     `time_gaps` chooses which timeline the x axis is. Left None it is the
     contiguous one — sample index over sampling rate, labelled ``time (s)`` —
@@ -352,8 +347,8 @@ def plot_raster_threshold(
     elapsed time, the stretches holding no data are shaded, and the label says
     ``time (s, real elapsed)``. That distinction matters most here: read as a
     spike train, a raster on the contiguous axis quietly closes up every break,
-    so inter-event intervals across one are wrong. `segment_boundaries` are
-    positions on the same axis and are mapped with it.
+    so inter-event intervals across one are wrong. `stitch_frames` are mapped
+    onto whichever axis is in force, by the same gap table as the events.
 
     `quality` picks a render preset (:data:`mea_modules.diagnostics.traces.
     PLOT_QUALITY_PRESETS`): ``"draft"`` (the default, and what this development
@@ -387,14 +382,17 @@ def plot_raster_threshold(
     gaps, segment_gaps = resolve_time_gaps(time_gaps)
     real_time = time_gaps is not None
     window_start, window_end, fs = _resolve_frame_window(recording, start_time_s, duration_s)
-    spans = ()
-    shaded = 0
+    spans = {}
+    shaded = {"within_segment": 0, "between_segment": 0}
     if real_time:
         # Events come back as seconds on whichever timeline the detector used;
         # re-index them to samples so the gap offsets can be applied.
         frames = _seconds_to_frames(recording, event_times, fs, _has_time_vector(recording))
         event_times = sample_times(frames, fs, gaps=gaps, segment_gaps=segment_gaps)
-        spans = gap_spans(window_end, fs, gaps=gaps, segment_gaps=segment_gaps)
+        # Split by kind rather than pooled: a scan carries thousands of
+        # microsecond frame-counter breaks and a handful of half-minute
+        # acquisition gaps, and one grey for both hides the second in the first.
+        spans = gap_spans_by_kind(window_end, fs, gaps=gaps, segment_gaps=segment_gaps)
 
     fig = _new_figure(figsize, dpi)
     ax = fig.subplots()
@@ -412,39 +410,36 @@ def plot_raster_threshold(
             rasterized=True,
         )
 
-    boundary_times = _boundary_times(segment_boundaries)
-    if real_time and boundary_times:
-        boundary_times = [
-            float(value)
-            for value in sample_times(
-                _seconds_to_frames(recording, boundary_times, fs, _has_time_vector(recording)),
-                fs,
-                gaps=gaps,
-                segment_gaps=segment_gaps,
-            )
-        ]
-    for x_value in boundary_times:
-        ax.axvline(x_value, color="red", linestyle=":", linewidth=0.8, alpha=0.85)
+    marks = join_marks(
+        stitch_frames, fs, gaps=gaps, segment_gaps=segment_gaps, real_time=real_time
+    )
+    drawn_joins = draw_join_marks(ax, marks)
 
-    if boundary_times:
-        ax.set_xlim(min(boundary_times), max(boundary_times))
+    # Span the window that was actually analysed, not the extent of the events
+    # and NEVER the extent of the joins: a raster where firing stops halfway has
+    # to show the silence. Clipping to the joins used to be the first branch
+    # here, which on a two-segment concatenation is a single interior join and
+    # therefore a degenerate `set_xlim(x, x)` that matplotlib silently widens by
+    # ±5% — 95% of the data off-canvas with nothing on the figure saying so.
+    edges_frames = [window_start, max(window_start, window_end - 1)]
+    if real_time:
+        edges = sample_times(edges_frames, fs, gaps=gaps, segment_gaps=segment_gaps)
     else:
-        # Span the window that was actually analysed, not the extent of the
-        # events: a raster where firing stops halfway has to show the silence.
-        edges_frames = [window_start, max(window_start, window_end - 1)]
-        if real_time:
-            edges = sample_times(edges_frames, fs, gaps=gaps, segment_gaps=segment_gaps)
-        else:
-            edges = _frames_to_seconds(recording, edges_frames, fs)
-        if float(edges[1]) > float(edges[0]):
-            ax.set_xlim(float(edges[0]), float(edges[1]))
+        edges = _frames_to_seconds(recording, edges_frames, fs)
+    if float(edges[1]) > float(edges[0]):
+        ax.set_xlim(float(edges[0]), float(edges[1]))
 
     if real_time:
         # Shade after the limits are set, so the bands cover exactly what is on
         # screen and no more.
         x_lower, x_upper = ax.get_xlim()
-        shaded = _shade_gap_spans(ax, spans, x_min=x_lower, x_max=x_upper)
-        logger.info("raster: shaded %d gap spans of %d in window", shaded, len(spans))
+        shaded = shade_gap_kinds(ax, spans, x_min=x_lower, x_max=x_upper)
+        logger.info(
+            "raster: shaded %d within-segment break(s) of %d and %d between-segment "
+            "gap(s) of %d in window",
+            shaded["within_segment"], len(spans.get("within_segment", ())),
+            shaded["between_segment"], len(spans.get("between_segment", ())),
+        )
 
     if labels.size:
         ax.set_ylim(float(labels.min()) - 1.0, float(labels.max()) + 1.0)
@@ -453,7 +448,8 @@ def plot_raster_threshold(
 
     ax.set_xlabel(_REAL_TIME_XLABEL if real_time else _CONTIGUOUS_XLABEL)
     ax.set_ylabel("electrode id")
-    ax.set_title(title or "Threshold raster")
+    if annotate and title:
+        ax.set_title(title)
     ax.grid(False)
 
     # Legend every encoding (Adam, 2026-08-11). A raster is three different
@@ -468,23 +464,45 @@ def plot_raster_threshold(
             size=4.0,
         )
     ]
-    if boundary_times:
-        handles.append(_legend_line("red", "segment join", lw=0.9, linestyle=":"))
-    if real_time and shaded:
-        handles.append(_legend_patch(_GAP_SHADE_COLOR, "no data recorded", alpha=_GAP_SHADE_ALPHA))
-    ax.legend(handles=handles, loc="best", fontsize=7, framealpha=0.85, labelspacing=0.7)
+    if drawn_joins:
+        handles.append(
+            _legend_line(
+                "red",
+                JOIN_LABEL_SPANNING if joins_span_time(marks) else JOIN_LABEL_INSTANT,
+                lw=0.9,
+                linestyle=":",
+            )
+        )
+    if real_time and shaded["within_segment"]:
+        handles.append(
+            _legend_patch(_GAP_SHADE_COLOR, GAP_LABEL_WITHIN, alpha=_GAP_SHADE_ALPHA)
+        )
+    if real_time and shaded["between_segment"]:
+        handles.append(
+            _legend_patch(
+                _SEGMENT_GAP_SHADE_COLOR, GAP_LABEL_BETWEEN, alpha=_SEGMENT_GAP_SHADE_ALPHA
+            )
+        )
+    # A raster is a scatter of up to a few hundred thousand events, so
+    # loc="best" reliably picked a central spot instead of a corner — this
+    # scores the four corners against the drawn points and takes the emptiest
+    # one, and must run after the scatter/join marks above are on the axis.
+    legend_corner(ax, handles=handles, labelspacing=0.7)
 
-    caption_parts = [acronym_note("MAD")]
-    if boundary_times:
-        caption_parts.append(SEAM)
-    caption_parts.append(REAL_ELAPSED_AXIS if real_time else CONTIGUOUS_AXIS)
-    if real_time and shaded:
-        caption_parts.append(NO_DATA_SHADING)
-    caption_parts.append(
-        "Detection is a threshold crossing count, not spike sorting: one dot is one "
-        "downward crossing on one electrode, not one identified neuron."
-    )
-    _add_caption(fig, _fold_caption(caption_parts))
+    caption = ""
+    if annotate:
+        caption_parts = [acronym_note("MAD")]
+        if drawn_joins:
+            caption_parts.append(SEAM)
+        caption_parts.append(REAL_ELAPSED_AXIS if real_time else CONTIGUOUS_AXIS)
+        if real_time and any(shaded.values()):
+            caption_parts.append(NO_DATA_SHADING)
+        caption_parts.append(
+            "Detection is a threshold crossing count, not spike sorting: one dot is one "
+            "downward crossing on one electrode, not one identified neuron."
+        )
+        caption = _fold_caption(caption_parts)
+    _add_caption(fig, caption)
 
     out_path = _save_and_release(fig, out_path)
     logger.info(

@@ -33,6 +33,7 @@ from ..diagnostics.channel_layout import (
     _wrap_label,
 )
 from ..diagnostics.figure_text import CONTIGUOUS_AXIS, SEAM, acronym_note
+from ..diagnostics.timebase import JOIN_LABEL_INSTANT, join_marks
 from ..diagnostics.traces import (
     _CONTIGUOUS_XLABEL,
     _COUNTS_LABEL,
@@ -199,12 +200,18 @@ def plot_unit_trace(
             linewidths=0.9, zorder=3,
         )
 
-    joins_drawn = 0
-    for join in stitch_frames or ():
-        join = int(join)
-        if start_frame < join < end_frame:
-            ax.axvline(join / fs, color=_JOIN_COLOR, lw=0.6, ls=":", zorder=1)
-            joins_drawn += 1
+    # Only the joins inside the drawn window, placed by the shared helper rather
+    # than a local `frame / fs`. This window is always the file timeline, so each
+    # mark is an instant and its two coordinates coincide. The rules are drawn
+    # here rather than through `draw_join_marks` for one reason: they belong
+    # BEHIND the trace, and the shared drawer owns no z order.
+    inside_joins = [
+        int(join) for join in (stitch_frames or ()) if start_frame < int(join) < end_frame
+    ]
+    join_positions = join_marks(inside_joins, fs)
+    for position, _same in join_positions:
+        ax.axvline(position, color=_JOIN_COLOR, lw=0.6, ls=":", zorder=1)
+    joins_drawn = len(join_positions)
 
     unit_label = _UV_LABEL if in_uv else _COUNTS_LABEL
 
@@ -237,7 +244,7 @@ def plot_unit_trace(
             )
         )
     if joins_drawn:
-        handles.append(_legend_line(_JOIN_COLOR, "segment join", lw=0.9, linestyle=":"))
+        handles.append(_legend_line(_JOIN_COLOR, JOIN_LABEL_INSTANT, lw=0.9, linestyle=":"))
     ax.legend(
         handles=handles,
         loc="best",

@@ -17,6 +17,8 @@ import logging
 import math
 from pathlib import Path
 
+from .figure_style import legend_corner, tighten
+
 logger = logging.getLogger(__name__)
 
 # Fallback neighbourhood radius when the layout is too sparse to estimate a
@@ -215,7 +217,7 @@ def _fit_axes_above(fig, reserved):
     fit. An overhang is a defect in the figure that drew it — say so, and leave
     the layout honest.
     """
-    fig.tight_layout(rect=(0.0, reserved, 1.0, 1.0))
+    tighten(fig, rect=(0.0, reserved, 1.0, 1.0))
     renderer = _renderer(fig)
     if renderer is None:
         return
@@ -316,7 +318,7 @@ def _add_caption(
     )
 
     if not text and legend is None:
-        fig.tight_layout()
+        tighten(fig)
         return None
 
     caption = None
@@ -532,6 +534,90 @@ def detect_electrode_clusters(x, y, eps=None):
     return clusters
 
 
+def shared_channel_ids(recordings):
+    """The channels routed in EVERY one of `recordings`, in the first's order.
+
+    Each segment of a MaxWell session routes its own subset of the array, so
+    the only electrodes that can be compared across segments without the
+    comparison being a comparison of two different electrode sets are the ones
+    every segment kept. Those are the "shared electrodes" a cross-segment
+    figure should be drawn over (Adam, 2026-09-19); elsewhere in this package
+    the same set is called the backbone, and this is the in-memory route to it
+    for callers that hold the recordings rather than a retention artifact.
+
+    An empty sequence, or a single recording, returns that recording's own
+    channels — a one-segment well shares everything with itself.
+    """
+    recordings = list(recordings)
+    if not recordings:
+        return []
+    ordered = [str(cid) for cid in recordings[0].get_channel_ids()]
+    if len(recordings) == 1:
+        return list(recordings[0].get_channel_ids())
+
+    common = set(ordered)
+    for recording in recordings[1:]:
+        common &= {str(cid) for cid in recording.get_channel_ids()}
+
+    # Return the first recording's OWN id objects, not the stringified keys:
+    # channel ids are handed straight back to `get_traces`, which is typed.
+    keep = {str(cid): cid for cid in recordings[0].get_channel_ids()}
+    shared = [keep[cid] for cid in ordered if cid in common]
+    logger.info(
+        "shared electrode set: %d of %d channels routed in all %d segments",
+        len(shared),
+        len(ordered),
+        len(recordings),
+    )
+    return shared
+
+
+def cluster_center_channels(recording, channel_ids=None, eps=None):
+    """One channel per electrode cluster: the member nearest its centroid.
+
+    The count is DYNAMIC — it is however many clusters the routing produced,
+    around thirty on the MaxWell configurations in use, and a caller must never
+    assume a number (see :func:`detect_electrode_clusters`).
+
+    `channel_ids` restricts the pool BEFORE clustering, which is the difference
+    that matters: clustering the whole array and then filtering would hand back
+    centres of clusters that the restricted set does not actually cover. Pass
+    the shared electrode set here to get one representative per cluster of the
+    electrodes common to every segment.
+
+    Falls back to the (restricted) channel order when the probe carries no
+    usable locations, so this never fails on a probe-less recording.
+    """
+    import numpy as np
+
+    all_ids, xs, ys = _channel_xy(recording)
+    if not all_ids:
+        return []
+
+    if channel_ids is None:
+        pool_ids, pool_x, pool_y = all_ids, xs, ys
+    else:
+        wanted = {str(cid) for cid in channel_ids}
+        keep = [index for index, cid in enumerate(all_ids) if str(cid) in wanted]
+        if not keep:
+            logger.warning("no requested channel is present in the recording; using all")
+            pool_ids, pool_x, pool_y = all_ids, xs, ys
+        else:
+            pool_ids = [all_ids[index] for index in keep]
+            index_array = np.asarray(keep, dtype=int)
+            pool_x = None if xs is None else np.asarray(xs, dtype=float)[index_array]
+            pool_y = None if ys is None else np.asarray(ys, dtype=float)[index_array]
+
+    if pool_x is None:
+        logger.warning("no usable channel locations; falling back to channel order")
+        return list(pool_ids)
+
+    clusters = detect_electrode_clusters(pool_x, pool_y, eps=eps)
+    if not clusters:
+        return list(pool_ids)
+    return [pool_ids[_pick_cluster_representative(pool_x, pool_y, cluster)] for cluster in clusters]
+
+
 def _pick_cluster_representative(x, y, cluster):
     """Positional index of the cluster member closest to the cluster centroid."""
     import numpy as np
@@ -546,42 +632,77 @@ def _pick_cluster_representative(x, y, cluster):
 
 def plot_channel_layout(
     recording,
-    out_path,
+    out_path=None,
     title=None,
     highlight_channel_ids=None,
     highlight_label=None,
+    groups=None,
     base_label=None,
     caption=None,
     figsize=_LAYOUT_FIGSIZE,
     dpi=_LAYOUT_DPI,
+    annotate=True,
+    ax=None,
 ):
     """Scatter the recording's electrode positions to `out_path`; return the path.
 
-    Every routed electrode is drawn grey; anything in `highlight_channel_ids`
-    is drawn red on top. The usual use is to mark the representative channels a
+    Every routed electrode is drawn grey; anything highlighted is drawn on top
+    in its own colour. The usual use is to mark the representative channels a
     trace plot was made from, so a reviewer can see at a glance whether they
     sample the whole array or all sit in one corner.
 
-    The figure always carries a LEGEND naming both colours (Adam, 2026-08-11) —
-    grey and red mean nothing to a reader who has not read this source, and the
-    red set in particular is only meaningful once you know *which other figure*
-    those channels were drawn into. So `highlight_label` should name the sibling
-    artifact by its real emitted filename, e.g.::
+    Two ways to say what is highlighted:
 
-        highlight_label="representative channels — traced in traces.png"
+    * `highlight_channel_ids` / `highlight_label` — the common case, one set in
+      one colour. The usual use marks the representative channels a trace plot
+      was made from, so a reviewer can see at a glance whether they sample the
+      whole array or all sit in one corner.
+    * `groups` — several colour-coded sets on the SAME figure, e.g. one colour
+      per flagging rule so a reader can tell *why* a channel was flagged, not
+      only that it was. A sequence of ``(channel_ids, label, colour)``; drawn in
+      order, later groups on top of earlier ones. Pass this instead of
+      `highlight_channel_ids` — the two are not combined. A group's id list may
+      be empty: it still gets a legend key at ``(n=0)``, which is the whole
+      point when a run has nothing to show for a rule that was still tested —
+      see :func:`mea_modules.diagnostics.channel_flags.flagged_channel_groups`.
 
-    Callers with several downstream artifacts name them all
-    (``"... — traced in traces.png, traces_realtime.png, psd.png"``); callers
-    whose highlight is a flagged set point at the JSON that enumerates it
-    (``"flagged channels — listed in bad_channels.json"``). Labels are wrapped,
-    never truncated, so a filename always survives intact.
+    The figure always carries a LEGEND naming every colour (Adam, 2026-08-11) —
+    grey and red mean nothing to a reader who has not read this source, and a
+    highlighted set is only meaningful once you know *which other figure* those
+    channels were drawn into, or *which rule* flagged them. Legend text is
+    publication shorthand (Adam, 2026-09-19): the representative/traced set
+    takes :data:`mea_modules.diagnostics.figure_text.REPRESENTATIVE_KEY` rather
+    than naming a sibling file, e.g.::
+
+        highlight_label=figure_text.REPRESENTATIVE_KEY
+
+    A group whose highlight is not a channel-selection key still names the
+    artifact that enumerates it, e.g. a flagging rule pointing at the JSON that
+    lists it (``"flagged channels — listed in bad_channels.json"``). Labels are
+    wrapped, never truncated, so a filename always survives intact.
 
     `caption` adds a line under the axes for anything a legend key is too short
     to hold (what "representative" means, how the set was ranked).
 
+    `annotate` controls the explanatory chrome. True keeps the title and the
+    caption block. False draws neither, leaving the axes, their micrometre units
+    and the legend — the presentation-plot register, where the title's
+    information lives in the filename instead. The legend is never dropped: it
+    is the only thing on the figure that says what each colour is.
+
+    Pass `ax` to draw into panels the caller already owns, which is how a
+    composed sheet reuses this without its own figure — see
+    :func:`mea_modules.diagnostics.traces.plot_traces_with_layout`, which pairs
+    this panel with the traces of the very channels it highlights. With `ax`
+    given no caption is added and no file is written (the caller's figure owns
+    its own margin), and the return is None rather than a path.
+
     Reads probe geometry only — no traces.
     """
     import numpy as np
+
+    if ax is None and out_path is None:
+        raise ValueError("pass out_path to write a figure, or ax to draw into one")
 
     channel_ids, xs, ys = _channel_xy(recording)
     if not channel_ids:
@@ -589,47 +710,80 @@ def plot_channel_layout(
     if xs is None:
         raise ValueError("recording has no usable channel locations; attach a probe first")
 
-    highlight = set(map(str, highlight_channel_ids or ()))
-    highlighted = np.asarray([str(channel_id) in highlight for channel_id in channel_ids], dtype=bool)
-    n_highlighted = int(highlighted.sum())
+    # `highlight_channel_ids` is `groups` with one entry — normalised here so
+    # the rest of the function draws one shape regardless of which the caller
+    # used, rather than carrying two drawing paths that could drift apart.
+    if groups is None:
+        groups = (
+            [(highlight_channel_ids, highlight_label or "highlighted channels", "#c0392b")]
+            if highlight_channel_ids is not None
+            else []
+        )
 
-    fig = _new_figure(figsize, dpi)
-    ax = fig.subplots()
-    ax.scatter(xs[~highlighted], ys[~highlighted], s=4, c="#888888", alpha=0.75, linewidths=0)
-    if highlighted.any():
-        ax.scatter(xs[highlighted], ys[highlighted], s=10, c="#c0392b", alpha=0.9, linewidths=0)
-    ax.set_title(title or "Channel layout")
+    resolved_groups = []
+    covered = set()
+    for group_ids, label, color in groups:
+        members = {str(cid) for cid in (group_ids or ())}
+        covered |= members
+        resolved_groups.append((members, label, color))
+
+    base_mask = np.asarray([str(channel_id) not in covered for channel_id in channel_ids], dtype=bool)
+    n_covered = len(channel_ids) - int(base_mask.sum())
+
+    fig = None
+    if ax is None:
+        fig = _new_figure(figsize, dpi)
+        ax = fig.subplots()
+    ax.scatter(xs[base_mask], ys[base_mask], s=4, c="#888888", alpha=0.75, linewidths=0)
+
+    grey_label = base_label or "routed electrodes"
+    handles = [_legend_dot("#888888", f"{grey_label} (n={int(base_mask.sum())})")]
+    for members, label, color in resolved_groups:
+        mask = np.asarray([str(channel_id) in members for channel_id in channel_ids], dtype=bool)
+        if mask.any():
+            ax.scatter(xs[mask], ys[mask], s=10, c=color, alpha=0.9, linewidths=0)
+        # Keyed even at n=0 (see the `groups` docstring above): a group that
+        # matched nothing in THIS recording still names the rule it tested.
+        handles.append(_legend_dot(color, f"{label} (n={int(mask.sum())})", size=7.0))
+
+    # The fallback title stands in for a caller that gave none, so it belongs
+    # inside the annotate guard rather than beside it: `annotate=False` means no
+    # title at all, not "the default one instead".
+    if annotate:
+        ax.set_title(title or "Channel layout")
     ax.set_xlabel("x (µm)")
     ax.set_ylabel("y (µm)")
     # Electrode spacing is isotropic; a stretched aspect makes clumps unreadable.
     ax.set_aspect("equal", adjustable="box")
 
     # The legend is not optional: it is the only thing on the figure that says
-    # what grey and red are. Counts ride in the labels so the reader never has
-    # to open a JSON to learn how big each set is.
-    grey_label = base_label or "routed electrodes"
-    handles = [
-        _legend_dot("#888888", f"{grey_label} (n={len(channel_ids) - n_highlighted})"),
-    ]
-    if highlighted.any():
-        red_label = highlight_label or "highlighted channels"
-        handles.append(_legend_dot("#c0392b", f"{red_label} (n={n_highlighted})", size=7.0))
-    ax.legend(
+    # what each colour is. Counts ride in the labels so the reader never has to
+    # open a JSON to learn how big each set is. Corner-scored rather than
+    # "best": on a dense array "best" routinely parks the box mid-scatter.
+    legend_corner(
+        ax,
         handles=handles,
-        loc="best",
         fontsize=_LEGEND_FONTSIZE,
         framealpha=_LEGEND_FRAMEALPHA,
         borderpad=0.5,
         labelspacing=0.7,
     )
 
-    _add_caption(fig, caption)
+    if fig is None:
+        logger.debug(
+            "drew channel layout into a caller's axes (%d channels, %d highlighted)",
+            len(channel_ids),
+            n_covered,
+        )
+        return None
+
+    _add_caption(fig, caption if annotate else "")
 
     out_path = _save_and_release(fig, out_path)
     logger.info(
         "wrote channel layout: %s (%d channels, %d highlighted)",
         out_path,
         len(channel_ids),
-        n_highlighted,
+        n_covered,
     )
     return out_path

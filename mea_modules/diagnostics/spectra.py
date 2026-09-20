@@ -1,0 +1,320 @@
+"""Welch power spectra over the shared electrode set, and the raw-vs-filtered panel.
+
+The figure this module draws is a pair of panels over the SAME channels on the
+SAME axes, one before preprocessing and one after, so the difference the eye
+reads is the filter's transfer function: the high-pass shoulder, drift power
+gone below it, and any 50/60 Hz line that survived. Identical panels mean the
+filter did nothing; a line spike in the filtered panel means interference the
+chain does not remove.
+
+Split in two, because the spectra are numbers before they are a picture:
+
+* :func:`welch_spectra` — one recording and a channel list in, a per-channel
+  periodogram out. Bounded by a time window, and testable against a synthetic
+  tone without rendering anything.
+* :func:`plot_spectra_panels` — one panel per named source, sharing axes.
+
+The default Welch segment length resolves to roughly 2.4 Hz at 10 kHz and
+4.9 Hz at 20 kHz — enough to separate line noise from the spike band and to see
+a high-pass corner, without paying for a long read.
+
+Figures are built straight from :class:`matplotlib.figure.Figure` on an Agg
+canvas — no pyplot — so they are safe on a headless node and leave no global
+figure state behind.
+"""
+
+import logging
+
+import numpy as np
+
+from .channel_layout import _legend_line, _new_figure, _wrap_label
+from .figure_style import legend_corner, tighten
+from .figure_text import BACKBONE_KEY, REPRESENTATIVE_KEY, acronym_note
+from .metric_maps import _save_tight
+from .traces import _effective_uv, _read_traces, _resolve_frame_window
+
+logger = logging.getLogger(__name__)
+
+# ~2.4 Hz resolution at 10 kHz, ~4.9 Hz at 20 kHz.
+DEFAULT_NPERSEG = 4096
+
+# A perfectly-zero bin (an all-flat channel) has no place on a log axis, and one
+# of them takes the whole shared axis with it. Floored far below any physical
+# density rather than dropped, so every channel still draws a full curve.
+DEFAULT_POWER_FLOOR = 1e-12
+
+# Matches the read window the trace figures default to: None would mean the
+# whole recording, which on an AxonTracking segment is gigabytes.
+_DEFAULT_DURATION_S = 60.0
+
+_PSD_PANEL_WIDTH = 6.0
+_PSD_FIGURE_PAD = 1.0
+_PSD_FIGURE_HEIGHT = 4.8
+_PSD_DPI = 180
+
+# Panel identity is drawn inside the axes rather than in a title band above it;
+# the reasoning is with the call that draws it, in `plot_spectra_panels`.
+_PANEL_LABEL_FONTSIZE = 7.5
+
+# Thin enough that ~30 overlapping curves (one per electrode cluster in the
+# shared set — see `plot_spectra_panels`) still read as separate lines rather
+# than a filled band. A handful of curves reads fine at this width too, so
+# there is no count-dependent branch.
+_PSD_LINE_WIDTH = 0.35
+
+# The legend now carries a single key naming the whole channel family, not one
+# key per channel (see `plot_spectra_panels`), so the box is only as wide as
+# that one short line. The title has to fold to about the same width or it
+# widens the whole box out over the data — the same failure a wider body used
+# to guard against, just at a narrower body now.
+_LEGEND_TITLE_WIDTH = 26
+_LEGEND_TITLE_FONTSIZE = 6
+
+# The unit :func:`welch_spectra` RECORDS. ASCII, because this string is data: it
+# travels in the result dict and through log lines, neither of which renders
+# markup, and a consumer would have to strip it back out.
+_UV_PSD_UNIT = "uV^2/Hz"
+_COUNTS_PSD_UNIT = "adc^2/Hz"
+
+# The same two units as they are DRAWN. The note that stood here held that ASCII
+# was deliberate on the axis as well, on the grounds that a caret exponent reads
+# fine beside the rest of a label. On the rendered figure it does not: psd.png
+# printed a literal "uV^2/Hz", caret and all, where a reader expects a
+# superscript (Adam, 2026-09-19). The axis therefore carries mathtext and the
+# data field above keeps the ASCII, which is the split the old note was missing.
+_PSD_AXIS_UNITS = {
+    _UV_PSD_UNIT: r"$\mu\mathrm{V}^{2}/\mathrm{Hz}$",
+    _COUNTS_PSD_UNIT: r"$\mathrm{ADC\ counts}^{2}/\mathrm{Hz}$",
+}
+
+
+def welch_spectra(
+    recording,
+    channel_ids,
+    start_time_s=0.0,
+    duration_s=_DEFAULT_DURATION_S,
+    nperseg=DEFAULT_NPERSEG,
+    power_floor=DEFAULT_POWER_FLOOR,
+    return_in_uV=True,
+):
+    """Per-channel Welch power spectral density over a bounded window.
+
+    Parameters
+    ----------
+    recording
+        Any recording exposing the SpikeInterface read interface.
+    channel_ids : sequence
+        The channels to estimate, in the order they should be drawn. For the
+        cross-segment comparison this figure is for, that means one channel
+        per electrode cluster, drawn from the SHARED electrode set — the
+        electrodes every segment being compared kept routed — rather than an
+        arbitrary top-N by activity: comparing a raw panel to a filtered one
+        is only meaningful over electrodes both sides actually have. Build
+        that set with :func:`.channel_layout.shared_channel_ids` (the shared
+        electrodes) and :func:`.channel_layout.cluster_center_channels` (one
+        representative per cluster within them) — or, equivalently,
+        :func:`.traces.select_representative_channels` with `restrict_to` set
+        to the shared set and `n_channels=0` to keep every cluster. The count
+        is DYNAMIC, whatever the routing produced (about thirty on the
+        current MaxWell configuration); this function draws however many
+        channels it is given rather than assuming a number. Channel
+        SELECTION is the caller's job — this function only estimates spectra
+        for the ids it is handed.
+    start_time_s, duration_s : float
+        The window to read, as an offset from the first sample. Pass the same
+        window the trace figures use.
+    nperseg : int
+        Welch segment length, clamped to the window when the window is shorter.
+    power_floor : float
+        Densities below this are raised to it (see the module note).
+    return_in_uV : bool
+        Microvolts when the recording can scale; a recording carrying no
+        gain/offset degrades to device counts with a warning, and ``unit``
+        records which was used.
+
+    Returns
+    -------
+    dict
+        ``channel_ids``, ``freqs`` (n_freqs,), ``power`` (n_freqs, n_channels),
+        ``unit``, ``fs_hz``, ``n_samples`` and the ``nperseg`` actually used.
+        Arrays stay numpy — this result feeds a figure, not a JSON file.
+    """
+    from scipy.signal import welch
+
+    channel_ids = list(channel_ids)
+    start_frame, end_frame, fs = _resolve_frame_window(recording, start_time_s, duration_s)
+    use_uV = _effective_uv(recording, return_in_uV)
+    traces = np.asarray(
+        _read_traces(recording, start_frame, end_frame, channel_ids, use_uV),
+        dtype=np.float64,
+    )
+
+    nperseg = min(int(nperseg), traces.shape[0])
+    freqs, power = welch(traces, fs=fs, nperseg=nperseg, axis=0)
+    power = np.maximum(power, power_floor)
+
+    return {
+        "channel_ids": channel_ids,
+        "freqs": freqs,
+        "power": power,
+        "unit": _UV_PSD_UNIT if use_uV else _COUNTS_PSD_UNIT,
+        "fs_hz": float(fs),
+        "n_samples": int(traces.shape[0]),
+        "nperseg": int(nperseg),
+    }
+
+
+def _psd_y_label(sources):
+    """``(y label, acronyms to expand)`` for the axis the panels share.
+
+    The panels are drawn with ``sharey``, so there is one y axis between them
+    and it can carry exactly one label. The unit is read off the results rather
+    than taken from the caller, so the label cannot claim microvolts for a
+    recording that degraded to device counts.
+
+    Parameters
+    ----------
+    sources : sequence of tuple
+        ``(source name, welch_spectra result)`` in panel order.
+    """
+    units = list(dict.fromkeys(str(result.get("unit") or "") for _, result in sources))
+    if len(units) > 1:
+        # `sharey` has already put these on one axis, so the mismatch is on the
+        # figure whether or not the label admits it. Naming both is the honest
+        # render; naming the first would label device counts as microvolts.
+        logger.warning("spectra panels report different units (%s)", ", ".join(units))
+
+    rendered = [_PSD_AXIS_UNITS.get(unit, unit) for unit in units if unit]
+    # Only the acronyms this figure actually prints, per the rule in
+    # :mod:`.figure_text`: ADC appears only when a panel degraded to counts.
+    acronyms = ["PSD"] + (["ADC"] if _COUNTS_PSD_UNIT in units else [])
+    if not rendered:
+        return "PSD", acronyms
+    return f"PSD ({' / '.join(rendered)})", acronyms
+
+
+def plot_spectra_panels(
+    spectra, out_path, title=None, figsize=None, dpi=_PSD_DPI, annotate=True
+):
+    """Draw one PSD panel per named source to `out_path`; return the Path.
+
+    Parameters
+    ----------
+    spectra : mapping
+        Source name -> :func:`welch_spectra` result, in panel order (a plain
+        dict preserves it). Typically ``{"raw": ..., "preprocessed": ...}``;
+        one entry is a valid figure, which is what a recording with no
+        preprocessing chain to compare against gets.
+    out_path : path-like
+        Where to write the PNG.
+    title : str or None
+        Figure suptitle.
+    figsize : tuple or None
+        Defaults to one panel's width per source plus a margin, so a two-panel
+        figure is twice as wide rather than half as legible.
+    dpi : float
+        Figure DPI.
+    annotate : bool
+        The explanatory chrome. True draws the suptitle. False draws neither it
+        nor any caption, leaving the axes, the units, the legend — including the
+        PSD expansion, which lives in the legend title precisely so it survives
+        here — and each panel's own identity label.
+
+    Raises
+    ------
+    ValueError
+        When `spectra` is empty — there is no such thing as a zero-panel figure.
+    """
+    sources = list(spectra.items())
+    if not sources:
+        raise ValueError("no spectra to plot")
+
+    if figsize is None:
+        figsize = (_PSD_PANEL_WIDTH * len(sources) + _PSD_FIGURE_PAD, _PSD_FIGURE_HEIGHT)
+    fig = _new_figure(figsize, dpi)
+    # Shared axes are the point: the panels are only comparable if the eye can
+    # read the difference between them as the filter rather than as a rescale.
+    axes = np.atleast_1d(fig.subplots(1, len(sources), sharex=True, sharey=True))
+
+    # Colour carries per-channel IDENTITY, not a measured value, and it is
+    # built once from the first source rather than per panel: every panel in
+    # this figure draws the SAME channel_ids in the SAME order (see the module
+    # docstring), so index i gets the same colour in both, and a reader can
+    # follow one electrode's curve from the raw panel to the filtered one.
+    # `resampled` gives exactly one colour per channel — the same pattern
+    # `spike_sensitivity` uses for its own per-series family — and a
+    # perceptually even map keeps ~30 overlapping curves separable where a
+    # handful of arbitrary hues would start repeating or clashing.
+    from matplotlib import colormaps
+
+    n_channels = len(sources[0][1]["channel_ids"])
+    palette = colormaps["viridis"].resampled(max(n_channels, 2))
+
+    for ax, (source_name, result) in zip(axes, sources):
+        channel_ids = list(result["channel_ids"])
+        power = np.asarray(result["power"])
+        for index, cid in enumerate(channel_ids):
+            ax.semilogy(
+                result["freqs"], power[:, index], lw=_PSD_LINE_WIDTH, color=palette(index)
+            )
+        # Panel identity inside the axes rather than in a title band over them.
+        # The panels already share both axes, so a strip of chrome above each
+        # one buys a reader nothing the same four words in the corner do, and it
+        # costs a row of figure height per panel. Boxed and on top, because a
+        # raw spectrum's low-frequency shoulder runs underneath it.
+        ax.text(
+            0.02,
+            0.98,
+            f"{source_name} ({len(channel_ids)} {REPRESENTATIVE_KEY})",
+            transform=ax.transAxes,
+            ha="left",
+            va="top",
+            fontsize=_PANEL_LABEL_FONTSIZE,
+            bbox={"facecolor": "white", "alpha": 0.75, "edgecolor": "none", "pad": 1.5},
+            zorder=5,
+        )
+        ax.grid(True, which="both", alpha=0.25, lw=0.4)
+        # Its own x label per panel rather than a figure-wide one: these panels
+        # sit side by side, sharing an x RANGE (via `sharex`), and two
+        # "frequency (Hz)"s under them read fine — a single `fig.supxlabel`
+        # bought nothing here but an extra reserved band of white space (Adam,
+        # 2026-09-19). The y axis below stays shared: that one genuinely saves
+        # a repeated label, because the panels are stacked on the SAME y range.
+        ax.set_xlabel("frequency (Hz)")
+
+    # One label for the SHARED y axis. Both panels are drawn on the same y, so
+    # a per-panel label would be the same word printed twice — which is what
+    # psd.png did with "PSD (uV^2/Hz)" (Adam, 2026-09-19).
+    y_label, acronyms = _psd_y_label(sources)
+    fig.supylabel(y_label)
+
+    # PSD is expanded in the legend, not in a caption band: that is where Adam
+    # asked for it, and it means the definition survives `annotate=False`, which
+    # a caption would not. The wording comes from :mod:`.figure_text` so the
+    # figure, its README and the report generator cannot drift apart.
+    #
+    # The legend carries exactly ONE key for the whole coloured family rather
+    # than one per channel: at ~30 channels a "ch <id>" entry per curve would
+    # be an unreadable column of text, and the count is what a reader actually
+    # needs — which channel is which is carried by colour instead (the palette
+    # above), not by a legend key. No colour bar goes with it: the index a
+    # channel gets is its position in the shared electrode set, not a
+    # physical quantity, so a bar next to it would claim a scale that is not
+    # there.
+    family_handle = _legend_line(
+        palette(n_channels // 2), f"{BACKBONE_KEY} (n={n_channels})", lw=1.2
+    )
+    legend_corner(
+        axes[0],
+        handles=[family_handle],
+        title=_wrap_label(acronym_note(*acronyms), width=_LEGEND_TITLE_WIDTH),
+        title_fontsize=_LEGEND_TITLE_FONTSIZE,
+    )
+
+    if annotate and title:
+        fig.suptitle(title)
+    tighten(fig)
+
+    out_path = _save_tight(fig, out_path)
+    logger.info("wrote PSD: %s", out_path)
+    return out_path

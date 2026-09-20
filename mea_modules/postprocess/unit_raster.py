@@ -26,6 +26,7 @@ from ..diagnostics.channel_layout import (
     _new_figure,
     _save_and_release,
 )
+from ..diagnostics.figure_style import legend_corner
 from ..diagnostics.figure_text import (
     CONTIGUOUS_AXIS,
     NO_DATA_SHADING,
@@ -37,8 +38,17 @@ from ..diagnostics.figure_text import (
 from ..diagnostics.timebase import (
     _GAP_SHADE_ALPHA,
     _GAP_SHADE_COLOR,
-    _shade_gap_spans,
-    gap_spans,
+    JOIN_LABEL_INSTANT,
+    JOIN_LABEL_SPANNING,
+    GAP_LABEL_BETWEEN,
+    GAP_LABEL_WITHIN,
+    _SEGMENT_GAP_SHADE_ALPHA,
+    _SEGMENT_GAP_SHADE_COLOR,
+    draw_join_marks,
+    gap_spans_by_kind,
+    shade_gap_kinds,
+    join_marks,
+    joins_span_time,
     resolve_time_gaps,
     sample_times,
 )
@@ -48,11 +58,6 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_FIGSIZE = (16.0, 9.0)
 DEFAULT_DPI = 180
-
-# Legend/caption defaults, matched to the diagnostics figures so a reviewer
-# reading a whole review folder sees one house style.
-_LEGEND_FONTSIZE = 7
-_LEGEND_FRAMEALPHA = 0.85
 
 
 def unit_firing_rates(sorting, duration_s=None):
@@ -80,7 +85,7 @@ def plot_unit_raster(
     start_time_s=0.0,
     max_units=None,
     descending=True,
-    segment_boundaries=(),
+    stitch_frames=(),
     time_gaps=None,
     title=None,
     marker_size=0.5,
@@ -94,11 +99,15 @@ def plot_unit_raster(
     fastest N — the tail of a large sort is mostly single-digit spike counts and
     crowds the figure without adding information.
 
-    `segment_boundaries` (seconds on the recording's own timeline) draws the
-    segment joins, and `time_gaps` redraws the x axis on real elapsed time with
-    the missing stretches shaded — the same treatment the upstream rasters get,
-    and it matters more here: an inter-spike interval that straddles a join is
-    not a real interval.
+    `stitch_frames` draws the segment joins — in FRAMES on the concatenated
+    timeline, the one convention across every emitter (see
+    :func:`mea_modules.diagnostics.timebase.join_marks`) — and `time_gaps`
+    redraws the x axis on real elapsed time with the missing stretches shaded,
+    the same treatment the upstream rasters get. It matters more here: an
+    inter-spike interval that straddles a join is not a real interval. On the
+    real-elapsed axis a join is not an instant either, so it draws TWO rules —
+    the earlier segment's end and the later one's start — with the minutes of
+    re-routing between them.
 
     Note that `duration_s` is a window on the RECORDING timeline in both modes,
     never on the stretched one. On the reference scan a 3247 s recording covers
@@ -176,18 +185,14 @@ def plot_unit_raster(
         )
     n_events = int(sum(part.size for part in x_parts))
 
-    # Boundaries arrive on the recording timeline, so in real-time mode they go
-    # through the same mapping the spikes did — otherwise the joins would be
-    # drawn at the one place the data is guaranteed not to be.
-    boundary_times = [float(value) for value in (segment_boundaries or ())]
-    if real_time and boundary_times:
-        boundary_frames = [int(round(value * fs)) for value in boundary_times]
-        boundary_times = [
-            float(value)
-            for value in sample_times(boundary_frames, fs, gaps=gaps, segment_gaps=segment_gaps)
-        ]
-    for boundary in boundary_times:
-        ax.axvline(boundary, color="red", lw=0.5, ls=":", zorder=3)
+    # Joins are positions on the same axis as the spikes, so they go through the
+    # same mapping the spikes did — one shared implementation in `timebase`
+    # rather than a second copy of the arithmetic here. Otherwise the joins end
+    # up drawn at the one place the data is guaranteed not to be.
+    marks = join_marks(
+        stitch_frames, fs, gaps=gaps, segment_gaps=segment_gaps, real_time=real_time
+    )
+    drawn_joins = draw_join_marks(ax, marks)
 
     # Span the window that was analysed rather than the extent of the spikes: a
     # sort that goes quiet halfway has to show the silence.
@@ -199,15 +204,21 @@ def plot_unit_raster(
     if float(edges[1]) > float(edges[0]):
         ax.set_xlim(float(edges[0]), float(edges[1]))
 
-    shaded = 0
+    shaded = {"within_segment": 0, "between_segment": 0}
     if real_time:
         # Shaded after the limits are set, so the bands cover what is on screen
-        # and no more. _shade_gap_spans merges and caps them — a full well is
-        # ~205 k breaks, and one patch each would take minutes to draw.
-        spans = gap_spans(window_end_frame, fs, gaps=gaps, segment_gaps=segment_gaps)
+        # and no more. The shading merges and caps the spans — a full well is
+        # ~205 k breaks, and one patch each would take minutes to draw. Split by
+        # kind so the acquisition gaps stay visible among them.
+        spans = gap_spans_by_kind(window_end_frame, fs, gaps=gaps, segment_gaps=segment_gaps)
         x_lower, x_upper = ax.get_xlim()
-        shaded = _shade_gap_spans(ax, spans, x_min=x_lower, x_max=x_upper)
-        logger.info("unit raster: shaded %d gap span(s) of %d in window", shaded, len(spans))
+        shaded = shade_gap_kinds(ax, spans, x_min=x_lower, x_max=x_upper)
+        logger.info(
+            "unit raster: shaded %d within-segment break(s) of %d and %d "
+            "between-segment gap(s) of %d in window",
+            shaded["within_segment"], len(spans.get("within_segment", ())),
+            shaded["between_segment"], len(spans.get("between_segment", ())),
+        )
 
     fastest_first = bool(descending)
     ax.set_xlabel(_REAL_TIME_XLABEL if real_time else _CONTIGUOUS_XLABEL)
@@ -228,17 +239,29 @@ def plot_unit_raster(
             size=4.0,
         )
     ]
-    if boundary_times:
-        handles.append(_legend_line("red", "segment join", lw=0.9, linestyle=":"))
-    if real_time and shaded:
-        handles.append(_legend_patch(_GAP_SHADE_COLOR, "no data recorded", alpha=_GAP_SHADE_ALPHA))
-    ax.legend(
-        handles=handles,
-        loc="best",
-        fontsize=_LEGEND_FONTSIZE,
-        framealpha=_LEGEND_FRAMEALPHA,
-        labelspacing=0.7,
-    )
+    if drawn_joins:
+        handles.append(
+            _legend_line(
+                "red",
+                JOIN_LABEL_SPANNING if joins_span_time(marks) else JOIN_LABEL_INSTANT,
+                lw=0.9,
+                linestyle=":",
+            )
+        )
+    if real_time and shaded["within_segment"]:
+        handles.append(
+            _legend_patch(_GAP_SHADE_COLOR, GAP_LABEL_WITHIN, alpha=_GAP_SHADE_ALPHA)
+        )
+    if real_time and shaded["between_segment"]:
+        handles.append(
+            _legend_patch(
+                _SEGMENT_GAP_SHADE_COLOR, GAP_LABEL_BETWEEN, alpha=_SEGMENT_GAP_SHADE_ALPHA
+            )
+        )
+    # loc="best" on a dense raster routinely picked a central spot; this scores
+    # the four corners against what is actually drawn and takes the emptiest —
+    # called after the scatter and the join marks above are on the axis.
+    legend_corner(ax, handles=handles, labelspacing=0.7)
 
     n_hidden = int(len(rates) - len(order))
     caption_parts = []
@@ -247,7 +270,7 @@ def plot_unit_raster(
             f"Drawn: the {len(order)} fastest-firing of {len(rates)} sorted units; "
             f"the other {n_hidden} unit(s) fire more slowly and are not drawn."
         )
-    if boundary_times:
+    if drawn_joins:
         caption_parts.append(SEAM)
         caption_parts.append(
             "The time between the last spike before a segment join and the first "
@@ -255,7 +278,7 @@ def plot_unit_raster(
         )
         caption_parts.append(acronym_note("ISI"))
     caption_parts.append(REAL_ELAPSED_AXIS if real_time else CONTIGUOUS_AXIS)
-    if real_time and shaded:
+    if real_time and any(shaded.values()):
         caption_parts.append(NO_DATA_SHADING)
     caption_parts.append(
         "Rows are ordered by each unit's firing rate in events per second (Hz), "
@@ -365,13 +388,7 @@ def plot_firing_rate_histogram(
                 linestyle="--",
             )
         )
-        ax.legend(
-            handles=handles,
-            loc="best",
-            fontsize=_LEGEND_FONTSIZE,
-            framealpha=_LEGEND_FRAMEALPHA,
-            labelspacing=0.7,
-        )
+        legend_corner(ax, handles=handles, labelspacing=0.7)
 
     caption_parts = [
         "Firing rate is a unit's spike count divided by the recording duration "

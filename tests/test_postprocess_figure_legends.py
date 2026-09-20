@@ -29,6 +29,12 @@ import numpy as np
 import pytest
 
 from mea_modules.diagnostics import figure_text
+from mea_modules.diagnostics.timebase import (
+    GAP_LABEL_BETWEEN,
+    GAP_LABEL_WITHIN,
+    JOIN_LABEL_INSTANT,
+    JOIN_LABEL_SPANNING,
+)
 from mea_modules.postprocess import (
     footprints,
     segment_activity,
@@ -316,7 +322,7 @@ def test_unit_raster_legends_every_mark(tmp_path, monkeypatch):
         sorting,
         tmp_path / "unit_raster.png",
         duration_s=0.1,
-        segment_boundaries=(0.05,),
+        stitch_frames=(500,),
         max_units=2,
         caption_extra="The same spikes on real elapsed time: unit_raster_realtime.png",
     )
@@ -325,9 +331,9 @@ def test_unit_raster_legends_every_mark(tmp_path, monkeypatch):
     spikes = _one(captured["legend"], "one spike from one sorted unit")
     assert _has(spikes, "2 unit rows")
     assert _has(spikes, "5 spikes drawn")
-    assert _one(captured["legend"], "segment join")
+    assert _one(captured["legend"], JOIN_LABEL_INSTANT)
 
-    assert "time (s)" in captured["axes"]
+    assert "file time (s)" in captured["axes"]
     y_label = _one(captured["axes"], "one row per sorted unit")
     assert _has(y_label, "events / s")
     assert _has(y_label, "fastest first")
@@ -355,10 +361,36 @@ def test_unit_raster_realtime_legends_the_shading(tmp_path, monkeypatch):
     )
     _assert_png(out)
 
-    assert _one(captured["legend"], "no data recorded")
-    assert "time (s, real elapsed)" in captured["axes"]
+    # The fixture's gap is an ACQUISITION gap between two segments, so it must
+    # take the between-segment key and NOT the frame-break one. That
+    # discrimination is the point of shading the two kinds separately.
+    assert _one(captured["legend"], GAP_LABEL_BETWEEN)
+    assert not [label for label in captured["legend"] if GAP_LABEL_WITHIN in label]
+    assert "elapsed time (s)" in captured["axes"]
     assert _has(captured["caption"], figure_text.REAL_ELAPSED_AXIS)
     assert _has(captured["caption"], figure_text.NO_DATA_SHADING)
+    _assert_plain_language(captured)
+
+
+def test_unit_raster_real_elapsed_join_is_an_end_and_a_start(tmp_path, monkeypatch):
+    """The other half of the one-mechanic fix.
+
+    This emitter used to place joins with its own seconds arithmetic, so on the
+    real-elapsed axis a join arrived as one rule pinned to an arbitrary edge of
+    the re-routing gap. Through the shared helper it is an end AND a start, and
+    the key has to say so or the two rules read as two separate joins.
+    """
+    sorting = FakeSorting({"a": np.arange(0, 20_000, 500), "b": [100, 12_000]})
+    captured = _spy(monkeypatch, unit_raster)
+
+    unit_raster.plot_unit_raster(
+        sorting,
+        tmp_path / "unit_raster_realtime.png",
+        stitch_frames=(5_000,),
+        time_gaps={"segments": [{"start_sample": 5_000, "gap_before_s": 30.0}]},
+    )
+
+    assert _one(captured["legend"], JOIN_LABEL_SPANNING)
     _assert_plain_language(captured)
 
 
@@ -614,9 +646,9 @@ def test_unit_trace_legends_trace_marks_and_joins(tmp_path, monkeypatch):
     mark = _one(captured["legend"], "a spike the sorter assigned to unit u0")
     assert _has(mark, "trace's own value")
     assert _has(mark, "3 in this window")
-    assert _one(captured["legend"], "segment join")
+    assert _one(captured["legend"], JOIN_LABEL_INSTANT)
 
-    assert "time (s)" in captured["axes"]
+    assert "file time (s)" in captured["axes"]
     assert "amplitude (µV)" in captured["axes"]
 
     caption = captured["caption"]

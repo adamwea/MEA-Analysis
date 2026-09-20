@@ -329,10 +329,13 @@ def plot_raster_threshold(
     `max_channels` channels, then scatters them as time vs electrode id.
 
     `events` supplies that detection's result -- the ``(times_s, labels)`` pair
-    -- instead of running it. Detection is the expensive half of this figure
-    (measured 54% of a whole-well review run), so a capsule that has already
-    detected passes its result here and `recording` need only answer for
-    geometry, sampling rate and the analysed span: a
+    -- instead of running it. Detection is the expensive half of this figure,
+    and how expensive depends entirely on the channel count: ~2 minutes over a
+    segment's ~1000 routed channels, against ~3 seconds over a concatenated
+    well's 266-channel shared electrode set. It is also run TWICE per segment
+    today, because the real-elapsed twin re-detects the identical events. So a
+    caller that has already detected passes the result here, and `recording`
+    need only answer for geometry, sampling rate and the analysed span: a
     :class:`mea_modules.diagnostics.cache.CachedProbe` is enough. The drawing
     below is the same either way, which is the point -- one definition of this
     figure, two sources for its numbers.

@@ -5,11 +5,26 @@ inside the capsule that already has the recording open, and lands in that
 capsule's own canonical output. A plot tool then draws from that cache and never
 touches the recording again.**
 
-Why it matters in numbers. Drawing the per-segment and per-well review figures
-by re-deriving them cost 2 h 06 m on one well, of which 94% was threshold
-detection and artifact scanning -- work the capsule upstream had every input
-for, thrown away as soon as a PNG was written. Changing a legend therefore cost
-two hours. Reading this cache instead costs seconds.
+Why it matters in numbers, measured on one 16-segment well and attributed to
+the right tool -- the two diagnostics do NOT cost the same, and conflating them
+is how this docstring first got it wrong:
+
+* PER-SEGMENT review (``segment_diagnostics``, ~1000 routed channels a segment)
+  is where the hours are: 2 h 06 m across the well, of which threshold detection
+  and the artifact scan are ~94%. One raster alone takes ~2 minutes, and it is
+  drawn twice per segment -- once on the file timeline, once on real elapsed
+  time -- re-detecting the identical events the second time.
+* PER-WELL review (``concat_diagnostics``) runs on the SHARED electrode set,
+  266 channels rather than ~1000, and finishes in 11 seconds for all eight
+  diagnostics including both rasters.
+
+So the cost argument for caching is a `segment_diagnostics` argument. For the
+concatenation pair the saving is seconds, and the case is architectural: one
+canonical definition of every metric, computed where the recording is already
+open, with no path that silently re-derives it.
+
+Either way a figure change costs a full recompute today, because nothing that
+was computed is kept.
 
 What is cached, and why each thing rather than the obvious alternative:
 

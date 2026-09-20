@@ -36,6 +36,8 @@ Pure library: numpy only, no SpikeInterface, no disk, no argparse. Capsule
 
 import numpy as np
 
+from ..quality.robust import mad_sigma
+
 # Upstream SLAy's suggested censor period was censor_ms = 5/30000 s -- five
 # SAMPLES at its native 30 kHz. The sample count, not the millisecond value,
 # is the invariant to carry across platforms (20 kHz KCNT1 reference, 10 kHz
@@ -276,9 +278,8 @@ def noise_gate_template(template, k=8.0, baseline_samples=8):
     n_samples = t.shape[1]
     b = min(int(baseline_samples), max(n_samples // 4, 1))
     edges = np.concatenate([t[:, :b], t[:, -b:]], axis=1)
-    med = np.nanmedian(edges, axis=1, keepdims=True)
+    sigma = mad_sigma(edges, axis=1, nan_safe=True)
     with np.errstate(invalid="ignore"):
-        sigma = 1.4826 * np.nanmedian(np.abs(edges - med), axis=1)
         ptp = np.nanmax(t, axis=1) - np.nanmin(t, axis=1)
     covered = np.isfinite(ptp)
     kept = covered & (ptp > float(k) * np.where(sigma > 0, sigma, np.inf))

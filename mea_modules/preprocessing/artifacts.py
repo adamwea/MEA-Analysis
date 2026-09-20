@@ -12,20 +12,19 @@ Detection has to read traces — that is its job, it returns frame indices rathe
 than a recording. :func:`blank_artifacts` is the lazy half: it wraps the
 recording and substitutes samples only when something downstream pulls them.
 
-The noise estimator here is ported from the older build's threshold-crossing
-raster code, which used the same sampled-window MAD approach against real
-Maxwell scans. Note that it assumes a zero-centred input (i.e. run this *after*
-the high-pass in :mod:`mea_modules.preprocessing.filters`), because it takes the
-median of ``|x|`` rather than a median absolute deviation about the mean.
+The noise estimator is :func:`mea_modules.quality.robust.mad_sigma`, shared with
+the QC metrics and the raster so that one threshold cannot drift from another.
+It no longer assumes a zero-centred input: this module used to take the median
+of ``|x|``, which is a noise estimate only after the high-pass has removed the
+offset, and nothing checked that it had.
 """
 
 import logging
 
+from ..quality.robust import mad_sigma
+
 logger = logging.getLogger(__name__)
 
-# Consistency factor turning a median-absolute value into a Gaussian sigma:
-# scipy.stats.norm.ppf(0.75). Carried over verbatim from the older build.
-_MAD_TO_SIGMA = 0.6744897501960817
 
 # Sampling the noise beats scanning the whole recording: a handful of windows
 # spread across the file tracks drift without reading gigabytes.
@@ -107,7 +106,7 @@ def estimate_noise_levels(
         )
         if traces.size == 0:
             continue
-        estimates.append(np.median(np.abs(traces), axis=0) / _MAD_TO_SIGMA)
+        estimates.append(mad_sigma(traces))
 
     if not estimates:
         return np.zeros(len(ids), dtype=float)

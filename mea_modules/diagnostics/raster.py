@@ -14,6 +14,8 @@ together than the refractory period are collapsed to the first.
 
 import logging
 
+from ..quality.robust import mad_sigma
+
 from .channel_layout import (
     _add_caption,
     _fold_caption,
@@ -72,7 +74,6 @@ _DEFAULT_DETECTION_CHUNK_FRAMES = 50_000
 
 # MAD -> Gaussian sigma. Quartile-based so a few large spikes cannot inflate the
 # noise estimate the way a plain std would.
-_MAD_TO_SIGMA = 0.6744897501960817
 
 # One Maxwell recording config routes at most ~1k electrodes; anything past that
 # is a full-array view no one wants to raster in a single figure.
@@ -190,7 +191,7 @@ def estimate_channel_thresholds(
         traces = _read_traces(recording, int(start), min(window_end, int(start) + window), channel_ids, return_in_uV)
         if traces.size == 0:
             continue
-        estimates.append(np.median(np.abs(traces.astype(float, copy=False)), axis=0) / _MAD_TO_SIGMA)
+        estimates.append(mad_sigma(traces))
 
     if not estimates:
         return np.full(len(channel_ids), max(1e-6, float(threshold_factor)), dtype=float)

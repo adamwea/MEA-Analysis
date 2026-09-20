@@ -9,6 +9,7 @@ numbers; `dead_well_flags` reduces those numbers to one verdict per well. All
 four return JSON-serializable dicts and read only a bounded sample of traces.
 """
 
+from .robust import MAD_TO_SIGMA, mad_sigma
 from .metrics import (
     DEFAULT_DURATION_S,
     DEFAULT_HIGHPASS_HZ,
@@ -23,6 +24,8 @@ from .metrics import (
 __all__ = [
     # metrics
     "mad_noise",
+    "mad_sigma",
+    "MAD_TO_SIGMA",
     "activity_rate",
     "detect_bad_channels",
     "dead_well_flags",

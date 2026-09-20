@@ -68,6 +68,8 @@ import logging
 
 import numpy as np
 
+from ..quality.robust import mad_sigma
+
 logger = logging.getLogger(__name__)
 
 __all__ = [
@@ -92,8 +94,7 @@ _BASELINE_GUARD = 4
 def _robust_scale(values, axis=-1):
     """MAD rescaled to a Gaussian sigma."""
 
-    median = np.median(values, axis=axis, keepdims=True)
-    return 1.4826 * np.median(np.abs(values - median), axis=axis)
+    return mad_sigma(values, axis=axis)
 
 
 def _expected_max_abs_z(n_samples):
@@ -169,9 +170,7 @@ def channel_noise_scale(
 
     normalised = scales * np.sqrt(cov_probe)
     stacked = pooled.reshape(-1, templates.shape[2])
-    with np.errstate(invalid="ignore"):
-        centre = np.nanmedian(stacked, axis=0)
-        sigma = 1.4826 * np.nanmedian(np.abs(stacked - centre), axis=0)
+    sigma = mad_sigma(stacked, axis=0, nan_safe=True)
     fallback = float(np.nanmedian(sigma[np.isfinite(sigma) & (sigma > 0)])) \
         if np.isfinite(sigma).any() else 1.0
     sigma = np.where(np.isfinite(sigma) & (sigma > 0), sigma, fallback)

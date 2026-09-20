@@ -23,6 +23,8 @@ import logging
 
 import numpy as np
 
+from .robust import MAD_TO_SIGMA, mad_sigma
+
 logger = logging.getLogger(__name__)
 
 # Sampling budget. Ten half-second windows spread over the recording: enough to
@@ -41,7 +43,9 @@ DEFAULT_SEED = 0
 
 # MAD -> Gaussian sigma. Same constant SpikeInterface's get_noise_levels uses,
 # so "5 sd" means the same thing here as it does everywhere else in the stack.
-_MAD_TO_SIGMA = 1.0 / 0.6744897501960817
+# Kept as an alias so existing readers of this module still find the name;
+# the value and the calculation both live in quality.robust now.
+_MAD_TO_SIGMA = MAD_TO_SIGMA
 
 
 # --------------------------------------------------------------------------
@@ -163,9 +167,7 @@ def _iter_traces(recording, windows, return_in_uV):
 
 def _chunk_mad(traces):
     """Per-channel MAD of one window, rescaled to a Gaussian-sigma equivalent."""
-    traces = np.asarray(traces, dtype=np.float32)
-    median = np.median(traces, axis=0, keepdims=True)
-    return np.median(np.abs(traces - median), axis=0) * _MAD_TO_SIGMA
+    return mad_sigma(traces)
 
 
 def _sampling_meta(recording, windows, unit, applied_hp, seed, placement):

@@ -358,17 +358,24 @@ def test_metric_maps_each_panel_keeps_its_own_x_label_and_shares_one_y_label(
 ):
     """RULE (2026-09-19): left/right panels genuinely share the y axis (one
     label), but round 2's single shared x label read oddly and cost more white
-    space than it saved — each panel now keeps its OWN x label instead."""
+    space than it saved — each panel now keeps its OWN x label instead.
+
+    AMENDED 2026-09-20: the one y label is on the LEFTMOST AXES, not on the
+    figure. A figure-level label is placed against the figure's left edge,
+    which is where the leftmost panel's outboard colour-bar label already is,
+    so the two printed on top of each other. Anchored to the axes, matplotlib
+    lays it out from the axes and its ticks and the collision cannot recur."""
     noise, activity = _metrics(recording)
     out = mm.plot_noise_activity_map(recording, noise, activity, tmp_path / "map.png")
 
     assert out.exists() and out.stat().st_size > 5_000
     # One x label PER PANEL (two panels), drawn on the axes themselves.
     assert capture.count(f"x ({mm._UM_LABEL})") == 2
-    # One y label for the whole figure, shared rather than repeated.
+    # One y label for the pair, shared rather than repeated.
     assert capture.count(f"y ({mm._UM_LABEL})") == 1
-    assert f"y ({mm._UM_LABEL})" in capture.figure_text
-    # The x labels are NOT a figure-level label: each lives on its own axis.
+    # NEITHER label is figure-level: both live on axes, which is what keeps
+    # the y label clear of the colour bar that sits outboard of it.
+    assert f"y ({mm._UM_LABEL})" not in capture.figure_text
     assert f"x ({mm._UM_LABEL})" not in capture.figure_text
 
 

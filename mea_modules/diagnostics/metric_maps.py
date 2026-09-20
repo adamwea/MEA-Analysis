@@ -312,8 +312,18 @@ def plot_metric_maps(
     # positions on shared y, so a per-panel copy is the same word repeated
     # across the figure with nothing to distinguish them. x is NOT shared this
     # way — each panel already carries its own x label (see
-    # `_draw_metric_panel`) — so only y gets the figure-level label.
-    fig.supylabel(f"y ({_UM_LABEL})")
+    # `_draw_metric_panel`) — so only y gets the one label.
+    #
+    # On the LEFTMOST AXES, not `fig.supylabel`. supylabel is positioned in
+    # FIGURE coordinates, hard against the left edge — which is exactly where
+    # the leftmost panel's colour bar puts its own outboard label, so the two
+    # were printed on top of each other ("MAD noise (µV)" over "y (µm)" in the
+    # two-panel composite). Anchored to the axes instead, matplotlib lays it
+    # out from the axes and its tick labels, which leaves it inboard of the
+    # colour bar's inset (`_COLORBAR_PAD_LEFT`) with no tuned offset to keep in
+    # step. Only the leftmost panel gets it: `sharey` hides the others' tick
+    # labels, so there is nothing for a second copy to label.
+    target_axes[0].set_ylabel(f"y ({_UM_LABEL})")
 
     if annotate and title:
         fig.suptitle(title)

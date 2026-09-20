@@ -55,6 +55,15 @@ CACHE_DIRNAME = "diagnostics"
 RECORD_NAME = "diagnostics_cache.json"
 ARRAYS_NAME = "diagnostics_cache.npz"
 
+# The unit strings that mean microvolts, as the emitters spell them. A window
+# cached in one of these is already scaled; anything else is device counts.
+_UV_UNITS = frozenset({"uV", "µV", "microvolts"})
+
+# The array keys a welch_spectra result carries. Named here, matching that
+# function's own return dict exactly, because the panel emitter reads these same
+# names -- a cache that renamed them would round-trip fine and then fail to draw.
+SPECTRA_ARRAYS = ("freqs", "power")
+
 # Bumped when a reader can no longer make sense of an older writer's output. A
 # tool that meets a newer version says so and stops rather than half-drawing.
 CACHE_VERSION = 1
@@ -232,11 +241,31 @@ class CachedTraces:
         return False
 
     def has_scaleable_traces(self):
-        return False
+        """True when the cached samples are already in microvolts.
+
+        The emitters label their axes from what ``_effective_uv`` makes of this,
+        so a window cached in µV that answered False here would draw real
+        microvolts under an "ADC counts" label -- right numbers, wrong unit, and
+        nothing on the figure to catch it. The unit travels with the window
+        (``unit``, round-tripped through the cache) precisely so this answer is
+        a fact rather than a default.
+        """
+        return self.unit in _UV_UNITS
 
     def get_traces(
         self, start_frame=None, end_frame=None, channel_ids=None, return_in_uV=None, **kwargs
     ):
+        # A cached window holds ONE unit. Converting is not possible here -- the
+        # gain never travelled with it -- so a request for the other one is
+        # refused rather than quietly served in the wrong unit.
+        if return_in_uV is not None and self.unit is not None:
+            if bool(return_in_uV) != self.has_scaleable_traces():
+                held = self.unit
+                asked = "uV" if return_in_uV else "device counts"
+                raise ValueError(
+                    f"this window was cached in {held!r} and cannot be served as "
+                    f"{asked}; re-cache it in the unit the figure draws"
+                )
         start = self._offset if start_frame is None else int(start_frame)
         end = self.get_num_frames() if end_frame is None else int(end_frame)
         lo = start - self._offset
@@ -347,10 +376,10 @@ def write_cache(
         spectra_sources[name] = {
             key: _jsonable(value)
             for key, value in block.items()
-            if not isinstance(value, np.ndarray) and key not in ("frequencies", "psd")
+            if not isinstance(value, np.ndarray) and key not in SPECTRA_ARRAYS
         }
-        _store("spectra", name, "frequencies", block["frequencies"])
-        _store("spectra", name, "psd", block["psd"])
+        for key in SPECTRA_ARRAYS:
+            _store("spectra", name, key, block[key])
 
     record = {
         "version": CACHE_VERSION,
@@ -448,10 +477,10 @@ class DiagnosticCache:
         )
 
     def spectra(self, name):
-        """One Welch result, reassembled in the shape the panel emitter takes."""
+        """One Welch result, in the exact shape `plot_spectra_panels` reads."""
         block = dict(self._record["spectra"][name])
-        block["frequencies"] = self._arrays[f"spectra/{name}/frequencies"]
-        block["psd"] = self._arrays[f"spectra/{name}/psd"]
+        for key in SPECTRA_ARRAYS:
+            block[key] = self._arrays[f"spectra/{name}/{key}"]
         return block
 
     def all_spectra(self):

@@ -44,6 +44,27 @@ def _window():
     return np.arange(TRACE_FRAMES * 2, dtype=np.float32).reshape(TRACE_FRAMES, 2)
 
 
+def _welch_result():
+    """A REAL welch_spectra result, never a hand-built stand-in.
+
+    Hand-building it is how this file previously agreed with a cache that used
+    the wrong key names: the cache stored `frequencies`/`psd`, `welch_spectra`
+    returns `freqs`/`power`, and `plot_spectra_panels` reads `freqs`/`power` --
+    so the round trip passed and the figure would have raised KeyError. Taking
+    the dict from the producer is what makes this test load-bearing.
+    """
+    from spikeinterface.core import NumpyRecording
+
+    from mea_modules.diagnostics.spectra import welch_spectra
+
+    rng = np.random.default_rng(0)
+    traces = rng.normal(0.0, 1.0, (4096, 2)).astype(np.float32)
+    recording = NumpyRecording([traces], sampling_frequency=FS_HZ)
+    return welch_spectra(
+        recording, list(recording.get_channel_ids()), duration_s=None, return_in_uV=False
+    )
+
+
 def _write(tmp_path, **kwargs):
     payload = dict(
         probe=_probe(),
@@ -58,14 +79,7 @@ def _write(tmp_path, **kwargs):
             }
         },
         events={"raster": {"times_s": [0.1, 0.5, 0.9], "labels": [0, 2, 2]}},
-        spectra={
-            "raw": {
-                "frequencies": np.linspace(1.0, 5000.0, 32),
-                "psd": np.ones((32, 2)),
-                "channel_ids": ["e1", "e2"],
-                "unit": "uV^2/Hz",
-            }
-        },
+        spectra={"raw": _welch_result()},
         meta={"well": "well005", "rec": "rec0001"},
     )
     payload.update(kwargs)
@@ -102,10 +116,31 @@ def test_a_cache_round_trips_everything_a_figure_needs(tmp_path):
 
     spectra = cache.all_spectra()
     assert list(spectra) == ["raw"]
-    assert spectra["raw"]["frequencies"].shape == (32,)
-    assert spectra["raw"]["psd"].shape == (32, 2)
+    live = _welch_result()
+    assert np.allclose(spectra["raw"]["freqs"], live["freqs"])
+    assert np.allclose(spectra["raw"]["power"], live["power"])
     # Non-array keys survive, so the panel emitter still knows its unit.
-    assert spectra["raw"]["unit"] == "uV^2/Hz"
+    assert spectra["raw"]["unit"] == live["unit"]
+    assert spectra["raw"]["nperseg"] == live["nperseg"]
+
+
+def test_cached_spectra_actually_draw(tmp_path):
+    """The round trip is worthless if the panel emitter cannot read the result.
+
+    `welch_spectra` returns `freqs`/`power` and `plot_spectra_panels` reads
+    those same names. A cache that renamed them would pass every round-trip
+    assertion above and then raise KeyError on the one call that matters, so
+    that call is made here.
+    """
+    from mea_modules.diagnostics import plot_spectra_panels
+
+    _write(tmp_path)
+    cache = read_cache(tmp_path)
+
+    out = plot_spectra_panels(cache.all_spectra(), tmp_path / "psd.png", annotate=False)
+
+    assert out.is_file()
+    assert out.stat().st_size > 0
 
 
 def test_the_cache_lands_inside_the_capsule_output_as_two_readable_files(tmp_path):
@@ -273,3 +308,53 @@ def test_a_cached_window_round_trips_through_the_cache(tmp_path):
         view.get_traces(start_frame=TRACE_OFFSET, end_frame=TRACE_OFFSET + 20),
         _window()[:20, :],
     )
+
+
+# --------------------------------------------------------------------------
+# the unit travels with the window, or the figure lies about it
+# --------------------------------------------------------------------------
+
+
+def test_a_window_cached_in_microvolts_says_so():
+    """The emitters label their axes from `has_scaleable_traces`.
+
+    A µV window that answered False here would draw real microvolts under a
+    "device counts (ADC)" label: right numbers, wrong unit, and nothing on the
+    figure to catch it.
+    """
+    from mea_modules.diagnostics.traces import _effective_uv
+
+    view = CachedTraces(
+        ["e1", "e2"], _window(), sampling_frequency=FS_HZ, unit="uV"
+    )
+
+    assert view.has_scaleable_traces() is True
+    assert _effective_uv(view, True) is True
+
+
+def test_a_window_cached_in_device_counts_says_that_instead():
+    from mea_modules.diagnostics.traces import _effective_uv
+
+    view = CachedTraces(
+        ["e1", "e2"], _window(), sampling_frequency=FS_HZ, unit="adc"
+    )
+
+    assert view.has_scaleable_traces() is False
+    assert _effective_uv(view, False) is False
+
+
+def test_a_cached_window_refuses_to_be_served_in_the_other_unit():
+    """It cannot convert -- the gain never travelled with the samples -- so it
+    refuses rather than returning the wrong unit under the right name."""
+    view = CachedTraces(["e1", "e2"], _window(), sampling_frequency=FS_HZ, unit="uV")
+
+    with pytest.raises(ValueError, match="cannot be served"):
+        view.get_traces(start_frame=0, end_frame=10, return_in_uV=False)
+
+
+def test_a_window_with_no_recorded_unit_serves_either_request():
+    """Older caches predate the unit field; they must still draw."""
+    view = CachedTraces(["e1", "e2"], _window(), sampling_frequency=FS_HZ)
+
+    assert view.get_traces(start_frame=0, end_frame=5, return_in_uV=True).shape == (5, 2)
+    assert view.get_traces(start_frame=0, end_frame=5, return_in_uV=False).shape == (5, 2)

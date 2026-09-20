@@ -46,6 +46,14 @@ from .activity_map import (
     template_projected_activity,
 )
 from .artifacts import artifact_census
+from .cache import (
+    CachedProbe,
+    CacheMissing,
+    DiagnosticCache,
+    cache_ready,
+    read_cache,
+    write_cache,
+)
 from .channel_flags import flag_channels, flagged_channel_groups, flagged_channel_note
 from .channel_layout import (
     cluster_center_channels,
@@ -117,6 +125,13 @@ __all__ = [
     "flagged_channel_note",
     "clipping_census",
     "artifact_census",
+    # the compute-once cache a capsule writes and a plot tool reads
+    "CachedProbe",
+    "CacheMissing",
+    "DiagnosticCache",
+    "cache_ready",
+    "read_cache",
+    "write_cache",
     # channel selection
     "select_representative_channels",
     "channel_activity_rms",

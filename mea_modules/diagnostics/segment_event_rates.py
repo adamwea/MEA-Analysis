@@ -333,6 +333,12 @@ def _per_channel_row(counts, recorded_s):
     that over the square root of the count. A single electrode has no spread to
     report, so both come back as zero rather than as a NaN that would propagate
     into the figure.
+
+    Both centres are reported. The mean is what the bar draws and what the SEM
+    belongs to; the median is the honest one for this distribution, which is
+    bounded at zero with a long right tail (a handful of electrodes produce most
+    of the crossings), so a mean well above the median means the segment activity
+    sits in a few electrodes rather than across the array.
     """
     import numpy as np
 
@@ -340,6 +346,7 @@ def _per_channel_row(counts, recorded_s):
         return {
             "per_channel_events_per_s": None,
             "mean_events_per_s_per_channel": None,
+            "median_events_per_s_per_channel": None,
             "sem_events_per_s_per_channel": None,
             "std_events_per_s_per_channel": None,
             "n_channels_measured": 0,
@@ -350,6 +357,7 @@ def _per_channel_row(counts, recorded_s):
     return {
         "per_channel_events_per_s": [float(value) for value in rates],
         "mean_events_per_s_per_channel": float(np.mean(rates)),
+        "median_events_per_s_per_channel": float(np.median(rates)),
         "sem_events_per_s_per_channel": std / float(np.sqrt(rates.size)),
         "std_events_per_s_per_channel": std,
         "n_channels_measured": int(rates.size),

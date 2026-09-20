@@ -26,6 +26,8 @@ along.
 
 import logging
 
+from mea_modules.quality import DEFAULT_SEED
+
 from .channel_layout import _add_caption, _legend_line, _new_figure, _save_and_release
 from .figure_style import legend_corner, tighten
 from .figure_text import FILE_TIME_AXIS, JOIN_INSTANT
@@ -57,11 +59,18 @@ _MOTION_DPI = 180
 _DISPLACEMENT_YLABEL = "estimated displacement (µm)"
 
 
-def estimate_motion_over_recording(recording, well=None):
+def estimate_motion_over_recording(recording, well=None, seed=DEFAULT_SEED):
     """Rigid drift estimate over `recording`. Returns a JSON-serializable dict.
 
     Keys: ``well``, ``method``, ``n_peaks``, ``max_abs_displacement_um``,
-    ``temporal_bins_s``, ``displacement_um``, ``note``.
+    ``temporal_bins_s``, ``displacement_um``, ``seed``, ``note``.
+
+    `seed` fixes the chunks the noise estimate is drawn from. SpikeInterface
+    defaults that picker to ``seed=None``, which draws from OS entropy and does
+    NOT follow the process-wide numpy seed -- so without this argument two runs
+    over the same recording give different noise levels, hence different peaks,
+    hence a different displacement trace. Detection and the estimator itself are
+    deterministic once the noise levels are fixed.
 
     Unit coherence, ported with the code because it is easy to get wrong: noise
     levels are taken in DEVICE COUNTS, because ``detect_peaks`` cuts the
@@ -76,7 +85,9 @@ def estimate_motion_over_recording(recording, well=None):
     from spikeinterface.sortingcomponents.peak_detection import detect_peaks
     from spikeinterface.sortingcomponents.peak_localization import localize_peaks
 
-    noise = get_noise_levels(recording, return_in_uV=False)
+    noise = get_noise_levels(
+        recording, return_in_uV=False, random_slices_kwargs={"seed": int(seed)}
+    )
     peaks = detect_peaks(
         recording,
         method=_DETECT_METHOD,
@@ -94,6 +105,7 @@ def estimate_motion_over_recording(recording, well=None):
         "well": well,
         "method": METHOD_CHAIN,
         "n_peaks": int(len(peaks)),
+        "seed": int(seed),
         "max_abs_displacement_um": (
             float(np.nanmax(np.abs(displacement))) if displacement.size else None
         ),

@@ -213,19 +213,32 @@ def mad_noise(
     The per-window MADs are combined by median, so a single window landing on an
     artifact does not move the estimate.
 
+    ``noise_mean`` reports the same per-window MADs combined by mean instead.
+    Nothing consumes it -- ``noise`` remains the estimate -- but the two together
+    say whether the median was doing any work: a channel whose mean sits well
+    above its median had an artifact in at least one window, which a single
+    robust number hides by design. ``median_noise`` and ``mean_noise`` are the
+    matching pair across channels.
+
     Returns a dict with ``channel_ids``, ``noise`` (one value per channel, in
-    ``unit``), ``median_noise``, and the sampling parameters used.
+    ``unit``), ``noise_mean``, ``median_noise``, ``mean_noise``, and the
+    sampling parameters used.
     """
     prepared, return_in_uV, unit, applied_hp = _prepare(recording, highpass_hz, return_in_uV)
     windows = _plan_windows(recording, duration_s, num_chunks, seed, placement)
 
     per_window = [_chunk_mad(traces) for traces in _iter_traces(prepared, windows, return_in_uV)]
-    noise = np.median(np.stack(per_window), axis=0)
+    stacked = np.stack(per_window)
+    noise = np.median(stacked, axis=0)
+    noise_mean = np.mean(stacked, axis=0)
 
     result = {
         "channel_ids": _channel_ids(recording),
         "noise": [float(v) for v in noise],
+        "noise_mean": [float(v) for v in noise_mean],
         "median_noise": float(np.median(noise)),
+        "mean_noise": float(np.mean(noise)),
+        "window_aggregation": "median",
     }
     result.update(_sampling_meta(recording, windows, unit, applied_hp, seed, placement))
     return result
@@ -265,8 +278,16 @@ def activity_rate(
     when a window happens to open mid-excursion; at realistic duty cycles that
     is far below the noise on the estimate.
 
-    Returns a dict with ``channel_ids``, ``rate_hz``, ``n_events``, the threshold
-    settings, and the sampling parameters used.
+    ``rate_hz`` pools counts over the sampled seconds, which is a mean over
+    windows weighted by their duration. ``rate_hz_median_window`` is the median
+    of the same per-window rates, and ``mean_rate_hz``/``median_rate_hz``
+    summarise ``rate_hz`` across channels. Nothing consumes the extra keys --
+    ``rate_hz`` remains the rate -- but a channel whose pooled rate far exceeds
+    its per-window median was carried by one burst rather than firing steadily.
+
+    Returns a dict with ``channel_ids``, ``rate_hz``, ``rate_hz_median_window``,
+    ``n_events``, ``mean_rate_hz``, ``median_rate_hz``, the threshold settings,
+    and the sampling parameters used.
     """
     if polarity not in ("negative", "positive", "both"):
         raise ValueError(f"polarity must be 'negative', 'positive' or 'both', got {polarity!r}")
@@ -281,20 +302,42 @@ def activity_rate(
         if fixed_noise.size != n_channels:
             raise ValueError(f"noise has {fixed_noise.size} values but recording has {n_channels} channels")
 
-    refractory_frames = int(round(float(refractory_ms) * 1e-3 * recording.get_sampling_frequency()))
+    fs = float(recording.get_sampling_frequency())
+    refractory_frames = int(round(float(refractory_ms) * 1e-3 * fs))
     counts = np.zeros(recording.get_num_channels(), dtype=np.int64)
-    for traces in _iter_traces(prepared, windows, return_in_uV):
+    per_window_rates = []
+    for (_segment, start, end), traces in zip(
+        windows, _iter_traces(prepared, windows, return_in_uV)
+    ):
         level = fixed_noise if fixed_noise is not None else _chunk_mad(traces)
-        counts += _count_crossings(traces, level * float(threshold_sd), polarity, refractory_frames)
+        window_counts = _count_crossings(
+            traces, level * float(threshold_sd), polarity, refractory_frames
+        )
+        counts += window_counts
+        window_s = (end - start) / fs if fs else 0.0
+        if window_s > 0:
+            per_window_rates.append(window_counts / window_s)
 
     meta = _sampling_meta(recording, windows, unit, applied_hp, seed, placement)
     sampled_s = meta["sampled_s"]
     rates = counts / sampled_s if sampled_s else np.zeros_like(counts, dtype=np.float64)
+    # Pooling counts over the total sampled seconds IS a mean over windows --
+    # weighted by duration, which is the right weighting when the windows differ
+    # in length. Its robust counterpart is the median of the per-window rates,
+    # reported beside it rather than in place of it.
+    if per_window_rates:
+        rates_median_window = np.median(np.stack(per_window_rates), axis=0)
+    else:
+        rates_median_window = np.zeros_like(rates)
 
     result = {
         "channel_ids": _channel_ids(recording),
         "rate_hz": [float(v) for v in rates],
+        "rate_hz_median_window": [float(v) for v in rates_median_window],
         "n_events": [int(v) for v in counts],
+        "mean_rate_hz": float(np.mean(rates)),
+        "median_rate_hz": float(np.median(rates)),
+        "window_aggregation": "duration-weighted mean",
         "threshold_sd": float(threshold_sd),
         "polarity": polarity,
         "refractory_ms": float(refractory_ms),

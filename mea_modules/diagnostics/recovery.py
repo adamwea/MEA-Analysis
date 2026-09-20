@@ -25,8 +25,82 @@ PNG, and returns its path. No file reading, no argparse.
 import logging
 
 from .channel_layout import _new_figure, _save_and_release
+from .figure_text import BACKBONE_CHANNELS, DENSE_STITCH, PROXY_NOT_MODEL
 
 logger = logging.getLogger(__name__)
+
+# --------------------------------------------------------------------------- #
+# Reader-facing wording
+#
+# Named rather than inlined, for the same reason stitch_wiring names its own:
+# the tests assert the exact words, and a label that only exists as a string
+# literal inside a plotting call cannot be asserted without re-rendering the
+# figure and scraping it. These ARE the contract — a colour bar whose label
+# omits its unit is a defect, not a styling choice.
+#
+# Every one of them is read by somebody who has never seen this source, so no
+# term of art survives here undefined (see the jargon guard in
+# test_diagnostics_figure_legends.py).
+# --------------------------------------------------------------------------- #
+
+_LEGEND_FONTSIZE = 7
+_LEGEND_FRAMEALPHA = 0.85
+_AXIS_NOTE_FONTSIZE = 8
+_COLORBAR_LABEL_FONTSIZE = 8
+
+# Colour-bar labels are drawn rotated, so their LENGTH runs vertically: a long
+# one runs off the end of its bar and off the figure. Two short lines, not one
+# long one.
+SEGMENTS_ROUTED_COLORBAR_LABEL = (
+    "segments that routed this electrode\n(count, 0 = routed by none)"
+)
+
+COVERAGE_COLORBAR_LABEL = (
+    "spikes behind this electrode's average\n(count; electrodes with none are blank)"
+)
+
+AMPLITUDE_COLORBAR_LABEL = (
+    "largest |amplitude| on this electrode\n(µV, logarithmic scale)"
+)
+
+# A clipped or floored colour scale that does not say so is a lie by omission.
+AMPLITUDE_FLOOR_NOTE = (
+    "Colour floor: the 1st percentile of the non-zero amplitudes, so the quiet "
+    "end stays readable on a logarithmic scale. No electrode is dropped — every "
+    "one is still drawn."
+)
+
+# The electrodes every segment routed. Named without the term of art, which is
+# glossed separately by figure_text.BACKBONE_CHANNELS.
+BACKBONE_LEGEND_LABEL = "electrodes routed in every segment"
+
+MARKER_IS_ELECTRODE_NOTE = (
+    "One square marker is one electrode, drawn where it sits on the array."
+)
+
+
+def _legend_patch(color, label, **kwargs):
+    """A colour swatch carrying a label, for a legend with nothing to key off."""
+    from matplotlib.patches import Patch
+
+    return Patch(facecolor=color, edgecolor="none", label=label, **kwargs)
+
+
+def _legend_marker(color, label, **kwargs):
+    """A hollow square sample, matching how an outlined electrode set is drawn."""
+    from matplotlib.lines import Line2D
+
+    return Line2D(
+        [0], [0], marker="s", linestyle="none", markerfacecolor="none",
+        markeredgecolor=color, markeredgewidth=0.8, label=label, **kwargs
+    )
+
+
+def _legend_line(color, label, **kwargs):
+    """A line sample carrying a label."""
+    from matplotlib.lines import Line2D
+
+    return Line2D([0], [0], color=color, label=label, **kwargs)
 
 # Half the MaxOne electrode pitch (17.5 µm / 2), used to pad an imshow extent by
 # one half-electrode so pixels centre on their contacts. This assumes MaxOne
@@ -40,7 +114,8 @@ DEFAULT_DPI = 170
 
 def plot_coverage_map(positions, n_segments_routed, out_path, title=None,
                       routing=None, segment_labels=None,
-                      figsize=DEFAULT_FIGSIZE, dpi=DEFAULT_DPI):
+                      figsize=DEFAULT_FIGSIZE, dpi=DEFAULT_DPI,
+                      highlight_label=None):
     """Electrodes coloured by how many segments routed them; returns `out_path`.
 
     Three panels, because two different "coverage" questions get confused
@@ -56,6 +131,17 @@ def plot_coverage_map(positions, n_segments_routed, out_path, title=None,
 
     `routing` is the ``(n_segments, n_electrodes)`` boolean table; without it the
     third panel is omitted.
+
+    `highlight_label` names the electrodes every segment routed, in the caller's
+    own words — including, where there is one, the sibling artifact that carries
+    the same set::
+
+        highlight_label="electrodes routed in every segment — compared across "
+                        "segments in backbone_agreement.png"
+
+    Omitted, the rule is still drawn but keyed with
+    :data:`BACKBONE_LEGEND_LABEL`; a figure drawn without the per-segment panel
+    gets no key at all, because there is then no rule to explain.
     """
     import numpy as np
 
@@ -74,10 +160,17 @@ def plot_coverage_map(positions, n_segments_routed, out_path, title=None,
         cmap="viridis", linewidths=0, rasterized=True,
     )
     left.set_aspect("equal")
-    left.set_xlabel("x (um)")
-    left.set_ylabel("y (um)")
+    left.set_xlabel("x (µm)")
+    left.set_ylabel("y (µm)")
     left.set_title("electrodes by segments routed")
-    fig.colorbar(scatter, ax=left, label="segments routing this electrode", shrink=0.8)
+    cbar = fig.colorbar(scatter, ax=left, shrink=0.8)
+    cbar.set_label(SEGMENTS_ROUTED_COLORBAR_LABEL, fontsize=_COLORBAR_LABEL_FONTSIZE)
+    # Says what a marker IS, so the left panel reads as an array map rather than
+    # a scatter of measurements.
+    left.text(
+        0.5, -0.16, MARKER_IS_ELECTRODE_NOTE, transform=left.transAxes,
+        ha="center", va="top", fontsize=_AXIS_NOTE_FONTSIZE,
+    )
 
     # Log y: the anchor set is a few hundred electrodes against ~13k routed once,
     # and on a linear axis the anchor bar simply disappears.
@@ -88,7 +181,7 @@ def plot_coverage_map(positions, n_segments_routed, out_path, title=None,
     # electrode") reads as a segment index, and then the empty bins look like
     # segments that contributed nothing.
     right.set_xlabel("how many segments route an electrode\n(count, NOT segment index)")
-    right.set_ylabel("number of electrodes (log)")
+    right.set_ylabel("electrodes with this coverage count (logarithmic axis)")
     right.set_title("electrodes per coverage count")
 
     once = int((counts == 1).sum())
@@ -110,7 +203,7 @@ def plot_coverage_map(positions, n_segments_routed, out_path, title=None,
         bottom.set_yticks(y)
         bottom.set_yticklabels(labels, fontsize=6)
         bottom.invert_yaxis()
-        bottom.set_xlabel("electrodes routed")
+        bottom.set_xlabel("electrodes this segment routed (count)")
         bottom.set_title("per segment")
         # The floor every segment shares: the anchor set that makes
         # concatenation and sorting possible in the first place.
@@ -118,6 +211,21 @@ def plot_coverage_map(positions, n_segments_routed, out_path, title=None,
         bottom.axvline(anchor, color="red", ls="--", lw=1.0)
         bottom.text(anchor, per_segment.size * 0.5, f" anchor = {anchor}",
                     color="red", fontsize=8, rotation=90, va="center")
+        # The rule is the only mark on this figure whose meaning is not on an
+        # axis, so it is the one thing that needs a key — and the key carries
+        # the plain-English gloss for the term of art it stands for.
+        bottom.legend(
+            handles=[
+                _legend_line(
+                    "red",
+                    f"{highlight_label or BACKBONE_LEGEND_LABEL} (n={anchor})",
+                    lw=1.0, linestyle="--",
+                ),
+                _legend_patch("none", BACKBONE_CHANNELS),
+            ],
+            loc="lower right", fontsize=_LEGEND_FONTSIZE,
+            framealpha=_LEGEND_FRAMEALPHA,
+        )
         bottom.text(0.97, 0.02,
                     f"min {per_segment.min()}  max {per_segment.max()}",
                     transform=bottom.transAxes, ha="right", va="bottom", fontsize=8)
@@ -205,7 +313,7 @@ def plot_rescale_effect(coverage, totals, out_path, templates=None, nbefore=None
                       label=r"$1/\sqrt{n}$ reference")
             ax.legend(fontsize=8)
         ax.set_xlabel("spikes behind the average")
-        ax.set_ylabel("residual noise (uV RMS)")
+        ax.set_ylabel("residual noise (µV RMS)")
         ax.set_title("precision actually achieved")
     else:
         ax.set_axis_off()
@@ -248,7 +356,8 @@ def plot_rescale_effect(coverage, totals, out_path, templates=None, nbefore=None
 
 def plot_footprint_gain(positions, template, out_path, backbone_mask=None,
                         unit_id=None, coverage=None, title=None,
-                        figsize=(15.0, 7.0), dpi=DEFAULT_DPI):
+                        figsize=(15.0, 7.0), dpi=DEFAULT_DPI,
+                        highlight_label=None):
     """One unit on the union array: what was measured, and how much backs it.
 
     **Descriptive only — nothing is thresholded, masked, or hidden.** This runs
@@ -270,7 +379,11 @@ def plot_footprint_gain(positions, template, out_path, backbone_mask=None,
     for the reader; putting them side by side lets the reader decide.
 
     `backbone_mask` outlines the electrodes the sorter could actually see, so
-    the recovered extent is visible as the difference.
+    the recovered extent is visible as the difference; `highlight_label` is what
+    that outline is called in the legend, in the caller's own words and naming
+    the sibling artifact where one exists. Without it the outline is keyed with
+    :data:`BACKBONE_LEGEND_LABEL`, and without a mask there is no key, because
+    there is then nothing outlined to explain.
     """
     import numpy as np
 
@@ -298,13 +411,24 @@ def plot_footprint_gain(positions, template, out_path, backbone_mask=None,
         positions[:, 0], positions[:, 1], c=np.maximum(peak, 1e-12),
         s=6, cmap="magma", marker="s", linewidths=0, norm=amp_norm, rasterized=True,
     )
-    fig.colorbar(scatter, ax=ax, label="peak |amplitude| (uV, log)", shrink=0.8)
+    cbar = fig.colorbar(scatter, ax=ax, shrink=0.8)
+    cbar.set_label(AMPLITUDE_COLORBAR_LABEL, fontsize=_COLORBAR_LABEL_FONTSIZE)
     ax.set_title("measured amplitude (all electrodes)")
-    _finish_axis(ax, backbone_mask, positions)
+    # The colour floor is a real distortion of the scale, and the two glosses are
+    # terms this figure would otherwise leave undefined. All three are keys, not
+    # a caption: they belong to the panel that draws the thing they explain.
+    _finish_axis(
+        ax, backbone_mask, positions, highlight_label=highlight_label,
+        extra_handles=[
+            _legend_patch("none", AMPLITUDE_FLOOR_NOTE),
+            _legend_patch("none", DENSE_STITCH),
+            _legend_patch("none", PROXY_NOT_MODEL),
+        ],
+    )
     # Below the axes, not inside them: the legend sits top-right and the array
     # fills the frame, so an in-axes box lands on top of one or the other.
     ax.set_xlabel(
-        f"x (um)\npeak {peak.max():.1f} uV   |   non-zero on "
+        f"x (µm)\npeak {peak.max():.1f} µV   |   non-zero on "
         f"{int((peak > 0).sum())} of {peak.size} electrodes"
     )
 
@@ -322,12 +446,13 @@ def plot_footprint_gain(positions, template, out_path, backbone_mask=None,
         sc2 = ax.scatter(positions[:, 0], positions[:, 1], c=shown, s=6,
                          cmap="viridis", marker="s", linewidths=0,
                          norm=norm, rasterized=True)
-        fig.colorbar(sc2, ax=ax, label="spikes behind this electrode", shrink=0.8)
+        cbar2 = fig.colorbar(sc2, ax=ax, shrink=0.8)
+        cbar2.set_label(COVERAGE_COLORBAR_LABEL, fontsize=_COLORBAR_LABEL_FONTSIZE)
         ax.set_title("spikes behind each average")
-        _finish_axis(ax, backbone_mask, positions)
+        _finish_axis(ax, backbone_mask, positions, highlight_label=highlight_label)
         live = coverage[coverage > 0]
         ax.set_xlabel(
-            f"x (um)\nmedian {int(np.median(live)) if live.size else 0} spikes   |   "
+            f"x (µm)\nmedian {int(np.median(live)) if live.size else 0} spikes   |   "
             f"min {int(live.min()) if live.size else 0}   |   "
             f"n=1 on {int((coverage == 1).sum())} electrodes"
         )
@@ -412,7 +537,7 @@ def plot_rescale_before_after(positions, templates, coverage, totals, out_path,
             ax.set_xticks([]); ax.set_yticks([])
             if k == 0:
                 ax.set_title(f"unit {labels[j]}", fontsize=12, pad=5)
-            ax.set_xlabel(f"{label} rescale · peak {peak.max():.0f} uV", fontsize=8.5)
+            ax.set_xlabel(f"{label} rescale · peak {peak.max():.0f} µV", fontsize=8.5)
 
     axes[0, 0].set_ylabel("BEFORE\n(raw SI average)", fontsize=10.5)
     axes[1, 0].set_ylabel("AFTER\n(what this capsule ships)", fontsize=10.5)
@@ -425,21 +550,42 @@ def plot_rescale_before_after(positions, templates, coverage, totals, out_path,
     return _save_and_release(fig, out_path)
 
 
-def _finish_axis(ax, backbone_mask, positions):
-    """Shared axis dressing for the footprint panels."""
+def _finish_axis(ax, backbone_mask, positions, highlight_label=None, extra_handles=()):
+    """Shared axis dressing for the footprint panels.
+
+    Builds ONE legend per panel: the outlined electrode set first, then whatever
+    the panel itself wants keyed. Two `ax.legend()` calls on one axis is one
+    legend — the second silently replaces the first — which is how the outline
+    key used to disappear from the panel that had the most to explain.
+
+    The outline was keyed "sorting backbone" until 2026-09-20. That is a term of
+    art this figure never defines, and the reader it is written for has never
+    read this source: it now reads :data:`BACKBONE_LEGEND_LABEL`, or whatever the
+    caller supplies, with the gloss carried alongside.
+    """
     import numpy as np
 
+    handles = []
     if backbone_mask is not None:
         backbone_mask = np.asarray(backbone_mask, dtype=bool)
         ax.scatter(
             positions[backbone_mask, 0], positions[backbone_mask, 1],
             s=18, facecolors="none", edgecolors="cyan", linewidths=0.35,
-            label=f"sorting backbone ({int(backbone_mask.sum())})", rasterized=True,
+            rasterized=True,
         )
-        ax.legend(loc="upper right", fontsize=8)
+        handles.append(_legend_marker(
+            "cyan",
+            f"{highlight_label or BACKBONE_LEGEND_LABEL} "
+            f"(n={int(backbone_mask.sum())})",
+        ))
+        handles.append(_legend_patch("none", BACKBONE_CHANNELS))
+    handles.extend(extra_handles)
+    if handles:
+        ax.legend(handles=handles, loc="upper right", fontsize=_LEGEND_FONTSIZE,
+                  framealpha=_LEGEND_FRAMEALPHA)
     ax.set_aspect("equal")
-    ax.set_xlabel("x (um)")
-    ax.set_ylabel("y (um)")
+    ax.set_xlabel("x (µm)")
+    ax.set_ylabel("y (µm)")
 
 
 def plot_template_agreement(reference, candidate, out_path, coverage=None,
@@ -489,6 +635,14 @@ def plot_template_agreement(reference, candidate, out_path, coverage=None,
 
 
 __all__ = [
+    # reader-facing wording — asserted by the figure-legend tests
+    "SEGMENTS_ROUTED_COLORBAR_LABEL",
+    "COVERAGE_COLORBAR_LABEL",
+    "AMPLITUDE_COLORBAR_LABEL",
+    "AMPLITUDE_FLOOR_NOTE",
+    "BACKBONE_LEGEND_LABEL",
+    "MARKER_IS_ELECTRODE_NOTE",
+    # figures
     "plot_coverage_map",
     "plot_rescale_before_after",
     "plot_rescale_effect",

@@ -329,14 +329,22 @@ def test_stitch_comparison_accepts_a_caller_supplied_weight_label(tmp_path, figu
 
 
 def test_new_parameters_are_keyword_optional():
-    """The capsules call these positionally; the new keys must be appended-only."""
+    """The capsules call these positionally; the new keys must be appended-only.
+
+    `caption` used to close each of these lists. It is gone (2026-09-20): a
+    caller-supplied caption line is the one piece of figure text nothing in this
+    repo could assert, and the standing ruling is that a pipeline figure carries
+    no title and no caption. Whatever a figure has to say it says in its own
+    axis labels, colour-bar labels and legend — which is what the rest of this
+    module holds it to.
+    """
     import inspect
 
     expected_tail = {
-        recovery.plot_coverage_map: ["highlight_label", "caption"],
-        recovery.plot_footprint_gain: ["highlight_label", "weight_label", "caption"],
-        stitch_wiring.plot_nan_coverage_summary: ["highlight_label", "caption"],
-        stitch_wiring.plot_stitch_comparison: ["weight_label", "caption"],
+        recovery.plot_coverage_map: ["highlight_label"],
+        recovery.plot_footprint_gain: ["highlight_label"],
+        stitch_wiring.plot_nan_coverage_summary: ["highlight_label"],
+        stitch_wiring.plot_stitch_comparison: ["weight_label"],
     }
     for func, tail in expected_tail.items():
         names = list(inspect.signature(func).parameters)

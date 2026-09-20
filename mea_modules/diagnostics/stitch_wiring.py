@@ -364,7 +364,7 @@ def nan_coverage_summary(contributing_weight, unit_ids=None, n_segments=None):
 
 def plot_nan_coverage_summary(contributing_weight, positions, out_path,
                               title=None, figsize=(15.0, 5.2), dpi=170,
-                              highlight_label=None, caption=None):
+                              highlight_label=None):
     """The coverage mask drawn: where units were measured, and how many channels each got.
 
     Left — every electrode coloured by how many UNITS carry a measurement
@@ -382,7 +382,6 @@ def plot_nan_coverage_summary(contributing_weight, positions, out_path,
         highlight_label="units with no measurement on any electrode — listed by "
                         "id in nan_coverage.json"
 
-    `caption` appends a line under the axes.
     """
     weight = np.asarray(contributing_weight)
     positions = np.asarray(positions, dtype=float)[:, :2]
@@ -439,8 +438,6 @@ def plot_nan_coverage_summary(contributing_weight, positions, out_path,
         "unit on that electrode, and empty otherwise. Both panels count cells — "
         "neither carries an amplitude.",
     ]
-    if caption:
-        caption_parts.append(caption)
     _add_caption(fig, _fold_caption(caption_parts, width=_caption_width(figsize)))
     return _save_and_release(fig, out_path)
 
@@ -541,7 +538,7 @@ def compare_stitches(well_inputs_a, well_inputs_b, labels=("a", "b")):
 
 def plot_stitch_comparison(summary, arrays, weight_first, out_path, title=None,
                            figsize=(15.0, 5.2), dpi=170,
-                           weight_label=None, caption=None):
+                           weight_label=None):
     """Where and how much two stitch passes disagree.
 
     Left — |diff| distribution, single- vs multi-coverage cells (single must
@@ -552,7 +549,7 @@ def plot_stitch_comparison(summary, arrays, weight_first, out_path, title=None,
 
     `weight_label` overrides the x-axis wording for the weight quantity, which
     is a spike count under `spike_count` weighting and a segment count under
-    `uniform`; `caption` appends a line under the axes.
+    `uniform`.
     """
     max_abs = arrays["max_abs"]
     covered = arrays["covered"]
@@ -644,8 +641,6 @@ def plot_stitch_comparison(summary, arrays, weight_first, out_path, title=None,
             "twice its own peak is drawn at the top colour."
         )
     caption_parts.append(PROXY_NOT_MODEL)
-    if caption:
-        caption_parts.append(caption)
     _add_caption(fig, _fold_caption(caption_parts, width=_caption_width(figsize)))
     return _save_and_release(fig, out_path)
 

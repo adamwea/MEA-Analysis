@@ -52,7 +52,6 @@ from .channel_layout import (
     detect_electrode_clusters,
     estimate_electrode_pitch,
     plot_channel_layout,
-    shared_channel_ids,
 )
 from .clipping import clipping_census
 from .figure_style import emptiest_corner, legend_corner, tighten

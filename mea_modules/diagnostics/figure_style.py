@@ -1,6 +1,6 @@
 """Shared figure mechanics: legend placement, legend defaults, whitespace.
 
-Three rulings from Adam (2026-09-19) land here so the same behaviour cannot
+Three review rulings (2026-09-19) land here so the same behaviour cannot
 drift between the concatenated-file figures and the per-segment ones:
 
 1. **A legend goes in a CORNER, never in the middle.** Matplotlib's
@@ -22,7 +22,7 @@ Nothing here decides *what* a figure shows. These are presentation mechanics,
 and they are deliberately usable by an analysis repo drawing a
 publication-ready version of the same picture — the split between a diagnostic
 and a presentation figure is a matter of which options a caller passes, not of
-which code it calls (Adam, 2026-09-19).
+which code it calls (2026-09-19).
 """
 
 import logging
@@ -68,6 +68,74 @@ def _corner_boxes():
     return [(name, x[0], x[1], y[0], y[1]) for name, (x, y) in spans.items()]
 
 
+def _renderer(fig):
+    """The renderer to measure artists against, or None if there is none.
+
+    Mirrors :func:`mea_modules.diagnostics.channel_layout._renderer` — kept as
+    its own copy rather than imported, because `channel_layout` already
+    imports FROM this module (:func:`legend_corner`, :func:`tighten`), and
+    importing back would be circular. Every figure built on this package's
+    shared Agg canvas (:func:`.channel_layout._new_figure`) always has one;
+    returns `None` for anything else so a caller degrades rather than raises.
+    """
+    canvas = getattr(fig, "canvas", None)
+    for getter in (getattr(canvas, "get_renderer", None), getattr(fig, "_get_renderer", None)):
+        if getter is None:
+            continue
+        try:
+            renderer = getter()
+        except Exception:  # pragma: no cover - exotic/headless canvases
+            continue
+        if renderer is not None:
+            return renderer
+    return None
+
+
+def _text_axes_boxes(axis):
+    """Each non-empty text artist's rendered footprint on `axis`, in axes
+    coordinates, as `(x0, x1, y0, y1)`.
+
+    `_axes_fraction_points` reads `axis.lines` and `axis.collections`, so
+    plain text — `ax.text` draws neither — is invisible to it: a comparison
+    annotation can sit dead centre in a corner's scoring box and still count
+    as empty space (2026-09-19). The anchor point alone would not fix this
+    either: a centred, wide label's own anchor can sit outside every corner
+    box while the rendered text still reaches into one. Measuring the actual
+    rendered box (not just its anchor) is what lets a caller test true overlap
+    against a corner, whatever the text's alignment or rotation.
+
+    Needs a renderer; returns `[]` (scores nothing, blocks no corner) when
+    none is available, same fallback as :func:`_axes_fraction_points`.
+    """
+    renderer = _renderer(axis.figure)
+    if renderer is None:
+        return []
+
+    to_axes = axis.transAxes.inverted()
+    boxes = []
+    for text in getattr(axis, "texts", ()):
+        if not text.get_text():
+            continue
+        try:
+            bbox = text.get_window_extent(renderer)
+        except Exception:  # noqa: BLE001 - not yet drawable
+            continue
+        (x0, y0), (x1, y1) = to_axes.transform([[bbox.x0, bbox.y0], [bbox.x1, bbox.y1]])
+        boxes.append((min(x0, x1), max(x0, x1), min(y0, y1), max(y0, y1)))
+    return boxes
+
+
+def _boxes_overlap(a, b):
+    """Whether axes-fraction boxes `a` and `b` (each `(x0, x1, y0, y1)`) overlap.
+
+    A shared edge is not an overlap — strict inequalities throughout — which
+    matches a corner box and a text box that merely touch being fine.
+    """
+    ax0, ax1, ay0, ay1 = a
+    bx0, bx1, by0, by1 = b
+    return ax0 < bx1 and bx0 < ax1 and ay0 < by1 and by0 < ay1
+
+
 def _axes_fraction_points(axis):
     """Every plotted point on `axis`, in axes coordinates, or None.
 
@@ -111,7 +179,10 @@ def emptiest_corner(axis, default="upper right"):
 
     Falls back to `default` when the axis cannot be scored (an image, a mesh,
     or nothing drawn yet) rather than guessing — see
-    :func:`_axes_fraction_points`.
+    :func:`_axes_fraction_points`. A corner whose box overlaps a drawn TEXT
+    artist (see :func:`_text_axes_boxes`) is never picked over a text-free
+    one, whatever its point count: `points` alone cannot see an annotation,
+    and a legend parked on top of one is unreadable either way (2026-09-19).
     """
     import numpy as np
 
@@ -119,7 +190,9 @@ def emptiest_corner(axis, default="upper right"):
     if points is None:
         return default
 
-    best_name, best_count = default, None
+    text_boxes = _text_axes_boxes(axis)
+
+    best_name, best_key = default, None
     for name, x0, x1, y0, y1 in _corner_boxes():
         inside = (
             (points[:, 0] >= x0)
@@ -128,12 +201,19 @@ def emptiest_corner(axis, default="upper right"):
             & (points[:, 1] <= y1)
         )
         count = int(np.count_nonzero(inside))
-        # Strictly-less keeps `_CORNERS` order as the tie-break, so an empty
-        # figure lands in the upper right rather than wherever the dict happens
-        # to iterate.
-        if best_count is None or count < best_count:
-            best_name, best_count = name, count
-    logger.debug("legend corner for %r: %s (%s points)", axis, best_name, best_count)
+        blocked = any(_boxes_overlap((x0, x1, y0, y1), box) for box in text_boxes)
+        # `blocked` dominates the comparison (`False` sorts before `True`), so
+        # a text-free corner always beats a texted one regardless of point
+        # count; `count` only breaks ties within the same `blocked` state, and
+        # strictly-less there keeps `_CORNERS` order as the final tie-break —
+        # an empty, text-free figure still lands in the upper right.
+        key = (blocked, count)
+        if best_key is None or key < best_key:
+            best_name, best_key = name, key
+    logger.debug(
+        "legend corner for %r: %s (blocked=%s, %s points)",
+        axis, best_name, best_key[0], best_key[1],
+    )
     return best_name
 
 
@@ -172,7 +252,7 @@ def tighten(fig, rect=None, pad=0.6):
     One place, one margin policy. `pad` is in font-size units, as
     ``tight_layout`` takes it, and 0.6 is deliberately tighter than
     matplotlib's 1.08 default: these figures are read at a glance and a wide
-    border costs pixels that could have been data (Adam, 2026-09-19).
+    border costs pixels that could have been data (2026-09-19).
 
     `rect` reserves a strip — pass one only when something is drawn outside the
     axes that ``tight_layout`` cannot see, such as a figure-level legend.

@@ -131,7 +131,7 @@ def _blob(captured):
     return " ".join(parts).lower()
 
 
-# Our terms of art. Adam explicitly did not follow these, so none of them may
+# Our terms of art. The reviewer did not follow these, so none of them may
 # appear anywhere a reader can see them (mea_modules/diagnostics/figure_text.py).
 JARGON = (
     "seam",
@@ -641,11 +641,11 @@ def test_unit_trace_legends_trace_marks_and_joins(tmp_path, monkeypatch):
     )
     _assert_png(out)
 
-    trace = _one(captured["legend"], "recorded signal on electrode 0")
-    assert _has(trace, "amplitude in µV")
-    mark = _one(captured["legend"], "a spike the sorter assigned to unit u0")
-    assert _has(mark, "trace's own value")
-    assert _has(mark, "3 in this window")
+    # Publication-terse (2026-09-19): the legend key is a label, not a clause —
+    # amplitude and units are the y label's job, and "drawn at the trace's own
+    # value" is now in the caption below.
+    assert _one(captured["legend"], "trace, electrode 0")
+    assert _one(captured["legend"], "unit u0 spike (n=3)")
     assert _one(captured["legend"], JOIN_LABEL_INSTANT)
 
     assert "file time (s)" in captured["axes"]
@@ -653,6 +653,7 @@ def test_unit_trace_legends_trace_marks_and_joins(tmp_path, monkeypatch):
 
     caption = captured["caption"]
     assert _has(caption, "sorter's own event times")
+    assert _has(caption, "trace's own value")
     assert _has(caption, "Segment join:")               # figure_text.SEAM, verbatim
     assert _has(caption, figure_text.CONTIGUOUS_AXIS)
     assert _has(caption, "waveforms/unit_u0.png")
@@ -669,8 +670,9 @@ def test_unit_trace_unscaleable_recording_says_device_counts(tmp_path, monkeypat
         window_s=0.4, start_time_s=0.0,
     )
 
+    # The unit lives on the y label now, not restated in the legend key.
     assert "amplitude (device counts (ADC))" in captured["axes"]
-    assert _one(captured["legend"], "amplitude in device counts (ADC)")
+    assert _one(captured["legend"], "trace, electrode 0")
     caption = captured["caption"]
     assert _has(caption, "the device's own counts rather than converted to microvolts")
     assert _has(caption, figure_text.ACRONYMS["ADC"])

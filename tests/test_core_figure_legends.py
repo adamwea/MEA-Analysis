@@ -23,6 +23,7 @@ import pytest
 
 from mea_modules.diagnostics import channel_layout as cl
 from mea_modules.diagnostics import figure_text as ft
+from mea_modules.diagnostics import motion as mo
 from mea_modules.diagnostics import raster as ra
 from mea_modules.diagnostics import traces as tr
 from mea_modules.diagnostics.timebase import (
@@ -79,7 +80,7 @@ class _Captured:
 def capture(monkeypatch):
     """Capture the Figure each emitter saves, without changing what it writes."""
     captured = _Captured()
-    for module in (cl, tr, ra):
+    for module in (cl, tr, ra, mo):
         real = module._save_and_release
 
         def wrapper(fig, out_path, _real=real, _cap=captured):
@@ -305,6 +306,23 @@ def test_raster_legend_states_threshold_and_units(capture, recording, tmp_path):
     assert JOIN_LABEL_INSTANT in labels
 
 
+def test_raster_omits_threshold_key_when_nothing_crossed(capture, recording, tmp_path):
+    """Unlike every other key on this figure, the crossing key used to be
+
+    added unconditionally, so a well with zero detections still claimed one
+    was drawn. A threshold no real deflection can clear proves the negative.
+    """
+    ra.plot_raster_threshold(
+        recording, tmp_path / "raster_no_events.png",
+        duration_s=1.0, stitch_frames=(4_000, 12_000),
+        threshold_factor=1.0e6,
+    )
+    labels = " || ".join(capture._frozen_legends)
+    assert "threshold crossing" not in labels
+    # The join key is a separate artist and stays regardless.
+    assert JOIN_LABEL_INSTANT in labels
+
+
 def test_raster_caption_expands_MAD(capture, recording, tmp_path):
     ra.plot_raster_threshold(recording, tmp_path / "raster.png", duration_s=1.0)
     text = capture._frozen_text
@@ -316,6 +334,52 @@ def test_raster_caption_says_it_is_not_spike_sorting(capture, recording, tmp_pat
     """The 'proxy not a model' caveat belongs on the figure."""
     ra.plot_raster_threshold(recording, tmp_path / "raster.png", duration_s=1.0)
     assert "not spike sorting" in capture._frozen_text
+
+
+# --------------------------------------------------------------------------
+# motion
+# --------------------------------------------------------------------------
+
+def _motion_summary():
+    return {
+        "temporal_bins_s": [0.0, 1.0, 2.0, 3.0],
+        "displacement_um": [0.0, 1.2, -0.4, 0.8],
+    }
+
+
+def test_motion_caption_is_silent_with_no_joins_to_draw(capture, tmp_path):
+    """A single-segment recording has no `stitch_frames` and no rate either —
+
+    that used to read as the same "no sampling rate" caveat a concatenated
+    recording gets when it HAS joins it cannot place, which claims a rate was
+    missing when there was simply nothing to join.
+    """
+    mo.plot_motion_estimate(
+        _motion_summary(), tmp_path / "motion_single_segment.png",
+        stitch_frames=(), fs_hz=None,
+    )
+    assert "no sampling rate" not in capture._frozen_text
+
+
+def test_motion_caption_states_the_missing_rate_when_joins_exist(capture, tmp_path):
+    """Concatenated (`stitch_frames` non-empty) but no `fs_hz`: joins exist and
+
+    genuinely could not be placed, so the caveat is correct here.
+    """
+    mo.plot_motion_estimate(
+        _motion_summary(), tmp_path / "motion_missing_rate.png",
+        stitch_frames=(20_000,), fs_hz=None,
+    )
+    assert "no sampling rate" in capture._frozen_text
+
+
+def test_motion_draws_joins_and_states_no_caveat_when_rate_given(capture, tmp_path):
+    mo.plot_motion_estimate(
+        _motion_summary(), tmp_path / "motion_with_rate.png",
+        stitch_frames=(20_000,), fs_hz=20_000.0,
+    )
+    assert "no sampling rate" not in capture._frozen_text
+    assert JOIN_LABEL_INSTANT in capture._frozen_legends
 
 
 # --------------------------------------------------------------------------
@@ -849,8 +913,8 @@ def test_no_emitter_pins_its_own_figure_legend(recording, tmp_path):
 # segment joins, the `annotate` switch, and the composed layout+traces sheet
 # --------------------------------------------------------------------------
 #
-# Three conventions are asserted here, all of them Adam's, all of them things a
-# per-figure smoke test would miss:
+# Three conventions are asserted here, all of them review rulings, all of
+# them things a per-figure smoke test would miss:
 #
 # 1. A join is drawn by ONE implementation, `timebase.join_marks`, and on a
 #    real-elapsed axis it is two rules, not one: the earlier segment's end and
@@ -927,7 +991,7 @@ _GAP_AT_THE_JOIN = {"break_sample_indices": [_JOIN_FRAME], "break_gap_frames": [
 
 
 def test_real_elapsed_join_draws_the_end_and_the_start(drawn, recording, tmp_path):
-    """Adam, 2026-09-19: with real time in between, a join becomes a segment END
+    """2026-09-19: with real time in between, a join becomes a segment END
     and a segment START, and both belong on the figure."""
     from mea_modules.diagnostics.timebase import join_marks
 

@@ -274,7 +274,7 @@ def test_a_gap_too_narrow_for_its_label_moves_above_the_row_not_onto_a_bar():
 
 
 def test_legend_keys_are_short_and_stay_distinct_between_panels():
-    """Adam's ruling: a legend key is two or three words, not a clause -- and the
+    """Review ruling: a legend key is two or three words, not a clause -- and the
     two coloured keys must stay distinct, or the two-panel figure's deduped
     legend would drop one colour's key outright."""
     _fig, (upper, lower) = _new_axes(2)

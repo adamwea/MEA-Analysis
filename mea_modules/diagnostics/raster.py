@@ -456,14 +456,19 @@ def plot_raster_threshold(
     # marks — dots, dotted rules, grey bands — and none of them is self-evident:
     # a reader cannot otherwise tell a segment join from a dead stretch, or
     # "nothing recorded" from "nothing fired".
-    handles = [
-        _legend_dot(
-            "black",
-            f"threshold crossing ({float(threshold_factor):g} × MAD-sigma, "
-            f"{float(refractory_period_ms):g} ms refractory)",
-            size=4.0,
+    handles = []
+    # Conditional like every other key here: zero events means the scatter
+    # above was never drawn, and a key for a mark that is not on the canvas
+    # tells the reader something was plotted that was not.
+    if event_times.size:
+        handles.append(
+            _legend_dot(
+                "black",
+                f"threshold crossing ({float(threshold_factor):g} × MAD-sigma, "
+                f"{float(refractory_period_ms):g} ms refractory)",
+                size=4.0,
+            )
         )
-    ]
     if drawn_joins:
         handles.append(
             _legend_line(
@@ -487,7 +492,10 @@ def plot_raster_threshold(
     # loc="best" reliably picked a central spot instead of a corner — this
     # scores the four corners against the drawn points and takes the emptiest
     # one, and must run after the scatter/join marks above are on the axis.
-    legend_corner(ax, handles=handles, labelspacing=0.7)
+    # `handles` can now be empty (zero events, no join, no shading), which an
+    # empty-list legend would still draw as an empty box.
+    if handles:
+        legend_corner(ax, handles=handles, labelspacing=0.7)
 
     caption = ""
     if annotate:

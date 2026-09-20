@@ -72,7 +72,7 @@ _BOUNDARY_MAP_DPI = 180
 # tall enough to read its label and no taller. The retired fixed 14 x 7.5 in
 # sheet sized rows by dividing whatever was left over, which drew two segments
 # as inch-thick slabs and twenty-one as a wall, with most of the canvas white
-# either way (Adam, 2026-09-19).
+# either way (2026-09-19).
 #
 # So the height is built up from the row count, and the per-row allowance is in
 # INCHES rather than a share of the panel: that is what makes the drawn bar the

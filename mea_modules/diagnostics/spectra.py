@@ -27,7 +27,7 @@ import logging
 
 import numpy as np
 
-from .channel_layout import _legend_line, _new_figure, _wrap_label
+from .channel_layout import _legend_line, _new_figure, _renderer, _wrap_label
 from .figure_style import legend_corner, tighten
 from .figure_text import BACKBONE_KEY, REPRESENTATIVE_KEY, acronym_note
 from .metric_maps import _save_tight
@@ -51,6 +51,15 @@ _PSD_PANEL_WIDTH = 6.0
 _PSD_FIGURE_PAD = 1.0
 _PSD_FIGURE_HEIGHT = 4.8
 _PSD_DPI = 180
+
+# Clearance kept between the shared y label and the tick labels beside it —
+# see `_clear_supylabel_of_ticks`. Matches the order of magnitude of
+# `.channel_layout`'s own bottom-margin pads.
+_PSD_SUPYLABEL_PAD_IN = 0.08
+# A reservation this large means the width measurement is not to be trusted
+# (or the label text is absurdly long); cap it rather than let one figure's
+# axes collapse to a sliver.
+_PSD_MAX_SUPYLABEL_RESERVE_FRAC = 0.4
 
 # Panel identity is drawn inside the axes rather than in a title band above it;
 # the reasoning is with the call that draws it, in `plot_spectra_panels`.
@@ -80,7 +89,7 @@ _COUNTS_PSD_UNIT = "adc^2/Hz"
 # was deliberate on the axis as well, on the grounds that a caret exponent reads
 # fine beside the rest of a label. On the rendered figure it does not: psd.png
 # printed a literal "uV^2/Hz", caret and all, where a reader expects a
-# superscript (Adam, 2026-09-19). The axis therefore carries mathtext and the
+# superscript (2026-09-19). The axis therefore carries mathtext and the
 # data field above keeps the ASCII, which is the split the old note was missing.
 _PSD_AXIS_UNITS = {
     _UV_PSD_UNIT: r"$\mu\mathrm{V}^{2}/\mathrm{Hz}$",
@@ -110,7 +119,7 @@ def welch_spectra(
         electrodes every segment being compared kept routed — rather than an
         arbitrary top-N by activity: comparing a raw panel to a filtered one
         is only meaningful over electrodes both sides actually have. Build
-        that set with :func:`.channel_layout.shared_channel_ids` (the shared
+        that set with :func:`.stitch_consistency.backbone_channel_ids` (the shared
         electrodes) and :func:`.channel_layout.cluster_center_channels` (one
         representative per cluster within them) — or, equivalently,
         :func:`.traces.select_representative_channels` with `restrict_to` set
@@ -191,6 +200,52 @@ def _psd_y_label(sources):
     if not rendered:
         return "PSD", acronyms
     return f"PSD ({' / '.join(rendered)})", acronyms
+
+
+def _clear_supylabel_of_ticks(fig, axis, label, pad_in=_PSD_SUPYLABEL_PAD_IN):
+    """Tighten `fig`, keeping `label` (a `fig.supylabel`) clear of `axis`'s ticks.
+
+    `fig.supylabel` fixes its own x at a hardcoded fraction of the figure, and
+    `tight_layout` never moves it — tight_layout only measures each Axes' own
+    tightbbox, so a figure-level label is invisible to it. Left unreserved,
+    the axes tighten right up to the figure edge and a wide log-scale tick
+    (e.g. ``3 x 10^-3``) prints straight through the label's own text
+    (2026-09-19).
+
+    Reserves the label's actual rendered width as a left margin before
+    tightening, then slides the label by whatever gap is still missing once
+    the axes have settled into that margin — a pure translation of the
+    anchor, so it holds regardless of the label's own alignment or rotation.
+    Falls back to a plain, unreserved `tighten(fig)` when nothing can be
+    measured (no renderer), which is the behaviour this replaces.
+    """
+    fig_width_in = float(fig.get_figwidth()) or 1.0
+    renderer = _renderer(fig)
+    reserved_frac = 0.0
+    if renderer is not None:
+        try:
+            label_width_in = label.get_window_extent(renderer).width / fig.dpi
+        except Exception:  # noqa: BLE001 - label not yet drawable; no reservation
+            label_width_in = 0.0
+        if label_width_in > 0.0:
+            reserved_frac = min(
+                _PSD_MAX_SUPYLABEL_RESERVE_FRAC, (label_width_in + pad_in) / fig_width_in
+            )
+
+    tighten(fig, rect=(reserved_frac, 0.0, 1.0, 1.0) if reserved_frac else None)
+
+    # Re-measure: `tighten` just moved the axes, so the old extents are stale.
+    renderer = _renderer(fig)
+    if renderer is None:
+        return
+    try:
+        gap_in = (
+            axis.get_tightbbox(renderer).x0 - label.get_window_extent(renderer).x1
+        ) / fig.dpi
+    except Exception:  # noqa: BLE001 - leaves the label wherever tighten put it
+        return
+    if gap_in < pad_in:
+        label.set_x(label.get_position()[0] + (pad_in - gap_in) / fig_width_in)
 
 
 def plot_spectra_panels(
@@ -277,21 +332,22 @@ def plot_spectra_panels(
         # Its own x label per panel rather than a figure-wide one: these panels
         # sit side by side, sharing an x RANGE (via `sharex`), and two
         # "frequency (Hz)"s under them read fine — a single `fig.supxlabel`
-        # bought nothing here but an extra reserved band of white space (Adam,
-        # 2026-09-19). The y axis below stays shared: that one genuinely saves
+        # bought nothing here but an extra reserved band of white space
+        # (2026-09-19). The y axis below stays shared: that one genuinely saves
         # a repeated label, because the panels are stacked on the SAME y range.
         ax.set_xlabel("frequency (Hz)")
 
     # One label for the SHARED y axis. Both panels are drawn on the same y, so
     # a per-panel label would be the same word printed twice — which is what
-    # psd.png did with "PSD (uV^2/Hz)" (Adam, 2026-09-19).
+    # psd.png did with "PSD (uV^2/Hz)" (2026-09-19).
     y_label, acronyms = _psd_y_label(sources)
-    fig.supylabel(y_label)
+    y_label_artist = fig.supylabel(y_label)
 
-    # PSD is expanded in the legend, not in a caption band: that is where Adam
-    # asked for it, and it means the definition survives `annotate=False`, which
-    # a caption would not. The wording comes from :mod:`.figure_text` so the
-    # figure, its README and the report generator cannot drift apart.
+    # PSD is expanded in the legend, not in a caption band: that is where the
+    # review asked for it, and it means the definition survives
+    # `annotate=False`, which a caption would not. The wording comes from
+    # :mod:`.figure_text` so the figure, its README and the report generator
+    # cannot drift apart.
     #
     # The legend carries exactly ONE key for the whole coloured family rather
     # than one per channel: at ~30 channels a "ch <id>" entry per curve would
@@ -313,7 +369,7 @@ def plot_spectra_panels(
 
     if annotate and title:
         fig.suptitle(title)
-    tighten(fig)
+    _clear_supylabel_of_ticks(fig, axes[0], y_label_artist)
 
     out_path = _save_tight(fig, out_path)
     logger.info("wrote PSD: %s", out_path)

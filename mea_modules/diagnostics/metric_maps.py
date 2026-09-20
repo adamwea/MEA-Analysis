@@ -51,7 +51,7 @@ DEFAULT_DPI = 180
 DEFAULT_PERCENTILES = (2.0, 98.0)
 
 # Micrometres as real mathtext, the way spectra.py renders its PSD units,
-# rather than the ASCII "um" this module printed before (Adam, 2026-09-19). A
+# rather than the ASCII "um" this module printed before (2026-09-19). A
 # bare "u" reads as the letter u, not the Greek micro sign, on every backend
 # that does not happen to substitute it — mathtext is what makes the glyph
 # render rather than merely hoping the font covers it.
@@ -127,16 +127,18 @@ def _draw_metric_panel(
     Parameters
     ----------
     colorbar_side : {"left", "right"}
-        RULE (Adam, 2026-09-19): the colour bar sits on the SAME side of the
-        figure as its panel — a panel in the left half gets its bar on the
-        left, one in the right half keeps it on the right — so a reader's eye
-        never has to cross the panel to find the scale that explains it. The
-        caller derives this from the panel's own column index rather than a
-        hardcoded side, so it stays correct at one panel, two, or more.
+        RULE (review ruling, 2026-09-19): the colour bar sits on the SAME
+        side of the figure as its panel — a panel in the left half gets its
+        bar on the left, one in the right half keeps it on the right — so a
+        reader's eye never has to cross the panel to find the scale that
+        explains it. The caller derives this from the panel's own column
+        index rather than a hardcoded side, so it stays correct at one
+        panel, two, or more.
     legend_label, acronyms : str or None, sequence of str
-        A short legend key naming the quantity painted (Adam: "needing legends
-        describing metric used"), with any acronym it uses expanded once in the
-        key's title — the way :func:`.spectra.plot_spectra_panels` expands PSD.
+        A short legend key naming the quantity painted (a review ruling:
+        "needing legends describing metric used"), with any acronym it uses
+        expanded once in the key's title — the way
+        :func:`.spectra.plot_spectra_panels` expands PSD.
         None/empty skips the key, for a caller that has nothing to add beyond
         the colour-bar label.
     """
@@ -150,11 +152,12 @@ def _draw_metric_panel(
         ax.set_title(panel_title)
     ax.set_aspect("equal", adjustable="box")
 
-    # RULE (Adam, 2026-09-19): panels laid out left/right genuinely SHARE the y
-    # axis (same electrode y-positions), so plot_metric_maps gives that ONE
-    # shared label. The x axis is NOT shared the same way here — a single
-    # fig.supxlabel over two side-by-side panels (round 2) read oddly and cost
-    # more white space than it saved — so every panel gets its OWN x label.
+    # RULE (review ruling, 2026-09-19): panels laid out left/right genuinely
+    # SHARE the y axis (same electrode y-positions), so plot_metric_maps
+    # gives that ONE shared label. The x axis is NOT shared the same way
+    # here — a single fig.supxlabel over two side-by-side panels (round 2)
+    # read oddly and cost more white space than it saved — so every panel
+    # gets its OWN x label.
     # Do not reintroduce a shared supxlabel; see plot_metric_maps.
     ax.set_xlabel(f"x ({_UM_LABEL})")
 
@@ -290,8 +293,8 @@ def _noise_panel(noise):
     return (
         np.asarray(noise["noise"], dtype=float),
         "MAD noise",
-        # The estimator's name rides in the colour-bar label itself (Adam:
-        # "needing legends describing metric used for noise") — under
+        # The estimator's name rides in the colour-bar label itself (a review
+        # ruling: "needing legends describing metric used for noise") — under
         # annotate=False the panel title above is gone, so this is the only
         # place left that says the number is a MAD, not just "noise".
         f"MAD noise ({noise['unit']})",
@@ -341,9 +344,9 @@ def plot_noise_map(recording, noise, out_path, title=None, **kwargs):
 
     The same panel :func:`plot_noise_activity_map` draws on the left, standing
     alone for a review deck — the individual-panel twin of
-    :func:`plot_firing_rate_map`, which already does this for activity (Adam,
-    2026-09-19: "make sure we have individual panel plots for each of these in
-    addition to the multipanel").
+    :func:`plot_firing_rate_map`, which already does this for activity
+    (review ruling, 2026-09-19: "make sure we have individual panel plots
+    for each of these in addition to the multipanel").
     """
     panels = [_noise_panel(noise)]
     return plot_metric_maps(

@@ -32,6 +32,7 @@ from ..diagnostics.channel_layout import (
     _save_and_release,
     _wrap_label,
 )
+from ..diagnostics.figure_style import legend_corner
 from ..diagnostics.figure_text import CONTIGUOUS_AXIS, SEAM, acronym_note
 from ..diagnostics.timebase import JOIN_LABEL_INSTANT, join_marks
 from ..diagnostics.traces import (
@@ -45,10 +46,6 @@ logger = logging.getLogger(__name__)
 
 _TRACE_FIGSIZE = (12.0, 4.0)
 _TRACE_DPI = 180
-
-# Legend/caption defaults, matched to the diagnostics figures.
-_LEGEND_FONTSIZE = 7
-_LEGEND_FRAMEALPHA = 0.85
 
 
 def _legend_ring(color, label, size=7.0, lw=0.9):
@@ -228,34 +225,32 @@ def plot_unit_trace(
 
     # Every drawn encoding gets a legend key (Adam, 2026-08-11): without one the
     # rings are unexplained marks and the dotted rules could be anything.
+    # Publication-terse (2026-09-19): the unit and the count are what tells one
+    # figure's key apart from another's, so they stay; the rest of what a key
+    # used to spell out (amplitude's already the y label; "drawn at the trace's
+    # own value" is now in the caption) moved off the legend.
     handles = [
-        _legend_line(
-            _TRACE_COLOR,
-            f"recorded signal on electrode {channel_id}, amplitude in {unit_label}",
-            lw=0.9,
-        )
+        _legend_line(_TRACE_COLOR, f"trace, electrode {channel_id}", lw=0.9)
     ]
     if mark_times.size:
         handles.append(
             _legend_ring(
                 _MARK_COLOR,
-                f"a spike the sorter assigned to unit {unit_id}, drawn at the "
-                f"trace's own value ({int(mark_times.size)} in this window)",
+                f"unit {unit_id} spike (n={int(mark_times.size)})",
             )
         )
     if joins_drawn:
         handles.append(_legend_line(_JOIN_COLOR, JOIN_LABEL_INSTANT, lw=0.9, linestyle=":"))
-    ax.legend(
-        handles=handles,
-        loc="best",
-        fontsize=_LEGEND_FONTSIZE,
-        framealpha=_LEGEND_FRAMEALPHA,
-        labelspacing=0.7,
-    )
+    # `loc="best"` on a trace window routinely landed on top of the trace
+    # itself; this scores the four corners against what is actually drawn and
+    # takes the emptiest — called after the trace and marks above are on the
+    # axis.
+    legend_corner(ax, handles=handles, labelspacing=0.7)
 
     caption_parts = [
-        "The rings are the sorter's own event times, not a re-detection: nothing "
-        "on this figure is thresholded, filtered or scored.",
+        "The rings are the sorter's own event times, drawn at the trace's own "
+        "value rather than a fixed height, and not a re-detection: nothing on "
+        "this figure is thresholded, filtered or scored.",
     ]
     if joins_drawn:
         caption_parts.append(SEAM)

@@ -71,6 +71,7 @@ from .figure_style import legend_corner
 from .figure_text import (
     PER_ELECTRODE,
     PER_SEGMENT_ONLY,
+    SEGMENT_AXIS,
     SEGMENT_BAND,
     acronym_note,
     dispersion_key,
@@ -102,7 +103,7 @@ _RATES_DPI = 180
 _RATES_REFERENCE_SEGMENTS = 10.0
 # Floor under the computed width so two segments do not shrink to a sliver
 # next to a fixed-height sheet that still has to hold the caption, the legend
-# and the scatter cloud (Adam, 2026-09-19): at few segments the canvas comes
+# and the scatter cloud (2026-09-19): at few segments the canvas comes
 # out clearly taller than it is wide, which is the point.
 _RATES_MIN_WIDTH_IN = 3.6
 
@@ -125,7 +126,7 @@ _ERROR_CAPSIZE = 3.0
 _ERROR_LINEWIDTH = 1.4
 
 # Which summary key the whisker is drawn from, by `dispersion`. Default SD, not
-# SEM (Adam, 2026-09-19): the scatter already shows the electrode POPULATION,
+# SEM (2026-09-19): the scatter already shows the electrode POPULATION,
 # and at n in the hundreds SEM = SD / sqrt(n) is roughly a sixteenth of SD, so
 # it draws as a misleadingly tight whisker sitting inside a visibly wide cloud
 # of points. SD describes the spread the scatter is already showing; SEM
@@ -182,8 +183,8 @@ _AXIS_LABEL_FONTSIZE = 8
 
 # The comparison mark's own geometry. Small and out of the way on purpose: it
 # is a result, not chrome, and it must never read as loud as the bars it sits
-# above (Adam, 2026-09-19: "not seeing any indication of significance testing
-# ... should still be something indicating that").
+# above (review ruling, 2026-09-19: "not seeing any indication of significance
+# testing ... should still be something indicating that").
 _MARK_FONTSIZE = 6.5
 _MARK_COLOR = "0.15"
 # Fractions of the axis's own top (`ax.get_ylim()[1]`), not of the axes box —
@@ -227,8 +228,9 @@ _NO_COMPARISON_NOTE = (
 # one segment" would only restate the x axis, and the caption carries the rule
 # in full. Which of the two is used says which quantity the bars are.
 #
-# Publication-terse (Adam, 2026-09-19): a legend key is not a clause, and
-# neither is an axis label. "crossings per second, per electrode" said the
+# Publication-terse (review ruling, 2026-09-19): a legend key is not a
+# clause, and neither is an axis label. "crossings per second, per electrode"
+# said the
 # same thing in more words than "crossings/s per electrode" does.
 _RATE_YLABEL = "threshold crossings per second"
 _PER_CHANNEL_YLABEL = "crossings/s per electrode"
@@ -412,6 +414,25 @@ def _activity_comparison(rows, alpha=_COMPARISON_ALPHA):
         # it is the cleanest possible "these do not differ", so it is recorded
         # as a note and the rest of the summary stands.
         block["note"] = f"no test was run ({error}); {_COMPARISON_NOTE}"
+        return block
+
+    # The SAME degenerate input does not always raise. `mannwhitneyu` rejects it
+    # with a ValueError, but `kruskal` hands back a nan statistic and a nan p
+    # value instead -- and `nan < alpha` is False, which would write
+    # `significant: False` into the summary and print a p of nan on the figure.
+    # Both of those claim the segments were compared and found alike when
+    # nothing was compared at all, which is exactly what the `None` in this
+    # block's contract exists to prevent. Treat a non-finite result as the
+    # refusal it is.
+    if not (np.isfinite(result.statistic) and np.isfinite(result.pvalue)):
+        block["note"] = (
+            "no test was run (the rates carry no variation to test, so the "
+            f"statistic is undefined); {_COMPARISON_NOTE}"
+        )
+        logger.info(
+            "%s over %d segment(s) is undefined on this input; segments were not compared",
+            name, len(groups),
+        )
         return block
 
     p_value = float(result.pvalue)
@@ -691,7 +712,7 @@ def _rates_figure_size(n_segments):
     allowance, so a well with exactly that many segments reproduces the
     historical canvas exactly, and the floor keeps a two-segment well from
     coming out as a sliver — it comes out clearly taller than it is wide
-    instead (Adam, 2026-09-19).
+    instead (2026-09-19).
     """
     width_per_segment = _RATES_FIGSIZE[0] / _RATES_REFERENCE_SEGMENTS
     width_in = max(_RATES_MIN_WIDTH_IN, float(n_segments) * width_per_segment)
@@ -701,14 +722,14 @@ def _rates_figure_size(n_segments):
 def _draw_activity_comparison(ax, comparison, grouped_positions, all_positions):
     """State the between-segment test on `ax`, significant or not.
 
-    A warning flag has to say so even when it is quiet (Adam, 2026-09-19): a
-    reader seeing no mark at all cannot tell "not significant" from "never
-    tested". Exactly two groups with two known bar positions draw a BRACKET
-    spanning them, so the mark visibly belongs to that pair rather than to the
-    figure in general; anything else (three or more groups, or a two-group
-    comparison whose bar positions could not be pinned down) draws a plain
-    RULE spanning every bar instead, since the omnibus test speaks for the
-    whole row rather than one pair of them.
+    A warning flag has to say so even when it is quiet (review ruling,
+    2026-09-19): a reader seeing no mark at all cannot tell "not significant"
+    from "never tested". Exactly two groups with two known bar positions
+    draw a BRACKET spanning them, so the mark visibly belongs to that pair
+    rather than to the figure in general; anything else (three or more
+    groups, or a two-group comparison whose bar positions could not be
+    pinned down) draws a plain RULE spanning every bar instead, since the
+    omnibus test speaks for the whole row rather than one pair of them.
 
     Both forms draw an actual line, not just text, and that is deliberate
     rather than decorative: :func:`mea_modules.diagnostics.figure_style.legend_corner`
@@ -1016,13 +1037,7 @@ def plot_segment_event_rates(
         _PER_CHANNEL_YLABEL if bar_key != "events_per_s" else _RATE_YLABEL,
         fontsize=_AXIS_LABEL_FONTSIZE,
     )
-    # `wrap=True`: this label is a full clause rather than a word or two, and
-    # the canvas it sits under can be as narrow as `_RATES_MIN_WIDTH_IN`.
-    ax.set_xlabel(
-        "segment (one recording configuration, in the order they were recorded)",
-        fontsize=_AXIS_LABEL_FONTSIZE,
-        wrap=True,
-    )
+    ax.set_xlabel(SEGMENT_AXIS, fontsize=_AXIS_LABEL_FONTSIZE)
 
     heading = title or _default_title(summary)
     if annotate and heading:
@@ -1072,6 +1087,8 @@ def plot_segment_event_rates(
                 acronym_note(*acronyms),
                 SEGMENT_BAND,
                 PER_SEGMENT_ONLY,
+                "Bars run left to right in the order the segments were recorded, "
+                "each one a distinct recording configuration.",
                 "A crossing is not an identified neuron: this counts downward "
                 "threshold crossings on individual electrodes, so compare the bars "
                 "against each other rather than reading an absolute firing rate off "

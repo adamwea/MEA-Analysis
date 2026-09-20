@@ -550,7 +550,7 @@ def join_marks(stitch_frames, fs_hz, gaps=(), segment_gaps=(), real_time=False):
     only then does the later segment start — so the pair brackets that gap:
     ``start_s`` is when recording stopped and ``stop_s`` when it resumed. One
     line there would pin the join to a single edge of the gap and leave a reader
-    to assume the other edge is nothing (Adam, 2026-09-19).
+    to assume the other edge is nothing (2026-09-19).
 
     Callers pass FRAMES on the concatenated timeline, always. That is the one
     convention: the manifest records frames, converting the handful of joins is

@@ -1,8 +1,8 @@
 """The flagged-channels figure's legend: one key per rule, even at zero.
 
-Adam, 2026-09-19, looking at a run with nothing flagged: "in this case I see
-none, but make it clear by what metric we might flag channels." These tests
-pin the two halves of that fix: `flag_channels` records the thresholds a
+A review ruling, 2026-09-19, on a run with nothing flagged: "in this case I
+see none, but make it clear by what metric we might flag channels." These
+tests pin the two halves of that fix: `flag_channels` records the thresholds a
 figure needs to word its keys, and `flagged_channel_groups` turns those into
 one legend-ready group per rule, drawn whether or not it matched anything.
 """

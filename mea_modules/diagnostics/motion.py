@@ -29,6 +29,7 @@ import logging
 from .channel_layout import _add_caption, _legend_line, _new_figure, _save_and_release
 from .figure_style import legend_corner, tighten
 from .figure_text import FILE_TIME_AXIS, JOIN_INSTANT
+from .timebase import _JOIN_COLOR, draw_join_marks, join_marks
 
 logger = logging.getLogger(__name__)
 
@@ -54,7 +55,6 @@ TIMELINE_CAVEAT = (
 _MOTION_FIGSIZE = (12.0, 4.2)
 _MOTION_DPI = 180
 _DISPLACEMENT_YLABEL = "estimated displacement (µm)"
-_JOIN_COLOR = "red"
 
 
 def estimate_motion_over_recording(recording, well=None):
@@ -143,14 +143,12 @@ def plot_motion_estimate(
     handles = []
     drawn_joins = 0
     if fs_hz:
-        for frame in stitch_frames or ():
-            ax.axvline(
-                float(frame) / float(fs_hz),
-                color=_JOIN_COLOR,
-                linewidth=0.6,
-                alpha=0.7,
-            )
-            drawn_joins += 1
+        # The one join-geometry implementation, never a second copy of it. This
+        # figure is on the FILE timeline, where a join is a single instant, so
+        # no gaps are passed and `real_time` stays at its default. Routing
+        # through timebase is what makes a later change to how a join is drawn
+        # reach this figure too, instead of leaving it behind at the old style.
+        drawn_joins = draw_join_marks(ax, join_marks(stitch_frames, fs_hz))
     if drawn_joins:
         handles.append(_legend_line(_JOIN_COLOR, JOIN_INSTANT, lw=0.9))
 
@@ -162,10 +160,16 @@ def plot_motion_estimate(
     if annotate:
         if title:
             ax.set_title(title)
+        # `drawn_joins` alone cannot tell the two zero cases apart: a
+        # single-segment recording has no `stitch_frames` and is not missing
+        # anything, while a concatenated one with `stitch_frames` but no
+        # `fs_hz` genuinely has joins it could not place. Say the caveat only
+        # when the second is true.
+        missing_rate = bool(stitch_frames) and not fs_hz
         _add_caption(
             fig,
             TIMELINE_CAVEAT
-            + ("" if drawn_joins else "  Segment joins are not drawn: no sampling rate."),
+            + ("  Segment joins are not drawn: no sampling rate." if missing_rate else ""),
         )
     tighten(fig)
     out_path = _save_and_release(fig, out_path)

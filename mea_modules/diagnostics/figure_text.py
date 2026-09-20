@@ -1,6 +1,6 @@
 """Canonical reader-facing wording for figures and generated READMEs.
 
-Two rulings from Adam (2026-08-11) land here, and they land here *once* so the
+Two reviewer rulings (2026-08-11) land here, and they land here *once* so the
 same sentence cannot drift between a figure, its capsule README, and the
 report generator:
 
@@ -10,7 +10,7 @@ report generator:
    which printed a threshold as a MAD multiple with nothing on the figure
    saying what MAD is.
 
-2. **No insider jargon in reader-facing text.** Adam explicitly did not follow
+2. **No insider jargon in reader-facing text.** The reviewer did not follow
    "within each band" or "never across a seam" — those are our terms of art.
    Anything a competent neuroscientist who has never read this source cannot
    decode gets replaced with plain wording, or defined inline on first use.
@@ -127,8 +127,8 @@ PROXY_NOT_MODEL = (
 
 # --- Legend entries and axis labels ---------------------------------------
 #
-# Publication shorthand, Adam 2026-09-19: "use legend descriptions as we'd
-# expect to see them in a publication. Descriptive and clear, but as
+# Publication shorthand (review ruling, 2026-09-19): "use legend descriptions
+# as we'd expect to see them in a publication. Descriptive and clear, but as
 # short-handed as possible. Not even a partial sentence."
 #
 # The prose blocks above are NOT the fallback for these. They explain a term to
@@ -157,6 +157,13 @@ JOIN_SPANNING = "segment end / start"
 # `realtime`, and by these two labels being visibly different.
 FILE_TIME_AXIS = "file time (s)"
 REAL_TIME_AXIS = "elapsed time (s)"
+
+# One bar per segment, left to right in the order they were recorded. The
+# clause that used to spell that out ("one recording configuration, in the
+# order ...") was a full sentence doing an axis label's job; the ordering is
+# also the drawing order, so a reader sees it, and the fuller explanation
+# belongs in the figure's caption instead.
+SEGMENT_AXIS = "segment (recording order)"
 
 # Channel-selection keys.
 TRACED_CHANNELS = "traced channels"
@@ -193,6 +200,7 @@ __all__ = [
     "JOIN_SPANNING",
     "FILE_TIME_AXIS",
     "REAL_TIME_AXIS",
+    "SEGMENT_AXIS",
     "TRACED_CHANNELS",
     "REPRESENTATIVE_KEY",
     "BACKBONE_KEY",

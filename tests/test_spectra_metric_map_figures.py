@@ -11,8 +11,8 @@ because they are about what is NOT on the figure.
 
 2. A label belongs to the axis, and panels drawn with ``sharex``/``sharey`` have
    ONE axis between them. ``psd.png`` printed "PSD (uV^2/Hz)" twice, once per
-   panel, with a literal caret where the superscript should have been (Adam,
-   2026-09-19). Both halves of that are asserted: the label is counted, and the
+   panel, with a literal caret where the superscript should have been
+   (2026-09-19). Both halves of that are asserted: the label is counted, and the
    units are matched as mathtext rather than as ASCII.
 
 As in the other figure tests, the assertions run against the real ``Figure``:
@@ -169,7 +169,7 @@ def _spectra(recording, sources=("raw", "preprocessed")):
 
 
 def test_psd_panels_share_one_y_label_between_them(capture, recording, tmp_path):
-    """Adam's report: both panels carried an identical "PSD (...)" y label.
+    """Review report: both panels carried an identical "PSD (...)" y label.
 
     The panels are drawn with ``sharey``, so there is one y axis and it may
     carry one label. Counted rather than merely asserted present, because the
@@ -184,7 +184,7 @@ def test_psd_panels_share_one_y_label_between_them(capture, recording, tmp_path)
 
 
 def test_psd_panels_each_carry_their_own_x_label(capture, recording, tmp_path):
-    """X is NOT shared, unlike y (Adam, 2026-09-19): a single `fig.supxlabel`
+    """X is NOT shared, unlike y (2026-09-19): a single `fig.supxlabel`
     over side-by-side panels only reserved a band of white space the two
     labels are worth more than, so each panel keeps its own "frequency (Hz)"."""
     sources = _spectra(recording)
@@ -220,7 +220,7 @@ def test_psd_unit_recorded_in_the_result_stays_ascii(recording):
 
 
 def test_psd_is_expanded_in_the_legend(capture, recording, tmp_path):
-    """Adam asked for PSD defined on the plot, in the legend.
+    """The review asked for PSD defined on the plot, in the legend.
 
     The wording is the canonical one from ``figure_text``, not a local
     paraphrase — that table exists so the figure, its README and the report
@@ -313,7 +313,7 @@ def _metrics(recording):
 def test_metric_maps_each_panel_keeps_its_own_x_label_and_shares_one_y_label(
     capture, recording, tmp_path
 ):
-    """RULE (Adam, 2026-09-19): left/right panels genuinely share the y axis (one
+    """RULE (2026-09-19): left/right panels genuinely share the y axis (one
     label), but round 2's single shared x label read oddly and cost more white
     space than it saved — each panel now keeps its OWN x label instead."""
     noise, activity = _metrics(recording)
@@ -331,7 +331,7 @@ def test_metric_maps_each_panel_keeps_its_own_x_label_and_shares_one_y_label(
 
 def test_metric_maps_micrometre_axes_are_real_mathtext(capture, recording, tmp_path):
     """metric_maps used to print the ASCII "um"; it is mathtext now, the way
-    spectra.py renders its PSD units (Adam, 2026-09-19)."""
+    spectra.py renders its PSD units (2026-09-19)."""
     noise, activity = _metrics(recording)
     mm.plot_noise_activity_map(recording, noise, activity, tmp_path / "map.png")
 
@@ -383,9 +383,9 @@ def test_firing_rate_map_takes_annotate_through_its_kwargs(capture, recording, t
 
 
 def test_plot_noise_map_is_the_individual_twin_of_the_activity_map(capture, recording, tmp_path):
-    """Adam: "make sure we have individual panel plots for each of these [noise
-    and activity] in addition to the multipanel." Activity already had one
-    (`plot_firing_rate_map`); this is noise's."""
+    """Review ruling: "make sure we have individual panel plots for each of
+    these [noise and activity] in addition to the multipanel." Activity
+    already had one (`plot_firing_rate_map`); this is noise's."""
     noise, _ = _metrics(recording)
     out = mm.plot_noise_map(recording, noise, tmp_path / "noise.png", annotate=False)
 
@@ -399,8 +399,9 @@ def test_plot_noise_map_is_the_individual_twin_of_the_activity_map(capture, reco
 
 
 def test_metric_map_legend_expands_its_acronym_once(capture, recording, tmp_path):
-    """Adam: "needing legends describing metric used for noise / activity."
-    MAD and SD are expanded in the legend title, the way spectra.py expands PSD."""
+    """Review ruling: "needing legends describing metric used for noise /
+    activity." MAD and SD are expanded in the legend title, the way
+    spectra.py expands PSD."""
     noise, activity = _metrics(recording)
     mm.plot_noise_activity_map(recording, noise, activity, tmp_path / "map.png", annotate=False)
 
@@ -411,7 +412,7 @@ def test_metric_map_legend_expands_its_acronym_once(capture, recording, tmp_path
 
 
 def test_colorbar_side_mirrors_the_panels_column(recording, tmp_path):
-    """Rule (Adam, 2026-09-19): a LEFT panel's colour bar sits on ITS left, a
+    """Rule (2026-09-19): a LEFT panel's colour bar sits on ITS left, a
     RIGHT panel's stays on the right — derived from column index, not a
     hardcoded per-call side."""
     noise, activity = _metrics(recording)
@@ -458,7 +459,7 @@ def test_single_panel_map_colorbar_defaults_to_the_right(recording, tmp_path):
 
 
 def test_plot_metric_maps_draws_into_callers_axes(recording, tmp_path):
-    """The house pattern (Adam, 2026-09-19): `axes=` lets a composed sheet reuse
+    """The house pattern (2026-09-19): `axes=` lets a composed sheet reuse
     this drawing routine instead of carrying a second copy of it."""
     noise, _ = _metrics(recording)
     fig = mm._new_figure((6.0, 4.0), 100)

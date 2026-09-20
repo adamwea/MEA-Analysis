@@ -30,8 +30,8 @@ counts beats no plot.
 Two emitters live here. :func:`plot_traces` is the atomic one — a stack of
 channels and nothing else. :func:`plot_traces_with_layout` pairs that same stack
 with the electrode layout of the very channels it draws, because a trace is hard
-to place on the array from a second figure open in another window (Adam,
-2026-09-19). Both are emitted; the composite does not replace the single panels.
+to place on the array from a second figure open in another window
+(2026-09-19). Both are emitted; the composite does not replace the single panels.
 It reuses them rather than redrawing either, by handing each one the axes it
 should draw into.
 """
@@ -50,7 +50,6 @@ from .channel_layout import (
     cluster_center_channels,
     detect_electrode_clusters,
     plot_channel_layout,
-    shared_channel_ids,
 )
 from .figure_text import (
     CONTIGUOUS_AXIS,
@@ -83,8 +82,8 @@ from .timebase import (
 
 logger = logging.getLogger(__name__)
 
-# Axis labels. Aliased to :mod:`.figure_text`'s publication shorthand (Adam,
-# 2026-09-19) rather than redefined here, so every importer of these two names
+# Axis labels. Aliased to :mod:`.figure_text`'s publication shorthand rather
+# than redefined here, so every importer of these two names
 # (`raster.py`, `unit_traces.py`, `unit_raster.py`) picks up the short label
 # with no edit of its own. The default one is still the contiguous sample
 # timeline, which is what every existing plot already shows.
@@ -102,7 +101,7 @@ _TRACE_DPI = 180
 # axes sets an equal aspect (electrode spacing is isotropic — see
 # `channel_layout.plot_channel_layout`), and `adjustable="box"` then shrinks
 # that box to its narrower dimension, so a tall cell drew the array cramped
-# into a horizontal band with dead space above and below it (Adam, 2026-09-19).
+# into a horizontal band with dead space above and below it (2026-09-19).
 # The ratio below instead gives the layout column a width close to the plot
 # area's height, so the equal-aspect box actually fills its cell; the figure
 # width is raised to match so the trace column keeps roughly its standalone
@@ -121,8 +120,8 @@ _PAIRED_PANELS = (
     "trace can be placed on the array without opening a second figure."
 )
 
-# Named on the layout panel's red key. Publication shorthand (Adam, 2026-09-19)
-# collapses both cases to the same short key; the two names survive so a call
+# Named on the layout panel's red key. Publication shorthand collapses both
+# cases to the same short key; the two names survive so a call
 # site can still tell "we picked these" apart from "the caller picked these" if
 # that distinction ever needs its own wording again.
 _PAIRED_HIGHLIGHT_LABEL = TRACED_CHANNELS
@@ -403,7 +402,7 @@ def select_representative_channels(
     `n_channels` <= 0 to get every candidate in that order.
 
     `restrict_to` narrows the electrode pool BEFORE clustering. Pass the shared
-    electrode set (:func:`.channel_layout.shared_channel_ids`) to select over
+    electrode set (:func:`.stitch_consistency.backbone_channel_ids`) to select over
     only the electrodes every segment kept, which is what a figure comparing
     segments must do.
 
@@ -574,7 +573,7 @@ def plot_traces(
     not: the earlier segment stops, the chip spends minutes re-routing, and only
     then does the later segment start, so the join draws TWO rules bracketing
     that gap — its end and the next one's start — rather than one rule pinned to
-    an arbitrary edge of it (Adam, 2026-09-19). The trace line is separately
+    an arbitrary edge of it (2026-09-19). The trace line is separately
     broken with NaN at the gaps so the plot does not draw a fake ramp across
     them; that is a different mechanic and both still apply.
 
@@ -768,7 +767,7 @@ def plot_traces(
         )
     panels[-1].set_xlabel(_REAL_TIME_XLABEL if real_time else _CONTIGUOUS_XLABEL)
 
-    # The figure must state the units it drew (Adam, 2026-08-10). That is an
+    # The figure must state the units it drew (2026-08-10). That is an
     # AXIS label, not chrome, so `annotate=False` keeps it: a stack of
     # deflections with no amplitude unit cannot be read at all. With the caller
     # owning the figure there is no figure-level y label to hang it on, so it
@@ -885,7 +884,7 @@ def plot_traces_with_layout(
     layout panel cannot make that claim — highlighting channels on it only
     points at some other file — which is why the highlight belongs either here,
     where both halves are visible at once, or on a figure whose caller names the
-    sibling artifact (Adam, 2026-09-19).
+    sibling artifact (2026-09-19).
 
     Neither half is redrawn here: the channels are resolved once, then
     :func:`mea_modules.diagnostics.channel_layout.plot_channel_layout` and

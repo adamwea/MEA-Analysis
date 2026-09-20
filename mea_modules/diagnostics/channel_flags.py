@@ -120,11 +120,11 @@ def flag_channels(
 # --- the flagged-channels figure's legend, computed from the same dict -----
 #
 # A figure with nothing flagged still has to say what was TESTED, or a clean
-# well and a broken flagging rule look identical on the page (Adam, 2026-09-19:
-# "in this case I see none, but make it clear by what metric we might flag
-# channels"). So every rule below draws a legend key at whatever count it
-# actually got, including zero — the caller (`plot_channel_layout`) is told to
-# key a group even when its id list is empty.
+# well and a broken flagging rule look identical on the page (review ruling,
+# 2026-09-19: "in this case I see none, but make it clear by what metric we
+# might flag channels"). So every rule below draws a legend key at whatever
+# count it actually got, including zero — the caller (`plot_channel_layout`)
+# is told to key a group even when its id list is empty.
 
 # One colour per rule, fixed here rather than beside the plotting code, so the
 # figure and this module's own `by_rule` keys cannot name a criterion two

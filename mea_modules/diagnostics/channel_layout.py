@@ -534,44 +534,6 @@ def detect_electrode_clusters(x, y, eps=None):
     return clusters
 
 
-def shared_channel_ids(recordings):
-    """The channels routed in EVERY one of `recordings`, in the first's order.
-
-    Each segment of a MaxWell session routes its own subset of the array, so
-    the only electrodes that can be compared across segments without the
-    comparison being a comparison of two different electrode sets are the ones
-    every segment kept. Those are the "shared electrodes" a cross-segment
-    figure should be drawn over (Adam, 2026-09-19); elsewhere in this package
-    the same set is called the backbone, and this is the in-memory route to it
-    for callers that hold the recordings rather than a retention artifact.
-
-    An empty sequence, or a single recording, returns that recording's own
-    channels — a one-segment well shares everything with itself.
-    """
-    recordings = list(recordings)
-    if not recordings:
-        return []
-    ordered = [str(cid) for cid in recordings[0].get_channel_ids()]
-    if len(recordings) == 1:
-        return list(recordings[0].get_channel_ids())
-
-    common = set(ordered)
-    for recording in recordings[1:]:
-        common &= {str(cid) for cid in recording.get_channel_ids()}
-
-    # Return the first recording's OWN id objects, not the stringified keys:
-    # channel ids are handed straight back to `get_traces`, which is typed.
-    keep = {str(cid): cid for cid in recordings[0].get_channel_ids()}
-    shared = [keep[cid] for cid in ordered if cid in common]
-    logger.info(
-        "shared electrode set: %d of %d channels routed in all %d segments",
-        len(shared),
-        len(ordered),
-        len(recordings),
-    )
-    return shared
-
-
 def cluster_center_channels(recording, channel_ids=None, eps=None):
     """One channel per electrode cluster: the member nearest its centroid.
 
@@ -666,11 +628,12 @@ def plot_channel_layout(
       point when a run has nothing to show for a rule that was still tested —
       see :func:`mea_modules.diagnostics.channel_flags.flagged_channel_groups`.
 
-    The figure always carries a LEGEND naming every colour (Adam, 2026-08-11) —
-    grey and red mean nothing to a reader who has not read this source, and a
-    highlighted set is only meaningful once you know *which other figure* those
-    channels were drawn into, or *which rule* flagged them. Legend text is
-    publication shorthand (Adam, 2026-09-19): the representative/traced set
+    The figure always carries a LEGEND naming every colour (a review ruling,
+    2026-08-11) — grey and red mean nothing to a reader who has not read this
+    source, and a highlighted set is only meaningful once you know *which
+    other figure* those channels were drawn into, or *which rule* flagged
+    them. Legend text is publication shorthand (a review ruling, 2026-09-19):
+    the representative/traced set
     takes :data:`mea_modules.diagnostics.figure_text.REPRESENTATIVE_KEY` rather
     than naming a sibling file, e.g.::
 

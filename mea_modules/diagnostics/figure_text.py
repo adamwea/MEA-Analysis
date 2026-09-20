@@ -47,6 +47,11 @@ ACRONYMS = {
     "CoM": "CoM = centre of mass, the amplitude-weighted average position",
     "a.u.": "a.u. = arbitrary units, a relative score with no physical unit",
     "LSB": "LSB = least significant bit, one step of the device's digital scale",
+    "SD": "SD = standard deviation, the spread of the measurements themselves",
+    "SEM": (
+        "SEM = standard error of the mean, how precisely the mean is known "
+        "(SD divided by the square root of the count)"
+    ),
 }
 
 
@@ -120,6 +125,55 @@ PROXY_NOT_MODEL = (
 )
 
 
+# --- Legend entries and axis labels ---------------------------------------
+#
+# Publication shorthand, Adam 2026-09-19: "use legend descriptions as we'd
+# expect to see them in a publication. Descriptive and clear, but as
+# short-handed as possible. Not even a partial sentence."
+#
+# The prose blocks above are NOT the fallback for these. They explain a term to
+# someone meeting it for the first time and belong in a README or a report; a
+# legend key is two or three words. The trigger was `segment_activity`'s
+# "one electrode's own rate" — a sentence fragment doing a legend's job.
+#
+# The information a longer label used to carry now lives in two other places,
+# both of which a reader can reach: the figure's own self-describing filename
+# (`..._2seg_realtime.png`), and the diagnostic JSON beside it.
+
+# The two gap kinds. These are genuinely different events — a frame-counter
+# break inside one segment lasts microseconds, a between-segment gap lasts as
+# long as the chip needed to re-route — so they keep separate keys, but the
+# explanation of WHY moved out of the legend.
+GAP_WITHIN = "within-segment gap"
+GAP_BETWEEN = "between-segment gap"
+
+# A join is one instant on the file timeline and a span on the real-elapsed
+# one, so it needs two labels rather than one.
+JOIN_INSTANT = "segment join"
+JOIN_SPANNING = "segment end / start"
+
+# Axis labels for the two timelines. The distinction the old labels spelled out
+# ("not real elapsed time") is carried by the filename token, `filetime` vs
+# `realtime`, and by these two labels being visibly different.
+FILE_TIME_AXIS = "file time (s)"
+REAL_TIME_AXIS = "elapsed time (s)"
+
+# Channel-selection keys.
+TRACED_CHANNELS = "traced channels"
+REPRESENTATIVE_KEY = "representative channels"
+BACKBONE_KEY = "shared electrodes"
+
+# Per-electrode summary keys, for a bar chart carrying scatter and a whisker.
+PER_ELECTRODE = "per electrode"
+MEAN_SD = "mean ± SD"
+MEAN_SEM = "mean ± SEM"
+
+
+def dispersion_key(kind):
+    """Legend key for an error bar: `kind` is "sd" or "sem"."""
+    return MEAN_SEM if str(kind).lower() == "sem" else MEAN_SD
+
+
 __all__ = [
     "ACRONYMS",
     "acronym_note",
@@ -133,4 +187,17 @@ __all__ = [
     "BACKBONE_CHANNELS",
     "DENSE_STITCH",
     "PROXY_NOT_MODEL",
+    "GAP_WITHIN",
+    "GAP_BETWEEN",
+    "JOIN_INSTANT",
+    "JOIN_SPANNING",
+    "FILE_TIME_AXIS",
+    "REAL_TIME_AXIS",
+    "TRACED_CHANNELS",
+    "REPRESENTATIVE_KEY",
+    "BACKBONE_KEY",
+    "PER_ELECTRODE",
+    "MEAN_SD",
+    "MEAN_SEM",
+    "dispersion_key",
 ]

@@ -25,6 +25,8 @@ already holds. Pure library — no argparse, no printing, no ``__main__``.
 
 import logging
 
+from . import figure_text
+
 logger = logging.getLogger(__name__)
 
 # All the bands go into one collection, so the ceiling is only a guard against
@@ -34,6 +36,18 @@ _MAX_SHADED_SPANS = 50_000
 
 _GAP_SHADE_COLOR = "0.65"
 _GAP_SHADE_ALPHA = 0.35
+
+# Between-segment gaps get their own colour. Neutral grey for the thousands of
+# microsecond frame-counter breaks, a light blue for the handful of acquisition
+# gaps, chosen to stay legible next to the red join rules and to survive a
+# greyscale print as a visibly different tone rather than a wider grey band.
+_SEGMENT_GAP_SHADE_COLOR = "#a8c6e0"
+_SEGMENT_GAP_SHADE_ALPHA = 0.55
+
+# Re-exported from figure_text so the legend vocabulary has ONE home: this
+# module owns where a band is drawn, figure_text owns what it is called.
+GAP_LABEL_WITHIN = figure_text.GAP_WITHIN
+GAP_LABEL_BETWEEN = figure_text.GAP_BETWEEN
 
 
 def _empty_pair():
@@ -156,6 +170,22 @@ def _gap_table(fs_hz, gaps=(), segment_gaps=()):
     missing before the first sample — as are negative gaps, which would run the
     axis backwards.
     """
+    indices, seconds, _ = _gap_table_kinds(fs_hz, gaps=gaps, segment_gaps=segment_gaps)
+    return indices, seconds
+
+
+def _gap_table_kinds(fs_hz, gaps=(), segment_gaps=()):
+    """:func:`_gap_table`, plus a mask saying which entries are between-segment.
+
+    The two kinds have to be merged before the offsets can be computed — the
+    real time of any break depends on every break before it, of either kind — so
+    they cannot simply be tabulated separately. They do, however, mean completely
+    different things to a reader: a within-segment entry is the frame counter
+    skipping by microseconds, a between-segment entry is the instrument standing
+    idle for half a minute while the chip re-routes. Carrying the origin through
+    the merge is what lets a figure draw them differently without recomputing
+    either.
+    """
     import numpy as np
 
     frame_indices, missing_frames = _normalize_gaps(gaps)
@@ -170,6 +200,9 @@ def _gap_table(fs_hz, gaps=(), segment_gaps=()):
     seconds = np.concatenate(
         (missing_frames / fs if fs > 0.0 else np.asarray([], dtype=float), segment_seconds)
     ).astype(float, copy=False)
+    is_segment = np.concatenate(
+        (np.zeros(frame_indices.size, dtype=bool), np.ones(segment_indices.size, dtype=bool))
+    )
 
     keep = (indices > 0) & (seconds > 0.0)
     dropped = int(keep.size - np.count_nonzero(keep))
@@ -177,11 +210,12 @@ def _gap_table(fs_hz, gaps=(), segment_gaps=()):
         logger.debug("dropped %d gap entries at sample <= 0 or of non-positive length", dropped)
     indices = indices[keep]
     seconds = seconds[keep]
+    is_segment = is_segment[keep]
 
     # Sorted so a cumulative sum over the table is the offset at each break, and
     # so searchsorted can answer "how much time is missing before sample s".
     order = np.argsort(indices, kind="stable")
-    return indices[order], seconds[order]
+    return indices[order], seconds[order], is_segment[order]
 
 
 def sample_times(sample_indices, fs_hz, gaps=(), segment_gaps=()):
@@ -299,6 +333,91 @@ def gap_spans(n_samples, fs_hz, gaps=(), segment_gaps=()):
     return [(float(start), float(end)) for start, end in zip(starts, ends)]
 
 
+def gap_spans_by_kind(n_samples, fs_hz, gaps=(), segment_gaps=()):
+    """:func:`gap_spans`, split into the two kinds rather than pooled.
+
+    Returns ``{"within_segment": [...], "between_segment": [...]}``, each a list
+    of ``(start_s, end_s)`` pairs on the same axis :func:`gap_spans` places them
+    on — the offsets are computed over the merged table, exactly as before, and
+    only the output is separated.
+
+    The reason this exists: pooling makes a thirty-second acquisition gap
+    indistinguishable from a microsecond frame-counter break, because the figure
+    shades both in the same grey. On a scan with thousands of small breaks the
+    one gap a reviewer actually needs to see disappears into the stipple. Drawing
+    the between-segment kind in its own colour is what separates "the instrument
+    paused to re-route" from "the frame counter skipped".
+    """
+    import numpy as np
+
+    indices, seconds, is_segment = _gap_table_kinds(
+        fs_hz, gaps=gaps, segment_gaps=segment_gaps
+    )
+    n_samples = int(n_samples)
+    keep = indices < n_samples
+    indices = indices[keep]
+    seconds = seconds[keep]
+    is_segment = is_segment[keep]
+    empty = {"within_segment": [], "between_segment": []}
+    if not indices.size:
+        return empty
+
+    fs = float(fs_hz) if fs_hz else 0.0
+    if fs <= 0.0:
+        logger.warning("no usable sampling rate; gap spans cannot be placed on a time axis")
+        return empty
+
+    cumulative = np.cumsum(seconds)
+    starts = indices.astype(float) / fs + (cumulative - seconds)
+    ends = starts + seconds
+
+    def _pairs(mask):
+        return [
+            (float(start), float(end))
+            for start, end in zip(starts[mask], ends[mask])
+        ]
+
+    return {
+        "within_segment": _pairs(~is_segment),
+        "between_segment": _pairs(is_segment),
+    }
+
+
+def shade_gap_kinds(
+    axis,
+    spans_by_kind,
+    x_min=None,
+    x_max=None,
+    max_spans=_MAX_SHADED_SPANS,
+):
+    """Shade both gap kinds in their own colours; return a count for each.
+
+    One call so that every emitter shades identically — the within-segment
+    stipple underneath in neutral grey, the between-segment gaps on top in their
+    own colour so they read as a different kind of thing rather than a wider
+    example of the same thing.
+
+    Returns ``{"within_segment": int, "between_segment": int}``: how many bands
+    each kind actually drew, which is what a caller needs to decide whether the
+    corresponding legend key belongs on the figure.
+    """
+    drawn = {}
+    for kind, color, alpha in (
+        ("within_segment", _GAP_SHADE_COLOR, _GAP_SHADE_ALPHA),
+        ("between_segment", _SEGMENT_GAP_SHADE_COLOR, _SEGMENT_GAP_SHADE_ALPHA),
+    ):
+        drawn[kind] = _shade_gap_spans(
+            axis,
+            (spans_by_kind or {}).get(kind, ()),
+            x_min=x_min,
+            x_max=x_max,
+            max_spans=max_spans,
+            color=color,
+            alpha=alpha,
+        )
+    return drawn
+
+
 def resolve_time_gaps(time_gaps):
     """Split a caller's ``time_gaps`` argument into ``(gaps, segment_gaps)``.
 
@@ -409,4 +528,125 @@ def _shade_gap_spans(
     return int(merged_starts.size)
 
 
-__all__ = ["real_time_axis", "gap_spans", "sample_times", "resolve_time_gaps"]
+_JOIN_COLOR = "red"
+_JOIN_LINEWIDTH = 0.8
+_JOIN_LINESTYLE = ":"
+
+JOIN_LABEL_INSTANT = figure_text.JOIN_INSTANT
+JOIN_LABEL_SPANNING = figure_text.JOIN_SPANNING
+
+
+def join_marks(stitch_frames, fs_hz, gaps=(), segment_gaps=(), real_time=False):
+    """Where each segment join lands on the axis a figure is drawing.
+
+    Returns one ``(start_s, stop_s)`` pair per join, in the order given.
+
+    On the FILE timeline a join is a single instant and ``start_s == stop_s``:
+    the concatenation placed the later segment's first sample immediately after
+    the earlier segment's last.
+
+    On a REAL-ELAPSED timeline it is not an instant. The earlier segment stops,
+    the instrument spends however long it takes to re-route its electrodes, and
+    only then does the later segment start — so the pair brackets that gap:
+    ``start_s`` is when recording stopped and ``stop_s`` when it resumed. One
+    line there would pin the join to a single edge of the gap and leave a reader
+    to assume the other edge is nothing (Adam, 2026-09-19).
+
+    Callers pass FRAMES on the concatenated timeline, always. That is the one
+    convention: the manifest records frames, converting the handful of joins is
+    cheaper than converting millions of event times, and it is the direction
+    that cannot lose precision. A caller holding seconds has already lost the
+    round trip.
+    """
+    fs_hz = float(fs_hz or 0.0)
+    if fs_hz <= 0.0:
+        raise ValueError(f"fs_hz must be positive to place joins in seconds; got {fs_hz}")
+
+    frames = [int(frame) for frame in (stitch_frames or ())]
+    if not frames:
+        return []
+
+    if not real_time:
+        return [(frame / fs_hz, frame / fs_hz) for frame in frames]
+
+    # A stitch frame is the FIRST frame of the later segment, so the earlier
+    # segment's last frame is the one before it. Both go through the same gap
+    # table as the rest of the axis, so the markers cannot drift from the data.
+    sample_period = 1.0 / fs_hz
+    ends = sample_times(
+        [max(0, frame - 1) for frame in frames], fs_hz, gaps=gaps, segment_gaps=segment_gaps
+    )
+    starts = sample_times(frames, fs_hz, gaps=gaps, segment_gaps=segment_gaps)
+    marks = []
+    for end, start in zip(ends, starts):
+        stop_s = float(start)
+        # The earlier segment stops one sample period after its last sample
+        # began. A join with no gap at it should give start == stop exactly, but
+        # the two ends arrive from separate float accumulations, so they differ
+        # by a few ULP; anything under half a sample period is that noise and is
+        # snapped shut. Without the snap a gapless join reads as spanning, which
+        # would put the wrong legend on the figure and draw a second rule on top
+        # of the first.
+        start_s = min(float(end) + sample_period, stop_s)
+        if stop_s - start_s < 0.5 * sample_period:
+            start_s = stop_s
+        marks.append((start_s, stop_s))
+    return marks
+
+
+def joins_span_time(marks):
+    """Whether any join in `marks` has real elapsed time inside it.
+
+    An exact comparison is enough because :func:`join_marks` has already snapped
+    a gapless join shut; this stays strict so a genuine sub-sample gap is not
+    silently rounded away twice.
+    """
+    return any(float(stop) > float(start) for start, stop in marks or ())
+
+
+def draw_join_marks(
+    axis,
+    marks,
+    color=_JOIN_COLOR,
+    lw=_JOIN_LINEWIDTH,
+    linestyle=_JOIN_LINESTYLE,
+    alpha=0.85,
+):
+    """Draw every join from :func:`join_marks`; return how many lines were drawn.
+
+    An instantaneous join is one line. A join with real time inside it is two —
+    the earlier segment's end and the later one's start — so a reader can see
+    that the space between them is elapsed time rather than a rendering gap.
+
+    Takes the axis rather than importing matplotlib, keeping this module
+    pure-numeric like the rest of it.
+    """
+    drawn = 0
+    for start_s, stop_s in marks or ():
+        axis.axvline(
+            float(start_s), color=color, linewidth=lw, linestyle=linestyle, alpha=alpha
+        )
+        drawn += 1
+        if float(stop_s) > float(start_s):
+            axis.axvline(
+                float(stop_s), color=color, linewidth=lw, linestyle=linestyle, alpha=alpha
+            )
+            drawn += 1
+    return drawn
+
+
+__all__ = [
+    "real_time_axis",
+    "gap_spans",
+    "gap_spans_by_kind",
+    "shade_gap_kinds",
+    "GAP_LABEL_WITHIN",
+    "GAP_LABEL_BETWEEN",
+    "sample_times",
+    "resolve_time_gaps",
+    "join_marks",
+    "joins_span_time",
+    "draw_join_marks",
+    "JOIN_LABEL_INSTANT",
+    "JOIN_LABEL_SPANNING",
+]

@@ -62,3 +62,6 @@ CLAUDE.md
 harness.toml
 .graphifyignore
 mea_modules/.claude/
+
+# Review-plugin scratch: findings belong in the vault, never in the repo.
+.review/

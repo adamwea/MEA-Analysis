@@ -99,6 +99,38 @@ def _window_block(recording, channel_ids, window_s, start_s=0.0):
     }
 
 
+def _resolve_channel_pool(recording, wanted):
+    """`wanted` expressed in the recording's OWN channel ids, or None.
+
+    A shared-electrode list read out of JSON arrives as strings; a recording
+    keyed on electrode ids answers to ints. Handing the strings straight to a
+    reader raises "IDs ['1847'] are not ids of the extractor" and the whole
+    spectra pass is lost -- which is exactly what happened the first time this
+    ran on real data.
+
+    Matching on the string form and returning the recording's own objects is
+    what makes the pool survive the round trip in either direction. Ids the
+    recording does not have are dropped rather than raising: a shared set is
+    computed across the well, and a segment that did not route one of them is
+    the normal case, not an error.
+    """
+    if not wanted:
+        return None
+    own = list(recording.get_channel_ids())
+    by_text = {str(cid): cid for cid in own}
+    resolved = [by_text[str(cid)] for cid in wanted if str(cid) in by_text]
+    if not resolved:
+        logger.warning(
+            "none of the %d requested channels are in this recording's %d; "
+            "falling back", len(list(wanted)), len(own),
+        )
+        return None
+    missing = len(list(wanted)) - len(resolved)
+    if missing:
+        logger.info("%d of the requested channels are not routed here", missing)
+    return resolved
+
+
 def _tolerant(what, fn, default=None):
     """Run one diagnostic; a failure costs that diagnostic, never the segment.
 
@@ -288,7 +320,7 @@ def collect_segment_diagnostics(
         metrics["raster_skipped"] = "not requested (raster_max_channels <= 0)"
 
     # ------------------------------------------------------------ spectra
-    psd_pool = list(psd_channel_ids) if psd_channel_ids else list(rep)
+    psd_pool = _resolve_channel_pool(qc_rec, psd_channel_ids) or list(rep)
     spectra = {}
     for name, recording in (("raw", raw_view), ("preprocessed", qc_rec)):
         if name == "preprocessed" and source != "preprocessed":

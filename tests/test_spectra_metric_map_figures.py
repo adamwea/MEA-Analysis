@@ -28,7 +28,7 @@ import pytest
 
 from mea_modules.diagnostics import metric_maps as mm
 from mea_modules.diagnostics import spectra as sp
-from mea_modules.diagnostics.figure_text import ACRONYMS
+from mea_modules.diagnostics.figure_text import ACRONYMS_SHORT
 
 
 def _norm(text):
@@ -47,24 +47,67 @@ class _Captured:
         self.in_axes_text = []
         self.figure_text = []
 
+    @staticmethod
+    def _all_axes(fig):
+        """Every axes on `fig`, including the colour bars drawn as insets.
+
+        A colour bar made with ``colorbar(ax=...)`` used to land straight in
+        ``fig.get_axes()``. It is now an inset on its panel -- that is what
+        keeps two side-by-side panels exactly the same size, because
+        ``colorbar(ax=...)`` takes its width out of the parent and takes a
+        different amount on the left than on the right. An inset is a CHILD of
+        its panel, so it is reached through ``child_axes`` rather than the
+        figure's own list, and a collector that only walks ``fig.get_axes()``
+        silently stops seeing every bar label.
+        """
+        seen, out = set(), []
+        pending = list(fig.get_axes())
+        while pending:
+            axis = pending.pop(0)
+            if id(axis) in seen:
+                continue
+            seen.add(id(axis))
+            out.append(axis)
+            pending.extend(getattr(axis, "child_axes", ()))
+        return out
+
     def freeze(self, fig):
         self.figure = fig
+        # Draw first. Positions are laid out lazily, and an inset colour
+        # bar in particular reports its parent's pre-layout box until the
+        # figure has been through a render -- which, since this fixture
+        # intercepts the save, has not happened yet.
+        try:
+            fig.canvas.draw()
+        except Exception:  # noqa: BLE001 - measurement only, never fatal
+            pass
         # Colorbars are axes too, and their label is the panel's unit key, so
         # they are collected with the rest rather than filtered out.
+        axes = self._all_axes(fig)
         self.axis_labels = [
             _norm(label)
-            for axis in fig.get_axes()
+            for axis in axes
             for label in (axis.get_xlabel(), axis.get_ylabel())
             if _norm(label)
         ]
-        self.titles = [_norm(a.get_title()) for a in fig.get_axes() if _norm(a.get_title())]
+        self.titles = [_norm(a.get_title()) for a in axes if _norm(a.get_title())]
         self.in_axes_text = [
-            _norm(t.get_text()) for axis in fig.get_axes() for t in axis.texts
+            _norm(t.get_text()) for axis in axes for t in axis.texts
         ]
         self.figure_text = [_norm(t.get_text()) for t in fig.texts if _norm(t.get_text())]
         self.legend_titles = []
         self.legend_labels = []
-        for axis in fig.get_axes():
+        # Panel geometry, frozen here because `_save_tight` clears the figure
+        # before a test can look at it. One entry per top-level panel: its own
+        # box, and the boxes of the colour bars drawn as insets on it. This is
+        # what lets a test assert the SIDE rule and the equal-size rule against
+        # where things actually landed, rather than against a kwarg that an
+        # implementation happens to pass.
+        self.panel_boxes = [
+            (axis.get_position(), [c.get_position() for c in getattr(axis, "child_axes", ())])
+            for axis in fig.get_axes()
+        ]
+        for axis in axes:
             legend = axis.get_legend()
             if legend is None:
                 continue
@@ -228,7 +271,7 @@ def test_psd_is_expanded_in_the_legend(capture, recording, tmp_path):
     sp.plot_spectra_panels(_spectra(recording), tmp_path / "psd.png")
 
     assert capture.legend_titles, "the legend carries no title"
-    assert _norm(ACRONYMS["PSD"]) in _norm(capture.legend_titles[0])
+    assert _norm(ACRONYMS_SHORT["PSD"]) in _norm(capture.legend_titles[0])
 
 
 def test_counts_panel_also_expands_adc(capture, tmp_path):
@@ -241,15 +284,15 @@ def test_counts_panel_also_expands_adc(capture, tmp_path):
     sp.plot_spectra_panels(_spectra(counts, sources=("raw",)), tmp_path / "psd.png")
 
     title = _norm(capture.legend_titles[0])
-    assert _norm(ACRONYMS["PSD"]) in title
-    assert _norm(ACRONYMS["ADC"]) in title
+    assert _norm(ACRONYMS_SHORT["PSD"]) in title
+    assert _norm(ACRONYMS_SHORT["ADC"]) in title
 
 
 def test_microvolt_panel_does_not_define_adc(capture, recording, tmp_path):
     """The converse: a figure that never prints ADC does not define it either."""
     sp.plot_spectra_panels(_spectra(recording), tmp_path / "psd.png")
 
-    assert _norm(ACRONYMS["ADC"]) not in _norm(capture.legend_titles[0])
+    assert _norm(ACRONYMS_SHORT["ADC"]) not in _norm(capture.legend_titles[0])
 
 
 # --------------------------------------------------------------------------
@@ -272,7 +315,7 @@ def test_psd_annotate_false_drops_the_title_and_keeps_everything_else(
     assert capture.figure._suptitle is None
     assert capture.count("PSD (") == 1
     assert capture.count("frequency (Hz)") == len(sources)
-    assert _norm(ACRONYMS["PSD"]) in _norm(capture.legend_titles[0])
+    assert _norm(ACRONYMS_SHORT["PSD"]) in _norm(capture.legend_titles[0])
     assert any("raw" in text for text in capture.in_axes_text)
     assert any("preprocessed" in text for text in capture.in_axes_text)
 
@@ -407,55 +450,57 @@ def test_metric_map_legend_expands_its_acronym_once(capture, recording, tmp_path
 
     assert capture.legend_titles, "no panel carries a legend title"
     joined = " || ".join(capture.legend_titles)
-    assert _norm(ACRONYMS["MAD"]) in _norm(joined)
-    assert _norm(ACRONYMS["SD"]) in _norm(joined)
+    assert _norm(ACRONYMS_SHORT["MAD"]) in _norm(joined)
+    assert _norm(ACRONYMS_SHORT["SD"]) in _norm(joined)
 
 
-def test_colorbar_side_mirrors_the_panels_column(recording, tmp_path):
+def test_colorbar_side_mirrors_the_panels_column(capture, recording, tmp_path):
     """Rule (2026-09-19): a LEFT panel's colour bar sits on ITS left, a
     RIGHT panel's stays on the right — derived from column index, not a
-    hardcoded per-call side."""
+    hardcoded per-call side.
+
+    Asserted against where the bar actually landed rather than against the
+    `location=` kwarg the old implementation passed: the bar is now an inset,
+    so the kwarg is gone but the rule it encoded is unchanged, and geometry is
+    the thing the rule was ever really about.
+    """
     noise, activity = _metrics(recording)
-    out_path = tmp_path / "map.png"
+    mm.plot_noise_activity_map(recording, noise, activity, tmp_path / "map.png")
 
-    import matplotlib.figure as mfigure
-
-    calls = []
-    real_colorbar = mfigure.Figure.colorbar
-
-    def spy(self, mappable, ax=None, location=None, **kwargs):
-        calls.append(location)
-        return real_colorbar(self, mappable, ax=ax, location=location, **kwargs)
-
-    mfigure.Figure.colorbar = spy
-    try:
-        mm.plot_noise_activity_map(recording, noise, activity, out_path)
-    finally:
-        mfigure.Figure.colorbar = real_colorbar
-
-    assert calls == ["left", "right"]
+    assert len(capture.panel_boxes) == 2, "expected exactly two panels"
+    (left_panel, left_bars), (right_panel, right_bars) = capture.panel_boxes
+    assert len(left_bars) == 1 and len(right_bars) == 1, "one colour bar per panel"
+    assert left_bars[0].x1 <= left_panel.x0, "the left panel's bar is not on its left"
+    assert right_bars[0].x0 >= right_panel.x1, "the right panel's bar is not on its right"
 
 
-def test_single_panel_map_colorbar_defaults_to_the_right(recording, tmp_path):
-    """A standalone single-panel figure is not "half of a pair" — its bar keeps
-    the ordinary right-hand placement rather than being called "left"."""
-    import matplotlib.figure as mfigure
+def test_single_panel_map_colorbar_defaults_to_the_right(capture, recording, tmp_path):
+    """One panel is its own right half, so its bar goes on the right."""
+    noise, _ = _metrics(recording)
+    mm.plot_noise_map(recording, noise, tmp_path / "noise.png")
 
-    calls = []
-    real_colorbar = mfigure.Figure.colorbar
+    assert len(capture.panel_boxes) == 1
+    panel, bars = capture.panel_boxes[0]
+    assert len(bars) == 1
+    assert bars[0].x0 >= panel.x1, "a single panel's bar is not on its right"
 
-    def spy(self, mappable, ax=None, location=None, **kwargs):
-        calls.append(location)
-        return real_colorbar(self, mappable, ax=ax, location=location, **kwargs)
 
-    mfigure.Figure.colorbar = spy
-    try:
-        _, activity = _metrics(recording)
-        mm.plot_firing_rate_map(recording, activity, tmp_path / "rate.png")
-    finally:
-        mfigure.Figure.colorbar = real_colorbar
+def test_two_panels_are_exactly_the_same_size(capture, recording, tmp_path):
+    """Review ruling (2026-09-20): the two panels must be identically sized.
 
-    assert calls == ["right"]
+    They were not. `colorbar(ax=ax)` takes its space out of the parent axes and
+    takes a DIFFERENT amount on each side — 25% of the width at
+    ``location="left"`` against 20% at ``"right"`` — so the side rule above was
+    itself leaving the panels 6.25% apart. Drawing each bar as an inset leaves
+    the panels untouched. A side-by-side comparison whose panels are not the
+    same size silently misstates the thing it exists to compare.
+    """
+    noise, activity = _metrics(recording)
+    mm.plot_noise_activity_map(recording, noise, activity, tmp_path / "map.png")
+
+    (first, _), (second, _) = capture.panel_boxes
+    assert first.width == pytest.approx(second.width, rel=1e-9)
+    assert first.height == pytest.approx(second.height, rel=1e-9)
 
 
 def test_plot_metric_maps_draws_into_callers_axes(recording, tmp_path):

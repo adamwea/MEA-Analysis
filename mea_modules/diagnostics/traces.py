@@ -794,7 +794,7 @@ def plot_traces(
     handles = [
         _legend_line(
             "black",
-            f"one row per channel — amplitude in {unit_label}, same y range on every row",
+            f"trace / channel, shared y ({unit_label})",
             lw=0.9,
         )
     ]

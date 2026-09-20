@@ -227,7 +227,7 @@ def test_traces_legend_keys_every_encoding(capture, recording, tmp_path):
         stitch_frames=(10_000,), title="segment traces",
     )
     labels = " || ".join(capture._frozen_legends)
-    assert "one row per channel" in labels
+    assert "trace / channel" in labels
     assert "µV" in labels
     assert JOIN_LABEL_INSTANT in labels
 
@@ -300,9 +300,14 @@ def test_raster_legend_states_threshold_and_units(capture, recording, tmp_path):
         duration_s=1.0, stitch_frames=(4_000, 12_000),
     )
     labels = " || ".join(capture._frozen_legends)
-    assert "threshold crossing" in labels
-    assert "MAD-sigma" in labels
-    assert "refractory" in labels
+    # Publication shorthand (2026-09-20): the key is a noun phrase rather than
+    # a sentence, but it still carries the three numbers a reader cannot
+    # recover from the picture -- the threshold, the estimator it is expressed
+    # in, and the refractory window that decides what counts as one event.
+    assert "crossing" in labels
+    assert "MAD-σ" in labels
+    assert "5×" in labels
+    assert "ms" in labels
     assert JOIN_LABEL_INSTANT in labels
 
 
@@ -1074,7 +1079,7 @@ def test_traces_annotate_false_drops_the_chrome_and_keeps_the_unit(drawn, record
     assert "amplitude (µV)" in drawn["text"]
     assert "time (s)" in drawn["text"]
     labels = " || ".join(drawn["legends"])
-    assert "one row per channel" in labels
+    assert "trace / channel" in labels
     assert JOIN_LABEL_INSTANT in labels
 
 
@@ -1253,7 +1258,7 @@ def test_composite_annotate_false_keeps_both_keys_and_the_unit(drawn, recording,
     assert "amplitude (µV)" in bottom["ylabel"]
     assert "time (s)" in bottom["xlabel"]
     labels = " || ".join(drawn["legends"])
-    assert "one row per channel" in labels and "routed electrodes" in labels
+    assert "trace / channel" in labels and "routed electrodes" in labels
 
 
 def test_composite_is_deterministic(recording, tmp_path):

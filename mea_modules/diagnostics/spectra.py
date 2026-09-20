@@ -363,7 +363,7 @@ def plot_spectra_panels(
     legend_corner(
         axes[0],
         handles=[family_handle],
-        title=_wrap_label(acronym_note(*acronyms), width=_LEGEND_TITLE_WIDTH),
+        title=_wrap_label(acronym_note(*acronyms, short=True), width=_LEGEND_TITLE_WIDTH),
         title_fontsize=_LEGEND_TITLE_FONTSIZE,
     )
 

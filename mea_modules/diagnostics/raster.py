@@ -464,8 +464,8 @@ def plot_raster_threshold(
         handles.append(
             _legend_dot(
                 "black",
-                f"threshold crossing ({float(threshold_factor):g} × MAD-sigma, "
-                f"{float(refractory_period_ms):g} ms refractory)",
+                f"≥{float(threshold_factor):g}× MAD-σ crossing "
+                f"({float(refractory_period_ms):g} ms)",
                 size=4.0,
             )
         )

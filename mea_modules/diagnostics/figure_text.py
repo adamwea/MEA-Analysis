@@ -55,13 +55,42 @@ ACRONYMS = {
 }
 
 
-def acronym_note(*names, joiner="  ·  "):
+# The SHORT form: the expansion and nothing else. A figure legend is not the
+# place for the explanatory clause -- a legend key reads the way it would in a
+# published figure, and a three-line gloss inside the box is the "too much
+# partial sentence" the review keeps catching (2026-09-20). The long form above
+# still carries the meaning, and the README is where every acronym is defined
+# in full, so nothing is lost by keeping the box to one line.
+ACRONYMS_SHORT = {
+    "MAD": "MAD = median absolute deviation",
+    "RMS": "RMS = root mean square",
+    "PSD": "PSD = power spectral density",
+    "ADC": "ADC = analog-to-digital converter",
+    "SNR": "SNR = signal-to-noise ratio",
+    "ISI": "ISI = inter-spike interval",
+    "CMR": "CMR = common median reference",
+    "QC": "QC = quality control",
+    "PTP": "PTP = peak-to-peak",
+    "CoM": "CoM = centre of mass",
+    "a.u.": "a.u. = arbitrary units",
+    "LSB": "LSB = least significant bit",
+    "SD": "SD = standard deviation",
+    "SEM": "SEM = standard error of the mean",
+}
+
+
+def acronym_note(*names, joiner="  ·  ", short=False):
     """Caption fragment defining `names`, in the order given, skipping unknowns.
 
     Callers list the acronyms their figure actually prints — passing the whole
     table would crowd the figure with definitions of terms that never appear.
+
+    `short` takes the expansion alone, without the clause of meaning, which is
+    what belongs inside a legend box; the default long form is for a caption or
+    a README, where there is room for it.
     """
-    parts = [ACRONYMS[name] for name in names if name in ACRONYMS]
+    table = ACRONYMS_SHORT if short else ACRONYMS
+    parts = [table[name] for name in names if name in table]
     return joiner.join(parts)
 
 

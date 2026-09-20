@@ -63,6 +63,23 @@ _UM_LABEL = r"$\mu\mathrm{m}$"
 _LEGEND_TITLE_WIDTH = 38
 _LEGEND_TITLE_FONTSIZE = 6
 
+# The colour bar gets its OWN axes, inset beside the panel, and is never made
+# with `colorbar(ax=...)`. That call takes its space out of the parent axes,
+# and it takes a different amount on each side -- measured 25% of the width at
+# `location="left"` against 20% at `"right"` -- so the rule that puts a
+# left-hand panel's bar on the left and a right-hand panel's on the right was
+# leaving the two panels 6.25% different in size, which is precisely what a
+# side-by-side comparison must not do. An inset never resizes its parent, so
+# every panel keeps exactly the box the subplot grid gave it, and the
+# `bbox_inches="tight"` save keeps the bars in frame.
+_COLORBAR_WIDTH = 0.035
+# Clear of the y tick labels, which `sharey` puts on the leftmost panel only.
+_COLORBAR_PAD_LEFT = 0.17
+_COLORBAR_PAD_RIGHT = 0.045
+# Matches the shrink the old `colorbar(..., shrink=0.85)` applied.
+_COLORBAR_Y0 = 0.075
+_COLORBAR_HEIGHT = 0.85
+
 
 def _save_tight(fig, out_path):
     """Write `fig` with a tight bounding box, then drop its artists.
@@ -147,7 +164,24 @@ def _draw_metric_panel(
         locations[:, 0], locations[:, 1],
         c=values, s=6, cmap=cmap, vmin=vmin, vmax=vmax, linewidths=0,
     )
-    ax.figure.colorbar(scatter, ax=ax, location=colorbar_side, shrink=0.85).set_label(bar_label)
+    # An inset, not `colorbar(ax=ax)` -- see _COLORBAR_WIDTH for why the
+    # latter made the two panels different sizes.
+    on_left = colorbar_side == "left"
+    cax = ax.inset_axes(
+        (
+            -_COLORBAR_PAD_LEFT - _COLORBAR_WIDTH if on_left else 1.0 + _COLORBAR_PAD_RIGHT,
+            _COLORBAR_Y0,
+            _COLORBAR_WIDTH,
+            _COLORBAR_HEIGHT,
+        )
+    )
+    bar = ax.figure.colorbar(scatter, cax=cax)
+    if on_left:
+        # Ticks and label outboard of the bar, so they read from the figure
+        # edge inwards and never collide with the panel they belong to.
+        cax.yaxis.set_ticks_position("left")
+        cax.yaxis.set_label_position("left")
+    bar.set_label(bar_label)
     if annotate:
         ax.set_title(panel_title)
     ax.set_aspect("equal", adjustable="box")
@@ -165,7 +199,9 @@ def _draw_metric_panel(
         handle = _legend_dot(_metric_swatch_color(cmap), legend_label)
         legend_kwargs = {}
         if acronyms:
-            legend_kwargs["title"] = _wrap_label(acronym_note(*acronyms), width=_LEGEND_TITLE_WIDTH)
+            legend_kwargs["title"] = _wrap_label(
+                acronym_note(*acronyms, short=True), width=_LEGEND_TITLE_WIDTH
+            )
             legend_kwargs["title_fontsize"] = _LEGEND_TITLE_FONTSIZE
         legend_corner(
             ax, handles=[handle], fontsize=LEGEND_FONTSIZE, framealpha=LEGEND_FRAME_ALPHA,

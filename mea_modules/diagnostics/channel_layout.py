@@ -91,7 +91,13 @@ def _wrap_label(text, width=_WRAP_WIDTH):
 
     if not text:
         return text
-    return "\n".join(textwrap.wrap(str(text), width=int(width)) or [str(text)])
+    # `break_on_hyphens=False`: without it a wrap can land inside a
+    # hyphenated word and print "analog-\nto-digital", which reads as two
+    # words and breaks any check looking for the term.
+    return "\n".join(
+        textwrap.wrap(str(text), width=int(width), break_on_hyphens=False)
+        or [str(text)]
+    )
 
 
 def _legend_dot(color, label, size=6.0):

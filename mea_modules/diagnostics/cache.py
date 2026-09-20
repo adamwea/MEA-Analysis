@@ -26,7 +26,10 @@ What is cached, and why each thing rather than the obvious alternative:
 
 ``traces``
     The sample windows the trace figures actually draw, for the representative
-    channels only. A few channels over a bounded window is megabytes.
+    channels only, at full rate and keyed by their ORIGINAL frame numbers. A few
+    channels over a bounded window is megabytes, and keeping the frames means
+    the cached figure decimates and shades its dropped stretches in exactly the
+    places the live one did -- the same figure, not an approximation of it.
 
 ``events``
     The raster caches DETECTED CROSSINGS, not traces. The raster draws every
@@ -92,7 +95,7 @@ class CachedProbe:
     draw something else.
     """
 
-    def __init__(self, channel_ids, locations, sampling_frequency=None):
+    def __init__(self, channel_ids, locations, sampling_frequency=None, num_frames=None):
         self._channel_ids = list(channel_ids)
         locations = np.asarray(locations, dtype=float)
         if locations.ndim != 2 or locations.shape[0] != len(self._channel_ids):
@@ -102,6 +105,7 @@ class CachedProbe:
             )
         self._locations = locations
         self._fs = None if sampling_frequency is None else float(sampling_frequency)
+        self._num_frames = None if num_frames is None else int(num_frames)
 
     def get_channel_ids(self):
         return list(self._channel_ids)
@@ -116,6 +120,27 @@ class CachedProbe:
         if self._fs is None:
             raise ValueError("this cached probe carries no sampling frequency")
         return self._fs
+
+    def get_num_frames(self, segment_index=None):
+        """The span the capsule analysed, so a raster can set its own x limits.
+
+        A raster draws the window that was ANALYSED, not the extent of its
+        events -- a window where firing stops halfway has to show the silence --
+        so the frame count travels with the cache rather than being inferred
+        from the last event.
+        """
+        if self._num_frames is None:
+            raise ValueError("this cached probe carries no frame count")
+        return self._num_frames
+
+    # SpikeInterface spells this both ways and the emitters use `get_num_samples`.
+    get_num_samples = get_num_frames
+
+    def get_num_segments(self):
+        return 1
+
+    def has_time_vector(self, segment_index=None):
+        return False
 
     def has_scaleable_traces(self):
         return False
@@ -138,7 +163,102 @@ class CachedProbe:
             fs = float(recording.get_sampling_frequency())
         except Exception:  # noqa: BLE001
             fs = None
-        return cls(channel_ids, locations, sampling_frequency=fs)
+        try:
+            num_frames = int(recording.get_num_frames())
+        except Exception:  # noqa: BLE001
+            num_frames = None
+        return cls(channel_ids, locations, sampling_frequency=fs, num_frames=num_frames)
+
+
+class CachedTraces:
+    """A frame-faithful window of samples, with the recording read surface.
+
+    The trace figures decimate, place a real-elapsed axis and shade dropped
+    stretches, all from FRAME NUMBERS. A view that renumbered its samples would
+    put the gap shading in the wrong place, so this one keeps the original
+    frames: `frame_offset` is where the cached block starts in the recording it
+    came from, and :meth:`get_traces` is addressed in those same numbers.
+
+    The consequence worth stating: the cached figure is not an approximation of
+    the live one. Same frames, same decimation, same axis -- the same figure,
+    drawn by the same emitter, from samples that were read once.
+    """
+
+    def __init__(
+        self,
+        channel_ids,
+        traces,
+        sampling_frequency,
+        frame_offset=0,
+        locations=None,
+        unit=None,
+    ):
+        self._channel_ids = list(channel_ids)
+        self._traces = np.asarray(traces)
+        if self._traces.ndim != 2 or self._traces.shape[1] != len(self._channel_ids):
+            raise ValueError(
+                f"traces must be (n_samples, n_channels); got {self._traces.shape} "
+                f"for {len(self._channel_ids)} channels"
+            )
+        self._fs = float(sampling_frequency)
+        self._offset = int(frame_offset)
+        self._locations = None if locations is None else np.asarray(locations, dtype=float)
+        self.unit = unit
+
+    def get_channel_ids(self):
+        return list(self._channel_ids)
+
+    def get_num_channels(self):
+        return len(self._channel_ids)
+
+    def get_num_frames(self, segment_index=None):
+        return self._offset + self._traces.shape[0]
+
+    # SpikeInterface spells this both ways and the emitters use `get_num_samples`.
+    get_num_samples = get_num_frames
+
+    def get_num_segments(self):
+        return 1
+
+    def get_sampling_frequency(self):
+        return self._fs
+
+    def get_channel_locations(self):
+        if self._locations is None:
+            raise ValueError("this cached trace window carries no geometry")
+        return self._locations.copy()
+
+    def has_time_vector(self, segment_index=None):
+        return False
+
+    def has_scaleable_traces(self):
+        return False
+
+    def get_traces(
+        self, start_frame=None, end_frame=None, channel_ids=None, return_in_uV=None, **kwargs
+    ):
+        start = self._offset if start_frame is None else int(start_frame)
+        end = self.get_num_frames() if end_frame is None else int(end_frame)
+        lo = start - self._offset
+        hi = end - self._offset
+        if lo < 0 or hi > self._traces.shape[0]:
+            raise ValueError(
+                f"frames {start}..{end} fall outside the cached window "
+                f"{self._offset}..{self._offset + self._traces.shape[0]}"
+            )
+        block = self._traces[lo:hi, :]
+        if channel_ids is None:
+            return block
+        index = [self._channel_ids.index(cid) for cid in channel_ids]
+        return block[:, index]
+
+    @property
+    def start_time_s(self):
+        return self._offset / self._fs if self._fs else 0.0
+
+    @property
+    def duration_s(self):
+        return self._traces.shape[0] / self._fs if self._fs else 0.0
 
 
 # --------------------------------------------------------------------------
@@ -181,10 +301,12 @@ def write_cache(
     """Write one entity's diagnostic cache; return the directory it went to.
 
     `probe` is a :class:`CachedProbe` (or a live recording, snapshotted here).
-    `traces` maps a source name to ``{"channel_ids", "time_s", "traces"}``;
-    `events` maps a name to ``{"times_s", "labels"}``; `spectra` maps a source
-    name to a :func:`mea_modules.diagnostics.spectra.welch_spectra` result.
-    `metrics` and `meta` are plain JSON-able dicts.
+    `traces` maps a source name to ``{"channel_ids", "traces", "frame_offset",
+    "sampling_frequency", "unit"}`` -- frames, not seconds, because that is what
+    the trace emitters decimate and shade from; `events` maps a name to
+    ``{"times_s", "labels"}``; `spectra` maps a source name to a
+    :func:`mea_modules.diagnostics.spectra.welch_spectra` result. `metrics` and
+    `meta` are plain JSON-able dicts.
 
     Arrays and dicts are written to two files, not interleaved: the JSON stays
     readable by a person opening it to check a number, which is most of why the
@@ -204,8 +326,14 @@ def write_cache(
         trace_sources[name] = {
             "channel_ids": _jsonable(list(block["channel_ids"])),
             "unit": block.get("unit"),
+            # Frame-faithful: where this block starts in the recording it was
+            # read from, so the cached figure decimates and shades exactly where
+            # the live one did.
+            "frame_offset": int(block.get("frame_offset", 0)),
+            "sampling_frequency": float(
+                block.get("sampling_frequency", probe._fs or 0.0)
+            ),
         }
-        _store("traces", name, "time_s", block["time_s"])
         _store("traces", name, "traces", block["traces"], dtype=np.float32)
 
     event_sources = {}
@@ -230,6 +358,7 @@ def write_cache(
             "channel_ids": _jsonable(probe.get_channel_ids()),
             "locations": probe.get_channel_locations().tolist(),
             "sampling_frequency": probe._fs,
+            "num_frames": probe._num_frames,
         },
         "metrics": _jsonable(metrics or {}),
         "traces": trace_sources,
@@ -260,6 +389,7 @@ class DiagnosticCache:
             geometry["channel_ids"],
             geometry["locations"],
             sampling_frequency=geometry.get("sampling_frequency"),
+            num_frames=geometry.get("num_frames"),
         )
 
     @property
@@ -284,13 +414,31 @@ class DiagnosticCache:
         return list(self._record.get("spectra", {}))
 
     def traces(self, name):
-        """``(channel_ids, time_s, traces)`` for one cached trace window."""
+        """One cached trace window, as a :class:`CachedTraces` view.
+
+        A view rather than raw arrays, because the trace emitters take a
+        recording: handing them this keeps ONE definition of the figure, drawn
+        by the same function whether the samples came off disk or out of cache.
+        """
         block = self._record["traces"][name]
-        return (
-            list(block["channel_ids"]),
-            self._arrays[f"traces/{name}/time_s"],
+        return CachedTraces(
+            block["channel_ids"],
             self._arrays[f"traces/{name}/traces"],
+            sampling_frequency=block["sampling_frequency"],
+            frame_offset=block.get("frame_offset", 0),
+            locations=self._locations_for(block["channel_ids"]),
+            unit=block.get("unit"),
         )
+
+    def _locations_for(self, channel_ids):
+        """The cached geometry, restricted to and ordered by `channel_ids`."""
+        known = self.probe.get_channel_ids()
+        locations = self.probe.get_channel_locations()
+        try:
+            index = [known.index(cid) for cid in channel_ids]
+        except ValueError:
+            return None
+        return locations[index, :]
 
     def events(self, name):
         """``(times_s, labels)`` -- the pair detection returns, cached."""

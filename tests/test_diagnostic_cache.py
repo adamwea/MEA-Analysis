@@ -17,6 +17,7 @@ from mea_modules.diagnostics.cache import (
     CACHE_VERSION,
     RECORD_NAME,
     CachedProbe,
+    CachedTraces,
     CacheMissing,
     CacheVersionMismatch,
     cache_dir,
@@ -28,10 +29,19 @@ from mea_modules.diagnostics.cache import (
 CHANNEL_IDS = ["e1", "e2", "e3", "e4"]
 LOCATIONS = [[0.0, 0.0], [17.5, 0.0], [0.0, 17.5], [17.5, 17.5]]
 FS_HZ = 10_000.0
+N_FRAMES = 100_000
+TRACE_OFFSET = 2_000
+TRACE_FRAMES = 500
 
 
 def _probe():
-    return CachedProbe(CHANNEL_IDS, LOCATIONS, sampling_frequency=FS_HZ)
+    return CachedProbe(
+        CHANNEL_IDS, LOCATIONS, sampling_frequency=FS_HZ, num_frames=N_FRAMES
+    )
+
+
+def _window():
+    return np.arange(TRACE_FRAMES * 2, dtype=np.float32).reshape(TRACE_FRAMES, 2)
 
 
 def _write(tmp_path, **kwargs):
@@ -41,8 +51,9 @@ def _write(tmp_path, **kwargs):
         traces={
             "preprocessed": {
                 "channel_ids": ["e1", "e2"],
-                "time_s": np.linspace(0.0, 1.0, 50),
-                "traces": np.zeros((50, 2)),
+                "traces": _window(),
+                "frame_offset": TRACE_OFFSET,
+                "sampling_frequency": FS_HZ,
                 "unit": "uV",
             }
         },
@@ -77,10 +88,13 @@ def test_a_cache_round_trips_everything_a_figure_needs(tmp_path):
     assert cache.metric("noise")["noise"] == [1.0, 1.1, 0.9, 1.2]
     assert cache.metric("nothing_computed_this_run") is None
 
-    ids, time_s, traces = cache.traces("preprocessed")
-    assert ids == ["e1", "e2"]
-    assert time_s.shape == (50,)
-    assert traces.shape == (50, 2)
+    view = cache.traces("preprocessed")
+    assert view.get_channel_ids() == ["e1", "e2"]
+    assert view.get_sampling_frequency() == FS_HZ
+    assert view.unit == "uV"
+    # Geometry rides along, restricted to the cached channels, so a layout
+    # inset beside the traces draws without a second lookup.
+    assert view.get_channel_locations().tolist() == LOCATIONS[:2]
 
     times, labels = cache.events("raster")
     assert times.tolist() == [0.1, 0.5, 0.9]
@@ -194,3 +208,68 @@ def test_a_probe_snapshot_survives_a_recording_with_no_usable_geometry():
 def test_locations_that_do_not_match_the_channels_are_refused_at_construction():
     with pytest.raises(ValueError, match="n_channels"):
         CachedProbe(CHANNEL_IDS, [[0.0, 0.0]])
+
+
+def test_the_probe_carries_the_span_that_was_analysed():
+    """A raster sets its x limits from the ANALYSED window, not from where the
+    last event happened, so a window where firing stops halfway still shows the
+    silence. That span has to survive into the cache."""
+    assert _probe().get_num_frames() == N_FRAMES
+
+
+# --------------------------------------------------------------------------
+# the trace view is frame-faithful
+# --------------------------------------------------------------------------
+
+
+def _view():
+    return CachedTraces(
+        ["e1", "e2"], _window(), sampling_frequency=FS_HZ, frame_offset=TRACE_OFFSET
+    )
+
+
+def test_cached_traces_are_addressed_in_the_original_frame_numbers():
+    """Renumbering the samples would put the real-elapsed gap shading in the
+    wrong place, because the emitters compute it from frame numbers."""
+    view = _view()
+
+    assert view.get_num_frames() == TRACE_OFFSET + TRACE_FRAMES
+    assert view.start_time_s == TRACE_OFFSET / FS_HZ
+    assert view.duration_s == TRACE_FRAMES / FS_HZ
+
+    block = view.get_traces(start_frame=TRACE_OFFSET, end_frame=TRACE_OFFSET + 10)
+    assert block.shape == (10, 2)
+    assert np.array_equal(block, _window()[:10, :])
+
+
+def test_a_cached_window_refuses_frames_it_does_not_hold():
+    view = _view()
+
+    with pytest.raises(ValueError, match="outside the cached window"):
+        view.get_traces(start_frame=0, end_frame=10)
+    with pytest.raises(ValueError, match="outside the cached window"):
+        view.get_traces(
+            start_frame=TRACE_OFFSET, end_frame=TRACE_OFFSET + TRACE_FRAMES + 1
+        )
+
+
+def test_a_cached_window_can_be_read_one_channel_at_a_time():
+    view = _view()
+
+    both = view.get_traces(start_frame=TRACE_OFFSET, end_frame=TRACE_OFFSET + 5)
+    second = view.get_traces(
+        start_frame=TRACE_OFFSET, end_frame=TRACE_OFFSET + 5, channel_ids=["e2"]
+    )
+
+    assert second.shape == (5, 1)
+    assert np.array_equal(second[:, 0], both[:, 1])
+
+
+def test_a_cached_window_round_trips_through_the_cache(tmp_path):
+    _write(tmp_path)
+    view = read_cache(tmp_path).traces("preprocessed")
+
+    assert np.array_equal(
+        view.get_traces(start_frame=TRACE_OFFSET, end_frame=TRACE_OFFSET + 20),
+        _window()[:20, :],
+    )

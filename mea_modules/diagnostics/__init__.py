@@ -48,6 +48,7 @@ from .activity_map import (
 from .artifacts import artifact_census
 from .cache import (
     CachedProbe,
+    CachedTraces,
     CacheMissing,
     DiagnosticCache,
     cache_ready,
@@ -127,6 +128,7 @@ __all__ = [
     "artifact_census",
     # the compute-once cache a capsule writes and a plot tool reads
     "CachedProbe",
+    "CachedTraces",
     "CacheMissing",
     "DiagnosticCache",
     "cache_ready",

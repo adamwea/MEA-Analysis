@@ -320,12 +320,22 @@ def plot_raster_threshold(
     time_gaps=None,
     quality=None,
     annotate=True,
+    events=None,
 ):
     """Write a threshold-crossing raster to `out_path`; return the path.
 
     Detects events with :func:`detect_threshold_crossings` over `duration_s`
     seconds from `start_time_s` (None for the whole recording) on at most
     `max_channels` channels, then scatters them as time vs electrode id.
+
+    `events` supplies that detection's result -- the ``(times_s, labels)`` pair
+    -- instead of running it. Detection is the expensive half of this figure
+    (measured 54% of a whole-well review run), so a capsule that has already
+    detected passes its result here and `recording` need only answer for
+    geometry, sampling rate and the analysed span: a
+    :class:`mea_modules.diagnostics.cache.CachedProbe` is enough. The drawing
+    below is the same either way, which is the point -- one definition of this
+    figure, two sources for its numbers.
 
     `stitch_frames` draws the segment joins as dotted red verticals — pass the
     concatenation's join offsets in FRAMES (the one convention across every
@@ -368,16 +378,19 @@ def plot_raster_threshold(
     if not channel_ids:
         raise ValueError("recording has no channels to raster")
 
-    event_times, event_labels = detect_threshold_crossings(
-        recording,
-        channel_ids=channel_ids,
-        threshold_factor=threshold_factor,
-        refractory_period_ms=refractory_period_ms,
-        start_time_s=start_time_s,
-        duration_s=duration_s,
-        chunk_frames=chunk_frames,
-        return_in_uV=return_in_uV,
-    )
+    if events is None:
+        event_times, event_labels = detect_threshold_crossings(
+            recording,
+            channel_ids=channel_ids,
+            threshold_factor=threshold_factor,
+            refractory_period_ms=refractory_period_ms,
+            start_time_s=start_time_s,
+            duration_s=duration_s,
+            chunk_frames=chunk_frames,
+            return_in_uV=return_in_uV,
+        )
+    else:
+        event_times, event_labels = (np.asarray(part) for part in events)
     labels = _channel_labels(channel_ids)
 
     gaps, segment_gaps = resolve_time_gaps(time_gaps)

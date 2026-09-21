@@ -535,20 +535,30 @@ if __name__ == "__main__":
 # --------------------------------------------------------------------------
 
 
-def _rms(recording, noise):
-    """An RMS result beside `noise`: the same channels, the same unit."""
-    from mea_modules.quality import rms_over_mad
+def _measured(recording):
+    """``(noise, rms)`` exactly as the collector caches them, measured on the
+    fake recording's own samples: the renderers are handed real output."""
+    from spikeinterface.core import NumpyRecording
 
-    values = np.asarray(noise["noise"], dtype=float) * 1.3
-    rms = {"channel_ids": list(noise["channel_ids"]), "rms": list(values), "unit": noise["unit"]}
-    rms.update(rms_over_mad(rms, noise))
-    rms["unit"] = noise["unit"]
-    return rms
+    from mea_modules.diagnostics.collect import collect_segment_diagnostics
+
+    ids = recording.get_channel_ids()
+    real = NumpyRecording([recording._data], sampling_frequency=recording._fs, channel_ids=ids)
+    real.set_channel_gains(np.ones(len(ids)))
+    real.set_channel_offsets(np.zeros(len(ids)))
+    real.set_dummy_probe_from_locations(recording.get_channel_locations())
+    real.annotate(is_filtered=True)
+    metrics = collect_segment_diagnostics(
+        real, real, duration_s=0.2, num_chunks=2, seed=0, mad_threshold=5.0,
+        dead_noise_ratio=0.1, artifacts_duration_s=0.0, window_s=0.4,
+        trace_channels=0, raster_max_channels=0, enabled={"noise", "rms"},
+    )["metrics"]
+    return metrics["noise"], metrics["rms"]
 
 
 def test_rms_map_is_a_single_panel_labelled_with_its_unit(capture, recording, tmp_path):
-    noise, _ = _metrics(recording)
-    out = mm.plot_rms_map(recording, _rms(recording, noise), tmp_path / "rms.png", annotate=False)
+    _, rms = _measured(recording)
+    out = mm.plot_rms_map(recording, rms, tmp_path / "rms.png", annotate=False)
 
     assert out.exists() and out.stat().st_size > 5_000
     assert capture.titles == []
@@ -557,8 +567,7 @@ def test_rms_map_is_a_single_panel_labelled_with_its_unit(capture, recording, tm
 
 
 def test_rms_mad_ratio_map_needs_the_ratio(capture, recording, tmp_path):
-    noise, _ = _metrics(recording)
-    rms = _rms(recording, noise)
+    _, rms = _measured(recording)
     out = mm.plot_rms_mad_ratio_map(recording, rms, tmp_path / "ratio.png", annotate=False)
     assert out.exists()
     assert "RMS / MAD-σ" in capture.axis_labels
@@ -569,8 +578,8 @@ def test_rms_mad_ratio_map_needs_the_ratio(capture, recording, tmp_path):
 
 
 def test_rms_vs_mad_draws_the_identity_line_on_square_equal_axes(capture, recording, tmp_path):
-    noise, _ = _metrics(recording)
-    out = mm.plot_rms_vs_mad(noise, _rms(recording, noise), tmp_path / "scatter.png")
+    noise, rms = _measured(recording)
+    out = mm.plot_rms_vs_mad(noise, rms, tmp_path / "scatter.png")
 
     assert out.exists()
     assert "MAD-σ (uV)" in capture.axis_labels and "RMS (uV)" in capture.axis_labels
@@ -581,14 +590,14 @@ def test_rms_vs_mad_draws_the_identity_line_on_square_equal_axes(capture, record
     import matplotlib.pyplot as plt
 
     fig, ax = plt.subplots()
-    assert mm.plot_rms_vs_mad(noise, _rms(recording, noise), None, ax=ax) is None
+    assert mm.plot_rms_vs_mad(noise, rms, None, ax=ax) is None
     assert ax.get_xlim() == ax.get_ylim()
     assert ax.get_aspect() == 1.0
     plt.close(fig)
 
 
 def test_rms_vs_mad_refuses_two_units(recording, tmp_path):
-    noise, _ = _metrics(recording)
-    rms = dict(_rms(recording, noise), unit="raw")
+    noise, rms = _measured(recording)
+    rms = dict(rms, unit="raw")
     with pytest.raises(ValueError, match="raw"):
         mm.plot_rms_vs_mad(noise, rms, tmp_path / "scatter.png")

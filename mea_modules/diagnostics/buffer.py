@@ -5,8 +5,16 @@ the whole filter chain over the span asked for and throws the result away.
 Six diagnostics reading one segment paid for six filter passes -- measured on a
 985-channel segment, 126.4 s of a 127 s detection was the chain and 0.53 s the
 detector. Buffering the filtered segment once and serving every diagnostic from
-the copy removes that cost without changing a single number the diagnostics
-compute from it.
+the copy removes that cost.
+
+It is not bit-identical to reading lazily, and the difference is where the
+filter restarts. The buffer is filled in chunks, each filtered with the chain's
+own margin, so the samples beside every chunk join carry a small filter-edge
+error; a lazy read restarts the filter at the edges of each window it reads
+instead. ``memory`` and ``disk`` fill the same chunks and agree exactly. On one
+985-channel segment against ``lazy``: MAD noise within 0.14% on every
+electrode, 9 of 354,799 activity events and 146 of about 178,500 raster events
+different, trace samples within 2.6 uV beside the joins.
 
 The mode is decided by the caller, never here. How much memory a process may
 take depends on how many siblings it runs beside, which is a fact about the

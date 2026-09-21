@@ -46,7 +46,12 @@ from .activity_map import (
     template_projected_activity,
 )
 from .artifacts import artifact_census
-from .collect import collect_segment_diagnostics
+from .collect import (
+    SEGMENT_DIAGNOSTICS,
+    SEGMENT_DIAGNOSTIC_NAMES,
+    DiagnosticSpec,
+    collect_segment_diagnostics,
+)
 from .cache import (
     CachedProbe,
     CachedTraces,
@@ -130,6 +135,9 @@ __all__ = [
     "artifact_census",
     # the compute-once cache a capsule writes and a plot tool reads
     "collect_segment_diagnostics",
+    "SEGMENT_DIAGNOSTICS",
+    "SEGMENT_DIAGNOSTIC_NAMES",
+    "DiagnosticSpec",
     "CachedProbe",
     "CachedTraces",
     "CacheMissing",

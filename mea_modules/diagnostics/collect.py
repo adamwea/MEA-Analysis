@@ -35,6 +35,8 @@ recordings are arguments rather than one.
 """
 
 import logging
+import time
+from dataclasses import dataclass
 
 import numpy as np
 
@@ -131,18 +133,116 @@ def _resolve_channel_pool(recording, wanted):
     return resolved
 
 
+@dataclass(frozen=True)
+class DiagnosticSpec:
+    """One discrete diagnostic a segment capsule can be asked to compute.
+
+    Declared HERE, beside the code that computes it, because the mechanic is
+    the thing that knows what it costs. The pipeline generates one config
+    setting per entry from this tuple rather than restating the list, so a
+    diagnostic cannot exist in one place and be missing from the other.
+
+    `summary` becomes the setting's one-line description; `cost` is the note a
+    reader needs before switching it on, and is empty for the ones that are
+    effectively free.
+    """
+
+    name: str
+    summary: str
+    cost: str = ""
+    default: bool = True
+    requires: tuple = ()
+
+
+# The whole set, in the order they run. `requires` is a real dependency, not a
+# preference: activity thresholds off the noise estimate, so with noise off
+# there is nothing for it to threshold against.
+SEGMENT_DIAGNOSTICS = (
+    DiagnosticSpec(
+        "noise", "per-electrode MAD noise over the sampled windows",
+        cost="reads the filter chain over duration_s of signal",
+    ),
+    DiagnosticSpec(
+        "activity", "threshold-crossing rate per electrode",
+        cost="reads the filter chain over duration_s of signal",
+        requires=("noise",),
+    ),
+    DiagnosticSpec(
+        "bad_channels", "SpikeInterface's own bad-channel verdict",
+        cost="reads the filter chain over duration_s of signal",
+    ),
+    DiagnosticSpec(
+        "flags", "dead-well verdict and per-channel flags from the above",
+        requires=("noise",),
+    ),
+    DiagnosticSpec(
+        "clipping", "census of samples sitting on the converter rails",
+    ),
+    DiagnosticSpec(
+        "artifacts", "census of array-wide excursions",
+        cost="EXPENSIVE: reads the filter chain over artifacts_duration_s",
+    ),
+    DiagnosticSpec(
+        "traces", "the raw and preprocessed trace windows the figures draw",
+        cost="reads the filter chain over window_s of signal",
+    ),
+    DiagnosticSpec(
+        "raster", "threshold crossings for the raster and its real-elapsed twin",
+        cost="EXPENSIVE: reads the filter chain over window_s on every channel",
+    ),
+    DiagnosticSpec(
+        "spectra", "Welch power spectra, raw against preprocessed",
+        cost="reads the filter chain over window_s on the shared electrodes",
+    ),
+)
+
+SEGMENT_DIAGNOSTIC_NAMES = tuple(spec.name for spec in SEGMENT_DIAGNOSTICS)
+
+_SPEC_BY_NAME = {spec.name: spec for spec in SEGMENT_DIAGNOSTICS}
+
+
+def _wanted(enabled):
+    """The set of diagnostics to compute; `None` means every default.
+
+    A name not in `SEGMENT_DIAGNOSTIC_NAMES` is a typo, and a typo that silently
+    switches nothing off is worse than a crash — the run looks like it honoured
+    a setting it never saw.
+    """
+    if enabled is None:
+        return {spec.name for spec in SEGMENT_DIAGNOSTICS if spec.default}
+    if isinstance(enabled, dict):
+        chosen = {name for name, on in enabled.items() if on}
+        named = set(enabled)
+    else:
+        chosen = set(enabled)
+        named = chosen
+    unknown = named - set(SEGMENT_DIAGNOSTIC_NAMES)
+    if unknown:
+        raise ValueError(
+            f"unknown diagnostics {sorted(unknown)}; "
+            f"this capsule computes {list(SEGMENT_DIAGNOSTIC_NAMES)}"
+        )
+    return chosen
+
+
 def _tolerant(what, fn, default=None):
     """Run one diagnostic; a failure costs that diagnostic, never the segment.
 
-    Returns ``(value, error_string_or_None)``. A capsule that refused to write a
-    descriptor because a PSD failed would be trading a whole segment for a
-    figure, which is never the right trade.
+    Returns ``(value, error_string_or_None, elapsed_seconds)``. A capsule that
+    refused to write a descriptor because a PSD failed would be trading a whole
+    segment for a figure, which is never the right trade.
+
+    The timing rides along here because this is the one place every discrete
+    computation passes through. A failed diagnostic is timed too: how long
+    something took to not work is part of what a profile is for, and a missing
+    entry would silently read as free.
     """
+    started = time.perf_counter()
     try:
-        return fn(), None
+        return fn(), None, time.perf_counter() - started
     except Exception as exc:  # noqa: BLE001 - one diagnostic, not the segment
         logger.warning("%s failed (%s); continuing without it", what, exc)
-        return default, str(exc)
+        return default, str(exc), time.perf_counter() - started
 
 
 def collect_segment_diagnostics(
@@ -160,6 +260,8 @@ def collect_segment_diagnostics(
     trace_channels,
     raster_max_channels,
     psd_channel_ids=None,
+    raster_downsample_hz=None,
+    enabled=None,
     meta=None,
 ):
     """Everything a segment's diagnostic figures need, computed once.
@@ -177,106 +279,125 @@ def collect_segment_diagnostics(
     are comparable across segments; None falls back to the representative
     channels.
 
+    `enabled` selects which of :data:`SEGMENT_DIAGNOSTICS` to compute -- a set
+    of names, or a name->bool mapping, or None for every default. A diagnostic
+    that was not asked for is recorded as skipped WITH ITS REASON, because "not
+    asked for" and "could not be computed" are different facts about a run and a
+    reader downstream has to be able to tell them apart.
+
     Every individual diagnostic is tolerated failing. What comes back always has
-    the geometry and whatever else succeeded, and `metrics["errors"]` names what
-    did not, so the cache records the gap rather than hiding it.
+    the geometry and whatever else succeeded, `metrics["errors"]` names what did
+    not, and `metrics["timings"]` says what each one cost -- including the ones
+    that failed, since how long something took to not work is part of a profile.
     """
     from .cache import CachedProbe
+    from .raster import decimation_for
 
+    wanted = _wanted(enabled)
     errors = {}
+    timings = {}
     metrics = {}
+    skipped = {}
+
+    def run(name, what, fn, default=None, key=None):
+        """Compute one diagnostic if it was asked for and its inputs exist.
+
+        `key` separates the TIMING key from the gate when one setting covers
+        two computations -- `flags` produces both the well verdict and the
+        per-channel flags, and one setting switching both is the honest shape,
+        but a profile that reported only the second would hide the first.
+        """
+        spec = _SPEC_BY_NAME[name]
+        key = key or name
+        if name not in wanted:
+            skipped[name] = "not requested"
+            return default
+        missing = [dep for dep in spec.requires if dep in skipped or metrics.get(dep) is None]
+        if missing:
+            skipped[name] = f"requires {', '.join(missing)}"
+            return default
+        value, err, elapsed = _tolerant(what, fn, default=default)
+        timings[key] = round(elapsed, 3)
+        if err:
+            errors[key] = err
+        return value
 
     # ---------------------------------------------------------------- QC
     # Three bounded passes over the SAME windows (same seed -> same placement),
     # so the numbers describe one slice of the segment rather than three.
-    noise, err = _tolerant("noise", lambda: mad_noise(
+    noise = run("noise", "noise", lambda: mad_noise(
         qc_rec, duration_s=duration_s, num_chunks=num_chunks, seed=seed,
     ))
-    if err:
-        errors["noise"] = err
     metrics["noise"] = noise
 
-    activity = None
-    if noise is not None:
-        # Handing the noise dict back in fixes the threshold across windows, so
-        # the rates reported here are the rates implied by the noise reported
-        # here -- the two halves of the report cannot drift apart.
-        activity, err = _tolerant("activity", lambda: activity_rate(
-            qc_rec, threshold_sd=mad_threshold, noise=noise,
-            duration_s=duration_s, num_chunks=num_chunks, seed=seed,
-        ))
-        if err:
-            errors["activity"] = err
+    # Handing the noise dict back in fixes the threshold across windows, so the
+    # rates reported here are the rates implied by the noise reported here --
+    # the two halves of the report cannot drift apart.
+    activity = run("activity", "activity", lambda: activity_rate(
+        qc_rec, threshold_sd=mad_threshold, noise=noise,
+        duration_s=duration_s, num_chunks=num_chunks, seed=seed,
+    ))
     metrics["activity"] = activity
 
     # The most fragile of the three: the only one that is not ours, and its
     # non-"mad" methods assume a depth-ordered linear probe that a planar MEA is
     # not. dead_well_flags accepts None and falls back to the other two rules.
-    bad, err = _tolerant("bad-channel detection", lambda: detect_bad_channels(
+    bad = run("bad_channels", "bad-channel detection", lambda: detect_bad_channels(
         qc_rec, method="mad", duration_s=duration_s, num_chunks=num_chunks,
         seed=seed, std_mad_threshold=float(mad_threshold),
     ))
     metrics["bad_channels"] = bad
-    metrics["bad_channels_error"] = err
+    metrics["bad_channels_error"] = errors.get("bad_channels")
 
-    flags = flagged = None
-    if noise is not None:
-        flags, err = _tolerant("dead-well verdict", lambda: dead_well_flags(
-            noise=noise, activity=activity, bad_channels=bad,
-            dead_noise_ratio=dead_noise_ratio, noisy_noise_ratio=mad_threshold,
-        ))
-        if err:
-            errors["flags"] = err
-        flagged, err = _tolerant("channel flags", lambda: flag_channels(
-            noise, bad_channels=bad, dead_noise_ratio=dead_noise_ratio,
-            noisy_noise_ratio=mad_threshold,
-        ))
-        if err:
-            errors["flagged"] = err
+    flags = run("flags", "dead-well verdict", lambda: dead_well_flags(
+        noise=noise, activity=activity, bad_channels=bad,
+        dead_noise_ratio=dead_noise_ratio, noisy_noise_ratio=mad_threshold,
+    ), key="flags")
+    flagged = run("flags", "channel flags", lambda: flag_channels(
+        noise, bad_channels=bad, dead_noise_ratio=dead_noise_ratio,
+        noisy_noise_ratio=mad_threshold,
+    ), key="flagged")
     metrics["flags"] = flags
     metrics["flagged"] = flagged
 
     # ------------------------------------------------- clipping + artifacts
     # Clipping on the RAW integer view: a filter smears a flat rail into a
     # curve, and on a float dtype the rail bounds do not exist at all.
-    clipping, err = _tolerant("clipping census", lambda: clipping_census(
+    metrics["clipping"] = run("clipping", "clipping census", lambda: clipping_census(
         raw_view, duration_s=duration_s, num_chunks=num_chunks,
     ))
-    if err:
-        errors["clipping"] = err
-    metrics["clipping"] = clipping
 
     # Artifacts on the chain the noise was measured on: the per-channel
     # thresholds derive from it, so scanning a raw view and reporting against a
     # filtered one would compare different noise floors.
-    #
-    # A non-positive budget means the caller asked for this scan to be skipped.
-    # It records as None with a reason rather than as a failure, because "not
-    # asked for" and "could not be computed" are different things to a reader.
-    artifacts = None
-    if artifacts_duration_s > 0:
-        artifacts, err = _tolerant("artifact census", lambda: artifact_census(
+    if artifacts_duration_s <= 0:
+        skipped["artifacts"] = "not requested (artifacts_duration_s <= 0)"
+        metrics["artifacts"] = None
+    else:
+        metrics["artifacts"] = run("artifacts", "artifact census", lambda: artifact_census(
             qc_rec, duration_s=artifacts_duration_s,
         ))
-        if err:
-            errors["artifacts"] = err
-    else:
-        metrics["artifacts_skipped"] = "not requested (artifacts_duration_s <= 0)"
-    metrics["artifacts"] = artifacts
 
     # ----------------------------------------------- representative channels
-    def _representatives():
-        return select_representative_channels(
-            qc_rec, n_channels=trace_channels, seed=int(seed),
-            start_time_s=0.0, duration_s=window_s, return_in_uV=True,
+    # Not a diagnostic in its own right: it is the channel list the trace and
+    # spectra figures are drawn on, so it runs whenever either of them does.
+    rep = None
+    if {"traces", "spectra"} & wanted:
+        rep, err, elapsed = _tolerant(
+            "representative-channel selection",
+            lambda: select_representative_channels(
+                qc_rec, n_channels=trace_channels, seed=int(seed),
+                start_time_s=0.0, duration_s=window_s, return_in_uV=True,
+            ),
         )
-
-    rep, err = _tolerant("representative-channel selection", _representatives)
+        timings["representative_channels"] = round(elapsed, 3)
+        if rep is None:
+            # A poorer figure beats no figure, and the fallback is recorded so a
+            # reader knows the channels were not chosen by activity.
+            rep = list(qc_rec.get_channel_ids())[:trace_channels]
+            errors["representative_channels"] = err
     if rep is None:
-        # A poorer figure beats no figure, and the fallback is recorded so a
-        # reader knows the channels were not chosen by activity.
         rep = list(qc_rec.get_channel_ids())[:trace_channels]
-        errors["representative_channels"] = err
     # NOT stringified: these ids go straight back to a recording, and an id
     # rewritten as "5" is not the id 5 as far as SpikeInterface is concerned.
     # The cache round-trips them through JSON, which keeps an int an int.
@@ -284,26 +405,37 @@ def collect_segment_diagnostics(
 
     # ------------------------------------------------------------- traces
     traces = {}
-    for name, recording in (("preprocessed", qc_rec), ("raw", raw_view)):
-        block, err = _tolerant(f"{name} trace window", lambda r=recording: _window_block(
-            r, rep, window_s,
-        ))
-        if block is not None:
-            traces[name] = block
-        else:
-            errors[f"traces_{name}"] = err
+    if "traces" in wanted:
+        for name, recording in (("preprocessed", qc_rec), ("raw", raw_view)):
+            block, err, elapsed = _tolerant(
+                f"{name} trace window",
+                lambda r=recording: _window_block(r, rep, window_s),
+            )
+            timings[f"traces_{name}"] = round(elapsed, 3)
+            if block is not None:
+                traces[name] = block
+            else:
+                errors[f"traces_{name}"] = err
+    else:
+        skipped["traces"] = "not requested"
 
     # ------------------------------------------------------------- events
-    # The expensive half of the raster, and it is run ONCE here for both the
-    # file-time figure and its real-elapsed twin -- which today re-detects the
-    # identical events. The channel selection is the emitter's own, so the tool
-    # can draw with channel_ids=None and land on exactly this list.
+    # The expensive half of the raster, run ONCE here for both the file-time
+    # figure and its real-elapsed twin -- which used to re-detect the identical
+    # events. The channel selection is the emitter's own, so the tool can draw
+    # with channel_ids=None and land on exactly this list.
     events = {}
-    if raster_max_channels > 0:
+    if raster_max_channels <= 0:
+        skipped["raster"] = "not requested (raster_max_channels <= 0)"
+    elif "raster" not in wanted:
+        skipped["raster"] = "not requested"
+    else:
         raster_channels = _select_channels(qc_rec, None, raster_max_channels)
-        detected, err = _tolerant("threshold crossings", lambda: detect_threshold_crossings(
+        factor, effective_hz = decimation_for(qc_rec.get_sampling_frequency(), raster_downsample_hz)
+        detected = run("raster", "threshold crossings", lambda: detect_threshold_crossings(
             qc_rec, channel_ids=raster_channels, threshold_factor=mad_threshold,
             start_time_s=0.0, duration_s=window_s,
+            downsample_to_hz=raster_downsample_hz,
         ))
         if detected is not None:
             times_s, labels = detected
@@ -313,30 +445,44 @@ def collect_segment_diagnostics(
                 "threshold_factor": float(mad_threshold),
                 "window_s": float(window_s),
                 "n_events": int(np.asarray(times_s).size),
+                # The rate DETECTED AT, not the rate asked for. They are the
+                # same only when the target divides the native rate exactly.
+                "detection_hz": float(effective_hz),
+                "decimation_factor": int(factor),
             }
-        else:
-            errors["events"] = err
-    else:
-        metrics["raster_skipped"] = "not requested (raster_max_channels <= 0)"
 
     # ------------------------------------------------------------ spectra
     psd_pool = _resolve_channel_pool(qc_rec, psd_channel_ids) or list(rep)
     spectra = {}
-    for name, recording in (("raw", raw_view), ("preprocessed", qc_rec)):
-        if name == "preprocessed" and source != "preprocessed":
-            # No descriptor: there is no preprocessed panel to compare against,
-            # and the filename says so rather than the figure implying a pair.
-            continue
-        block, err = _tolerant(f"{name} spectra", lambda r=recording: welch_spectra(
-            r, psd_pool, start_time_s=0.0, duration_s=window_s,
-        ))
-        if block is not None:
-            spectra[name] = block
-        else:
-            errors[f"spectra_{name}"] = err
+    if "spectra" in wanted:
+        for name, recording in (("raw", raw_view), ("preprocessed", qc_rec)):
+            if name == "preprocessed" and source != "preprocessed":
+                # No descriptor: there is no preprocessed panel to compare
+                # against, and the filename says so rather than the figure
+                # implying a pair.
+                continue
+            block, err, elapsed = _tolerant(
+                f"{name} spectra",
+                lambda r=recording: welch_spectra(r, psd_pool, start_time_s=0.0, duration_s=window_s),
+            )
+            timings[f"spectra_{name}"] = round(elapsed, 3)
+            if block is not None:
+                spectra[name] = block
+            else:
+                errors[f"spectra_{name}"] = err
+    else:
+        skipped["spectra"] = "not requested"
     metrics["psd_channels"] = list(psd_pool)
 
     metrics["errors"] = errors
+    metrics["timings"] = timings
+    metrics["skipped"] = skipped
+    # The pre-registry spelling, kept because the segment tool reads these two
+    # by name to tell a reader WHY a figure is missing. They are now two views
+    # of one record rather than two records.
+    for name in ("artifacts", "raster"):
+        if name in skipped:
+            metrics[f"{name}_skipped"] = skipped[name]
 
     payload_meta = {
         "source": source,
@@ -354,6 +500,12 @@ def collect_segment_diagnostics(
         "window_s": float(window_s),
         "trace_channels": int(trace_channels),
         "raster_max_channels": int(raster_max_channels),
+        # What was asked for, so a later reader can tell a cache that is thin by
+        # choice from one that is thin because something broke.
+        "diagnostics": {name: (name in wanted) for name in SEGMENT_DIAGNOSTIC_NAMES},
+        "raster_downsample_hz": (
+            None if not raster_downsample_hz else float(raster_downsample_hz)
+        ),
         # Both counts, because a figure name carries them separately and the
         # renderer has no recording left to ask.
         "n_channels": int(qc_rec.get_num_channels()),

@@ -111,8 +111,11 @@ def ensure_signed(recording):
 
 # A filter's impulse response counts as settled once it has fallen below this
 # fraction of its peak (float32 resolution), and the margin is this many times
-# that settling time: once for the forward-backward pass, and once more for a
-# chunk edge that starts far from the output's scale (a raw DC offset).
+# that settling time. One settling time covers each pass of the forward-backward
+# filter at its own edge; the second covers a chunk edge whose step is far
+# larger than the output (a raw DC offset), which needs the response to fall
+# further than float32 resolution before the error vanishes. Measured: 40 ms
+# still left one-ulp differences at 300 Hz, 45 ms none; this rule gives 47 ms.
 _SETTLING_TOL = 1e-7
 _SETTLING_FACTOR = 2.0
 _SPIKEINTERFACE_FILTER_ORDER = 5

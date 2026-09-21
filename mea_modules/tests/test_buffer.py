@@ -9,6 +9,7 @@ flag would be filtered twice and every noise number would move.
 import numpy as np
 import pytest
 from spikeinterface.core import NumpyRecording
+from spikeinterface.preprocessing.basepreprocessor import BasePreprocessor, BasePreprocessorSegment
 
 from mea_modules.diagnostics.buffer import SIGNAL_BUFFER_MODES, buffered_signal, signal_bytes
 from mea_modules.quality import mad_noise
@@ -59,6 +60,29 @@ def test_a_disk_buffer_is_removed_even_when_the_work_raises(tmp_path):
         with buffered_signal(_recording(), "disk", scratch_dir=tmp_path):
             assert any(tmp_path.glob("signal_buffer_*"))
             raise RuntimeError("a diagnostic failed")
+    assert not any(tmp_path.glob("signal_buffer_*"))
+
+
+class _FailingSegment(BasePreprocessorSegment):
+    def get_traces(self, start_frame, end_frame, channel_indices):
+        if start_frame and start_frame >= int(FS):
+            raise OSError("no space left on device")
+        return self.parent_recording_segment.get_traces(start_frame, end_frame, channel_indices)
+
+
+class _FailsAfterOneSecond(BasePreprocessor):
+    """Writes its first chunk, then fails -- a copy that dies partway."""
+
+    def __init__(self, recording):
+        BasePreprocessor.__init__(self, recording)
+        for segment in recording._recording_segments:
+            self.add_recording_segment(_FailingSegment(segment))
+
+
+def test_a_disk_buffer_whose_copy_fails_partway_is_removed(tmp_path):
+    with pytest.raises(OSError, match="no space"):
+        with buffered_signal(_FailsAfterOneSecond(_recording()), "disk", scratch_dir=tmp_path):
+            pass
     assert not any(tmp_path.glob("signal_buffer_*"))
 
 

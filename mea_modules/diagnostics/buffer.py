@@ -21,7 +21,8 @@ machine and the scheduler, not about the mechanic:
     the recording as it came, re-filtered on every read.
 
 Nothing here is written anywhere the caller did not name, and a ``disk`` buffer
-is removed even when the work inside the block raises.
+is removed even when the work inside the block raises, or the copy itself fails
+partway.
 """
 
 import logging
@@ -87,7 +88,12 @@ def buffered_signal(recording, mode, scratch_dir=None, job_kwargs=None):
             raise ValueError("a disk buffer needs a scratch_dir to live in")
         folder = Path(scratch_dir) / f"signal_buffer_{int(time.time() * 1e6)}"
         folder.parent.mkdir(parents=True, exist_ok=True)
-        buffered = recording.save(format="binary", folder=folder, **kwargs)
+        try:
+            buffered = recording.save(format="binary", folder=folder, **kwargs)
+        except BaseException:
+            # A copy that failed partway is segment-sized and still on disk.
+            shutil.rmtree(folder, ignore_errors=True)
+            raise
     info["seconds"] = round(time.perf_counter() - started, 3)
     info["ended"] = round(time.time(), 3)
     buffered = _keep_filtered_flag(recording, buffered)

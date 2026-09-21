@@ -252,11 +252,11 @@ _NO_COMPARISON_NOTE = (
 # in full. Which of the two is used says which quantity the bars are.
 #
 # Publication-terse (review ruling, 2026-09-19): a legend key is not a
-# clause, and neither is an axis label. "crossings per second, per electrode"
-# said the
-# same thing in more words than "crossings/s per electrode" does.
-_RATE_YLABEL = "threshold crossings per second"
-_PER_CHANNEL_YLABEL = "crossings/s per electrode"
+# clause, and neither is an axis label. "peaks per second, per electrode"
+# says the same thing in more words than "peaks/s per electrode" does. "Peak"
+# is the word the activity map and the raster use for the same detected event.
+_RATE_YLABEL = "peaks per second"
+_PER_CHANNEL_YLABEL = "peaks/s per electrode"
 
 
 def _rate_span(rows):
@@ -1208,8 +1208,8 @@ def plot_segment_event_rates(
                 PER_SEGMENT_ONLY,
                 "Bars run left to right in the order the segments were recorded, "
                 "each one a distinct recording configuration.",
-                "A crossing is not an identified neuron: this counts downward "
-                "threshold crossings on individual electrodes, so compare the bars "
+                "A peak is not an identified neuron: this counts negative peaks "
+                "past threshold on individual electrodes, so compare the bars "
                 "against each other rather than reading an absolute firing rate off "
                 "one of them.",
             ]

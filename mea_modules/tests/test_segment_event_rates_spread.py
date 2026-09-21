@@ -370,6 +370,8 @@ def test_annotate_false_drops_the_title_and_caption_and_keeps_the_axes():
     assert drawn[True][0] == "a title"
     assert drawn[False][0] == ""
     assert drawn[False][1] == drawn[True][1]
+    # The activity map and the raster call the same detected event a peak.
+    assert drawn[True][1] == "peaks/s per electrode"
     assert drawn[False][2] is drawn[True][2] is True
     assert drawn[False][3] == drawn[True][3]
     assert any("p" in text for text in drawn[False][3]), "the significance mark is data"

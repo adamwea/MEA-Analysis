@@ -65,7 +65,7 @@ def test_the_total_missing_time_is_unchanged():
         assert decimated_end == pytest.approx(native_end)
 
 
-def test_a_concatenated_gaps_shape_with_a_summary_passes_through():
+def test_a_concatenated_gaps_summary_is_dropped_from_the_rescaled_table():
     structure = dict(GAPS, summary={"well": "well000"})
     rescaled = rescale_time_gaps(structure, 20)
     assert set(rescaled) == {"gaps", "segment_gaps", "frame_step"}

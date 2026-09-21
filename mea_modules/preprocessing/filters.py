@@ -375,7 +375,12 @@ def preprocess_segment(
     1. optional :func:`center` (off unless `center_chunk_size` is given — the old
        build did this in its loader, not in the chain),
     2. :func:`ensure_signed` — only when the dtype is ``uint*``,
-    3. :func:`highpass` at `freq_min` (300 Hz),
+    3. :func:`highpass` at `freq_min` (300 Hz), reading a settling margin past
+       every chunk edge. HISTORY: until 2026-09-21 it read SpikeInterface's
+       default 5 ms, shorter than the filter settles, so every chunked read
+       (the concatenated binary, a diagnostics buffer) differed by up to a few
+       microvolts within ~45 ms of each chunk join; traces from then on differ
+       from every earlier run's there, and match a continuous read,
     4. :func:`common_median_reference` — a GENUINE local median by default
        since Adam's 2026-08-11 ruling ((0, 250) um: all neighbours within
        250 um). Before that ruling the ported default radius was the older

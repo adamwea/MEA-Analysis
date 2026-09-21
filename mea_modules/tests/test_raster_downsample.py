@@ -69,6 +69,12 @@ def test_no_target_or_a_target_at_or_above_the_native_rate_is_the_native_path(ta
     assert same is recording and factor == 1 and effective == FS
 
 
+def test_a_native_rate_that_is_not_whole_hertz_stays_native():
+    """No whole-hertz rate divides 20000.5 Hz, so the search for one used to
+    run forever; the native rate is the only honest answer."""
+    assert resample_rate_for(20000.5, 3000.0) == (1, 20000.5)
+
+
 def test_native_detection_finds_each_planted_spike_once_per_channel():
     """The 1 ms exclusion sweep is what stops a ten-sample trough counting ten times."""
     recording, planted = _recording()

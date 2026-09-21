@@ -274,10 +274,11 @@ def resample_rate_for(sampling_frequency, target_hz):
     decimation path (``scipy.signal.decimate``) rather than an FFT resample, and
     what keeps every detection sample on a native one. It is rarely the rate
     asked for, which is why it is returned: a cache that stored the request
-    would describe a run that did not happen.
+    would describe a run that did not happen. A native rate that is not a whole
+    number of hertz has no such divisor and is left at the native rate.
     """
     fs = float(sampling_frequency)
-    if not target_hz or float(target_hz) <= 0 or fs <= 0:
+    if not target_hz or float(target_hz) <= 0 or fs <= 0 or not fs.is_integer():
         return 1, fs
     factor = int(fs // float(target_hz))
     while factor > 1 and (fs / factor) != int(fs / factor):

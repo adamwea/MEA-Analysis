@@ -74,6 +74,7 @@ from .metric_maps import (
     robust_color_limits,
 )
 from .raster import (
+    decimation_for,
     detect_threshold_crossings,
     estimate_channel_thresholds,
     plot_raster_threshold,
@@ -142,6 +143,7 @@ __all__ = [
     "detect_electrode_clusters",
     "estimate_electrode_pitch",
     # threshold detection
+    "decimation_for",
     "estimate_channel_thresholds",
     "detect_threshold_crossings",
     # real elapsed time, for plots that must not pretend the gaps are not there

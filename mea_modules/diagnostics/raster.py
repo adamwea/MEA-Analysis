@@ -72,6 +72,13 @@ _DEFAULT_NOISE_WINDOW_FRAMES = 20_000
 _DEFAULT_NOISE_WINDOWS = 4
 _DEFAULT_DETECTION_CHUNK_FRAMES = 50_000
 
+# Output samples of anti-alias filter transient discarded at each end of a
+# decimated block. `scipy.signal.decimate(ftype="fir", zero_phase=True)` runs a
+# length-(20q+1) FIR through `filtfilt`, whose edge transient reaches roughly
+# three filter lengths — 60 output samples. 64 is that with room to spare, and
+# against a 50,000-frame chunk it costs nothing.
+_DECIMATION_MARGIN_OUT = 64
+
 # MAD -> Gaussian sigma. Quartile-based so a few large spikes cannot inflate the
 # noise estimate the way a plain std would.
 
@@ -85,6 +92,112 @@ _DEFAULT_DURATION_S = 60.0
 
 # Past this many rows individual tick labels are unreadable.
 _MAX_YTICKS = 64
+
+
+def decimation_for(sampling_frequency, downsample_to_hz):
+    """`(factor, effective_hz)` for detecting on a downsampled signal.
+
+    The factor is a whole number of native samples per detection sample, so
+    every detection sample lands exactly on a native one and an event's frame
+    is recoverable by multiplication — no interpolated timebase, no rounding
+    drift accumulating over a long window.
+
+    `None`, a non-positive target, or a target at or above the native rate all
+    give factor 1, which is the untouched native-rate path.
+
+    Public because a caller has to RECORD what it actually detected on. The
+    effective rate is rarely the number asked for (10 kHz asked down to 3 kHz
+    detects at 3.33 kHz), and a cache that stores the request rather than the
+    result describes a run that did not happen.
+    """
+    fs = float(sampling_frequency)
+    if not downsample_to_hz or float(downsample_to_hz) <= 0 or fs <= 0:
+        return 1, fs
+    factor = int(fs // float(downsample_to_hz))
+    if factor <= 1:
+        return 1, fs
+    return factor, fs / factor
+
+
+def _decimate(traces, factor):
+    """Anti-aliased decimation of a (frames, channels) block along time.
+
+    Plain striding is wrong here and quietly so. The preprocessing chain is a
+    300 Hz HIGH-pass with no low-pass at all, so the signal is full-band to
+    Nyquist; taking every k-th sample folds everything above the new Nyquist
+    back down into the spike band. That inflates the measured MAD, which raises
+    the threshold, which changes the event count — a figure that still renders
+    and is wrong. Filtering first costs a few percent and removes the whole
+    failure mode.
+    """
+    from scipy.signal import decimate as _scipy_decimate
+
+    return _scipy_decimate(traces, int(factor), axis=0, ftype="fir", zero_phase=True)
+
+
+def _detection_blocks(
+    recording, channel_ids, window_start, window_end, chunk_frames, factor, return_in_uV
+):
+    """Yield `(values, base_frame, emit_lo, emit_hi)` in DETECTION frames.
+
+    One detection frame is `factor` native frames, numbered from `window_start`,
+    so an event's native frame is `window_start + detection_frame * factor` for
+    every factor including 1. That is the whole reason the loop below counts in
+    this space: the native-rate and downsampled paths then run the *same*
+    local-minimum and refractory code, rather than one being a second, cheaper
+    copy of the other that can drift away from it.
+
+    `values` carries a margin on each side that `emit_lo`/`emit_hi` exclude: a
+    local minimum needs both its neighbours, and at factor > 1 the anti-alias
+    filter needs far more than one.
+    """
+    import numpy as np
+
+    factor = max(1, int(factor))
+    total = int(window_end - window_start) // factor
+    if total <= 0:
+        return
+
+    if factor == 1:
+        chunk = max(1024, int(chunk_frames))
+        for chunk_start in range(0, total, chunk):
+            chunk_stop = min(total, chunk_start + chunk)
+            # One sample of overlap on each side: a local minimum needs both
+            # neighbours, and the ones on the chunk seam live in the next chunk.
+            read_lo = max(0, chunk_start - 1)
+            read_hi = min(total, chunk_stop + 1)
+            traces = _read_traces(
+                recording,
+                window_start + read_lo,
+                window_start + read_hi,
+                channel_ids,
+                return_in_uV,
+            ).astype(float, copy=False)
+            yield traces, read_lo, chunk_start, chunk_stop
+        return
+
+    margin = int(_DECIMATION_MARGIN_OUT)
+    chunk = max(1024, int(chunk_frames) // factor)
+    for chunk_start in range(0, total, chunk):
+        chunk_stop = min(total, chunk_start + chunk)
+        # Margins measured in DETECTION frames, so the native read is a whole
+        # number of detection frames and decimated output lines up sample for
+        # sample with the frames it is supposed to represent.
+        lo_margin = min(margin, chunk_start)
+        hi_margin = min(margin, total - chunk_stop)
+        traces = _read_traces(
+            recording,
+            window_start + (chunk_start - lo_margin) * factor,
+            window_start + (chunk_stop + hi_margin) * factor,
+            channel_ids,
+            return_in_uV,
+        ).astype(float, copy=False)
+        if traces.shape[0] < factor * 2 or traces.shape[1] == 0:
+            continue
+        values = np.asarray(_decimate(traces, factor), dtype=float)
+        # `decimate` returns ceil(n / factor) rows; the read was a whole number
+        # of detection frames, so this is exactly the count asked for.
+        yield values, chunk_start - lo_margin, chunk_start, chunk_stop
 
 
 def _select_channels(recording, channel_ids, max_channels):
@@ -158,6 +271,7 @@ def estimate_channel_thresholds(
     start_time_s=0.0,
     duration_s=None,
     return_in_uV=False,
+    downsample_to_hz=None,
 ):
     """Per-channel detection threshold, as `threshold_factor` * MAD sigma.
 
@@ -165,13 +279,20 @@ def estimate_channel_thresholds(
     samples and combined with a median, so a burst landing inside one window
     cannot drag the threshold up. Returns a positive float array aligned with
     `channel_ids`; the caller applies it as a negative-going bound.
+
+    `downsample_to_hz` must match whatever the detection will run at. The
+    anti-alias filter removes real signal power above the new Nyquist, so the
+    MAD of the decimated signal is genuinely smaller than the MAD of the native
+    one — estimating here at native rate and detecting there at a lower one
+    would apply a threshold calibrated to a band the detector never sees.
     """
     import numpy as np
 
     if channel_ids is None:
         channel_ids = list(recording.get_channel_ids())
     channel_ids = list(channel_ids)
-    window_start, window_end, _fs = _resolve_frame_window(recording, start_time_s, duration_s)
+    window_start, window_end, fs = _resolve_frame_window(recording, start_time_s, duration_s)
+    factor, _effective_hz = decimation_for(fs, downsample_to_hz)
     span = int(window_end - window_start)
     if span <= 0 or not channel_ids:
         return np.asarray([], dtype=float)
@@ -191,6 +312,8 @@ def estimate_channel_thresholds(
         traces = _read_traces(recording, int(start), min(window_end, int(start) + window), channel_ids, return_in_uV)
         if traces.size == 0:
             continue
+        if factor > 1 and traces.shape[0] > factor * 2:
+            traces = _decimate(np.asarray(traces, dtype=float), factor)
         estimates.append(mad_sigma(traces))
 
     if not estimates:
@@ -211,6 +334,7 @@ def detect_threshold_crossings(
     duration_s=_DEFAULT_DURATION_S,
     chunk_frames=_DEFAULT_DETECTION_CHUNK_FRAMES,
     return_in_uV=False,
+    downsample_to_hz=None,
 ):
     """Find negative threshold crossings; return (event_times_s, event_labels).
 
@@ -221,10 +345,31 @@ def detect_threshold_crossings(
 
     With `thresholds` None they are estimated over the same window via
     :func:`estimate_channel_thresholds`. Traces are read in `chunk_frames`
-    chunks with a one-sample overlap so crossings on a chunk edge are not lost.
+    chunks with a margin so crossings on a chunk edge are not lost.
 
     Event times come from the recording's time vector when it has one, so a
     concatenated recording rasters on its real timeline.
+
+    **`downsample_to_hz` trades resolution for time.** This is the expensive
+    diagnostic on a segment — it reads every sample of its window and then
+    walks the candidates one at a time in Python — and most of that work is
+    spent deciding about samples no spike is near. Detecting on an
+    anti-aliased decimation of the signal cuts the per-sample arithmetic and
+    the candidate count by the decimation factor.
+
+    What it costs: a spike trough is ~1 ms wide, so at a 10 kHz native rate it
+    spans ~10 samples and the three-sample local-minimum test has room. Below
+    roughly 2.5 kHz that trough is two samples or fewer and the test starts
+    missing spikes rather than merely locating them coarsely. Event TIMES also
+    quantize to the decimated grid, so a 0.8 ms refractory period is enforced
+    against a coarser ruler. This is a knob for looking at an array, not for
+    producing spike times anything downstream will sort on — which is why it
+    lives on the diagnostic detector and not on the preprocessing chain.
+
+    The returned times are in seconds on the recording's own timeline either
+    way, so nothing downstream has to know which rate was used. Ask
+    :func:`decimation_for` for the rate that was actually achieved, and record
+    it: the effective rate is `fs // target` samples apart, rarely the target.
     """
     import numpy as np
 
@@ -236,6 +381,13 @@ def detect_threshold_crossings(
     if int(window_end - window_start) <= 0 or not channel_ids:
         return empty
 
+    factor, effective_hz = decimation_for(fs, downsample_to_hz)
+    if factor > 1:
+        logger.info(
+            "detecting on a %.1f Hz decimation of a %.1f Hz signal (1 sample in %d)",
+            effective_hz, fs, factor,
+        )
+
     if thresholds is None:
         thresholds = estimate_channel_thresholds(
             recording,
@@ -244,38 +396,39 @@ def detect_threshold_crossings(
             start_time_s=start_time_s,
             duration_s=duration_s,
             return_in_uV=return_in_uV,
+            downsample_to_hz=downsample_to_hz,
         )
     thresholds = np.asarray(thresholds, dtype=float)
     if thresholds.size != len(channel_ids):
         raise ValueError(f"thresholds has {thresholds.size} entries for {len(channel_ids)} channels")
 
     labels = _channel_labels(channel_ids)
-    refractory_samples = max(1, int(round(fs * (float(refractory_period_ms) / 1000.0))))
-    chunk = max(1024, int(chunk_frames))
+    # In DETECTION frames, like everything else in this loop: at factor 1 that
+    # is the native rate and the arithmetic is unchanged; above it, a refractory
+    # period shorter than one detection frame floors at one, which is the
+    # honest answer — the detector cannot resolve two events closer than its
+    # own sample spacing.
+    refractory_samples = max(1, int(round(effective_hz * (float(refractory_period_ms) / 1000.0))))
     last_emitted = np.full(len(channel_ids), -refractory_samples - 1, dtype=np.int64)
 
     frame_parts = []
     label_parts = []
-    for chunk_start in range(window_start, window_end, chunk):
-        chunk_stop = min(window_end, chunk_start + chunk)
-        # One sample of overlap on each side: a local minimum needs both
-        # neighbours, and the ones on the chunk seam live in the next chunk.
-        read_start = max(window_start, chunk_start - 1)
-        read_stop = min(window_end, chunk_stop + 1)
-        traces = _read_traces(recording, read_start, read_stop, channel_ids, return_in_uV).astype(float, copy=False)
-        if traces.shape[0] < 3 or traces.shape[1] == 0:
+    for values, base_frame, emit_lo, emit_hi in _detection_blocks(
+        recording, channel_ids, window_start, window_end, chunk_frames, factor, return_in_uV
+    ):
+        if values.shape[0] < 3 or values.shape[1] == 0:
             continue
 
-        center = traces[1:-1, :]
-        crossing = (center <= -thresholds[None, :]) & (center <= traces[:-2, :]) & (center < traces[2:, :])
+        center = values[1:-1, :]
+        crossing = (center <= -thresholds[None, :]) & (center <= values[:-2, :]) & (center < values[2:, :])
         if not crossing.any():
             continue
 
         for channel_index in range(crossing.shape[1]):
-            candidates = np.flatnonzero(crossing[:, channel_index]).astype(np.int64) + 1 + read_start
-            # Drop candidates from the overlap so neighbouring chunks cannot
-            # both claim the same sample.
-            candidates = candidates[(candidates >= chunk_start) & (candidates < chunk_stop)]
+            candidates = np.flatnonzero(crossing[:, channel_index]).astype(np.int64) + 1 + base_frame
+            # Drop candidates from the margin so neighbouring blocks cannot
+            # both claim the same detection frame.
+            candidates = candidates[(candidates >= emit_lo) & (candidates < emit_hi)]
             if candidates.size == 0:
                 continue
             kept = []
@@ -293,7 +446,9 @@ def detect_threshold_crossings(
     if not frame_parts:
         return empty
 
-    frames = np.concatenate(frame_parts)
+    # Detection frames back to native ones. Exact by construction: a detection
+    # frame IS a native frame, every `factor` of them.
+    frames = window_start + np.concatenate(frame_parts) * factor
     event_labels = np.concatenate(label_parts)
     order = np.argsort(frames, kind="stable")
     frames = frames[order]

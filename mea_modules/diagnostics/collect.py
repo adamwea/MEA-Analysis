@@ -160,14 +160,16 @@ def _resolve_channel_pool(recording, wanted):
 class DiagnosticSpec:
     """One discrete diagnostic a capsule can be asked to compute.
 
-    Declared HERE, beside the code that computes it. The pipeline generates one
-    config setting per entry from the registry rather than restating the list,
-    so a diagnostic cannot exist in one place and be missing from the other.
+    Declared HERE, beside the code that computes it, so a consumer offering one
+    switch per diagnostic can generate the switches from this registry instead
+    of restating the list -- and a diagnostic then cannot exist in one place and
+    be missing from the other.
 
-    `summary` becomes the setting's one-line description. What a diagnostic
-    COSTS is deliberately not recorded here: expense is a fact about running it
-    many times in a pipeline, and a consumer running it once would be misled by
-    a warning written for a thousand repetitions. The pipeline's config says it.
+    `summary` is written to serve as that switch's one-line description. What a
+    diagnostic COSTS is deliberately not recorded here: expense is a fact about
+    running it many times in a pipeline, and a consumer running it once would be
+    misled by a warning written for a thousand repetitions. A consumer that runs
+    it many times states the cost in its own configuration.
     """
 
     name: str

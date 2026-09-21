@@ -943,6 +943,32 @@ def save_metadata(metadata, path):
     return path
 
 
+def _routed_electrodes(mapping):
+    """``{electrode_id: (x_um, y_um) or None}`` for every electrode a recording routes out.
+
+    The one rule for "routed": a mapping row whose channel is negative names an
+    electrode that is not actually routed to an amplifier. Positions come from
+    the same rows when the mapping carries them; an electrode listed twice
+    keeps its first position.
+    """
+    import numpy as np
+
+    electrodes = np.asarray(mapping["electrode"])
+    channels = np.asarray(mapping["channel"])
+    names = mapping.dtype.names or ()
+    xs = np.asarray(mapping["x"], dtype=float) if "x" in names else None
+    ys = np.asarray(mapping["y"], dtype=float) if "y" in names else None
+    routed = {}
+    for index in np.flatnonzero(channels >= 0):
+        electrode = int(electrodes[index])
+        if electrode in routed:
+            continue
+        routed[electrode] = (
+            (float(xs[index]), float(ys[index])) if xs is not None and ys is not None else None
+        )
+    return routed
+
+
 def find_common_electrodes(h5_path, stream_id, rec_names=None):
     """Electrodes routed in EVERY recording of one well.
 
@@ -967,7 +993,6 @@ def find_common_electrodes(h5_path, stream_id, rec_names=None):
     depend on the compression plugin being resolvable.
     """
     import h5py
-    import numpy as np
 
     per_rec_counts = {}
     common = None
@@ -977,11 +1002,7 @@ def find_common_electrodes(h5_path, stream_id, rec_names=None):
         available = sorted(h5["wells"][stream_id].keys())
         names = list(rec_names) if rec_names is not None else available
         for rec in names:
-            mapping = h5["wells"][stream_id][rec]["settings"]["mapping"]
-            electrodes = np.asarray(mapping["electrode"])
-            channels = np.asarray(mapping["channel"])
-            # channel < 0 marks an electrode that is not actually routed out.
-            routed = {int(value) for value in electrodes[channels >= 0]}
+            routed = set(_routed_electrodes(h5["wells"][stream_id][rec]["settings"]["mapping"]))
             per_rec_counts[str(rec)] = len(routed)
             union |= routed
             common = routed if common is None else (common & routed)
@@ -998,4 +1019,57 @@ def find_common_electrodes(h5_path, stream_id, rec_names=None):
     }
 
 
-__all__ = ["extract_metadata", "save_metadata", "find_common_electrodes"]
+def electrode_coverage(h5_path, stream_id, rec_names=None):
+    """How many of one well's recordings routed each electrode, and where it sits.
+
+    The per-electrode view behind the shared set :func:`find_common_electrodes`
+    returns: an electrode routed in every recording survives concatenation, one
+    routed in fewer is dropped from the timeline, and a map coloured by the
+    count shows at a glance whether the survivors are one patch of the array or
+    scattered across it. Read from the same HDF5 channel mapping, positions
+    included, so no traces are touched.
+
+    Returns a JSON-serializable dict::
+
+        {"well", "rec_names", "n_segments", "electrode_ids", "x_um", "y_um",
+         "n_segments_routed", "kept", "segments", "union_count", "common_count"}
+
+    ``electrode_ids`` is the union, sorted; the three arrays beside it align
+    with it; ``kept`` marks the electrodes routed in every recording. Each
+    ``segments`` row is ``{"rec", "n_electrodes"}``, the recording's own routed
+    count, in `rec_names` order.
+    """
+    import h5py
+
+    positions = {}
+    counts = {}
+    per_rec = []
+    with h5py.File(str(h5_path), mode="r") as h5:
+        available = sorted(h5["wells"][stream_id].keys())
+        names = list(rec_names) if rec_names is not None else available
+        for rec in names:
+            routed = _routed_electrodes(h5["wells"][stream_id][rec]["settings"]["mapping"])
+            for electrode, position in routed.items():
+                counts[electrode] = counts.get(electrode, 0) + 1
+                if position is not None:
+                    positions.setdefault(electrode, position)
+            per_rec.append({"rec": str(rec), "n_electrodes": len(routed)})
+
+    ids = sorted(counts)
+    n_segments = len(names)
+    return {
+        "well": str(stream_id),
+        "rec_names": [str(name) for name in names],
+        "n_segments": n_segments,
+        "electrode_ids": ids,
+        "x_um": [positions.get(e, (None, None))[0] for e in ids],
+        "y_um": [positions.get(e, (None, None))[1] for e in ids],
+        "n_segments_routed": [counts[e] for e in ids],
+        "kept": [counts[e] == n_segments for e in ids],
+        "segments": per_rec,
+        "union_count": len(ids),
+        "common_count": sum(1 for e in ids if counts[e] == n_segments),
+    }
+
+
+__all__ = ["extract_metadata", "save_metadata", "find_common_electrodes", "electrode_coverage"]

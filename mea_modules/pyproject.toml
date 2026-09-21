@@ -3,6 +3,10 @@ name = "mea_modules"
 version = "0.0.1"
 requires-python = ">=3.10"
 dependencies = [
+    # Pinned exactly: quality.detection calls sortingcomponents' detect_peaks,
+    # whose API is being revised (0.103.2 already carries a compatibility shim
+    # due to go in 0.105.0), and every event count in the diagnostics comes
+    # from it. Re-validate the counts before moving this pin.
     "spikeinterface==0.103.2",
     "numpy",
     "h5py",

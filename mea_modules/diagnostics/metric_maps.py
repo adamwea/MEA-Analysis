@@ -13,14 +13,18 @@ Two pieces, split so the clip is testable without rendering anything:
   channel onto a single colour and flatten the map.
 * :func:`plot_metric_maps` — the shared scatter engine, one panel per metric on
   shared axes, plus the named figures built on it: the two-panel composite
-  (:func:`plot_noise_activity_map`) and its single-panel twins
-  (:func:`plot_noise_map`, :func:`plot_firing_rate_map`) — one drawing routine,
-  :func:`_draw_metric_panel`, behind all three.
+  (:func:`plot_noise_activity_map`), its single-panel twins
+  (:func:`plot_noise_map`, :func:`plot_firing_rate_map`), and the RMS pair
+  (:func:`plot_rms_map`, :func:`plot_rms_mad_ratio_map`) — one drawing routine,
+  :func:`_draw_metric_panel`, behind all of them.
+* :func:`plot_rms_vs_mad` — the two noise estimates against each other, one
+  point per electrode, with the line where they agree.
 
-The values painted here come from :mod:`mea_modules.quality` — ``mad_noise``
-and ``activity_rate`` — and are only comparable across recordings when both
-were measured the same way; see :mod:`.channel_flags` for the dtype that
-decides whether the noise numbers mean anything at all.
+The values painted here come from :mod:`mea_modules.quality` — ``mad_noise``,
+``rms_noise`` and the detector's ``event_rates`` — and are only comparable
+across recordings when both were measured the same way; see
+:mod:`.channel_flags` for the dtype that decides whether the noise numbers mean
+anything at all.
 
 This is not :func:`.activity_map.plot_whole_chip_activity`, which draws one
 presentation figure of a derived field over the dense union. These are review
@@ -352,17 +356,44 @@ def _noise_panel(noise):
 
 def _activity_panel(activity):
     """The activity panel spec, shared by the standalone and composite figures."""
-    threshold = activity["threshold_sd"]
+    threshold = activity["detect_threshold"]
     return (
         np.asarray(activity["rate_hz"], dtype=float),
-        f"Activity rate ({threshold:g} sd crossings)",
-        # Same reasoning as the noise panel: the threshold that defines a
-        # "crossing" has to survive annotate=False, so it is in the bar label,
-        # not only in the title.
-        f"≥{threshold:g} SD crossing rate (events / s)",
+        f"Activity rate ({threshold:g}× MAD-σ peaks)",
+        # Same reasoning as the noise panel: the threshold that defines an
+        # event has to survive annotate=False, so it is in the bar label, not
+        # only in the title.
+        f"≥{threshold:g}× MAD-σ peak rate (events / s)",
         "magma",
-        f"≥{threshold:g} SD crossings",
-        ("SD",),
+        f"≥{threshold:g}× MAD-σ peaks",
+        ("MAD",),
+    )
+
+
+def _rms_panel(rms):
+    """The RMS panel spec: the noise estimate that does count the spikes."""
+    return (
+        np.asarray(rms["rms"], dtype=float),
+        "RMS",
+        f"RMS ({rms['unit']})",
+        "viridis",
+        "RMS",
+        ("RMS",),
+    )
+
+
+def _ratio_panel(rms):
+    """The RMS / MAD-sigma panel spec. Display only: nothing thresholds it."""
+    values = np.asarray(
+        [np.nan if value is None else value for value in rms["rms_over_mad"]], dtype=float,
+    )
+    return (
+        values,
+        "RMS / MAD-σ",
+        "RMS / MAD-σ",
+        "plasma",
+        "RMS / MAD-σ (1 = Gaussian noise)",
+        ("RMS", "MAD"),
     )
 
 
@@ -370,7 +401,7 @@ def plot_noise_activity_map(recording, noise, activity, out_path, title=None, **
     """Paint noise and activity onto the geometry, one panel each.
 
     `noise` and `activity` are :func:`mea_modules.quality.mad_noise` and
-    :func:`mea_modules.quality.activity_rate` results; the channel ids come
+    :func:`mea_modules.quality.event_rates` results; the channel ids come
     from `noise`, so both must have been measured on the same recording.
     Remaining keyword arguments go to :func:`plot_metric_maps`.
 
@@ -412,3 +443,97 @@ def plot_firing_rate_map(recording, activity, out_path, title=None, **kwargs):
     return plot_metric_maps(
         recording, list(activity["channel_ids"]), panels, out_path, title, **kwargs
     )
+
+
+def plot_rms_map(recording, rms, out_path, title=None, **kwargs):
+    """RMS on the geometry as its own single-panel figure.
+
+    The companion to :func:`plot_noise_map`: the same windows, the estimate
+    that counts the spikes instead of ignoring them. `rms` is a
+    :func:`mea_modules.quality.rms_noise` result.
+    """
+    return plot_metric_maps(
+        recording, list(rms["channel_ids"]), [_rms_panel(rms)], out_path, title, **kwargs
+    )
+
+
+def plot_rms_mad_ratio_map(recording, rms, out_path, title=None, **kwargs):
+    """RMS / MAD-sigma on the geometry, one panel.
+
+    Where the two estimates part company is where the trace carries signal:
+    1.0 is what pure Gaussian noise gives, and an electrode picking up spikes
+    sits above it. `rms` must carry ``rms_over_mad``
+    (:func:`mea_modules.quality.rms_over_mad`, merged in by the collector).
+    """
+    if not rms.get("rms_over_mad"):
+        raise ValueError("this RMS result carries no ratio; the MAD was not measured beside it")
+    return plot_metric_maps(
+        recording, list(rms["channel_ids"]), [_ratio_panel(rms)], out_path, title, **kwargs
+    )
+
+
+# Square: both axes are the same quantity in the same unit.
+_SCATTER_FIGSIZE = (4.6, 4.4)
+_SCATTER_COLOR = "0.15"
+_IDENTITY_COLOR = "tab:red"
+
+
+def plot_rms_vs_mad(noise, rms, out_path, dpi=DEFAULT_DPI, ax=None):
+    """Each electrode's RMS against its MAD-sigma, with the line where they agree.
+
+    On pure Gaussian noise the two estimate the same sigma and every point sits
+    on the identity line. The MAD ignores spikes by construction and the RMS
+    does not, so an electrode carrying signal rises above the line, and how far
+    above is roughly how much of its trace is signal. A cloud hugging the line
+    is a quiet array; a tail lifting off it is the active electrodes. Nothing is
+    thresholded: the picture is the relationship, as the review asked for.
+
+    Both axes share one range and an equal aspect, so the identity line is the
+    diagonal and a distance above it reads the same everywhere.
+
+    Returns the written path, or None when drawing into `ax`.
+    """
+    if noise.get("unit") != rms.get("unit"):
+        raise ValueError(f"RMS is in {rms.get('unit')!r} but the MAD is in {noise.get('unit')!r}")
+    keyed = {str(cid): value for cid, value in zip(noise["channel_ids"], noise["noise"])}
+    pairs = [
+        (float(keyed[str(cid)]), float(value))
+        for cid, value in zip(rms["channel_ids"], rms["rms"])
+        if str(cid) in keyed
+    ]
+    if not pairs:
+        raise ValueError("no electrode carries both a MAD and an RMS")
+    mad, rms_values = (np.asarray(part, dtype=float) for part in zip(*pairs))
+    finite = np.isfinite(mad) & np.isfinite(rms_values)
+    mad, rms_values = mad[finite], rms_values[finite]
+
+    fig = None
+    if ax is None:
+        fig = _new_figure(_SCATTER_FIGSIZE, dpi)
+        ax = fig.subplots()
+    ax.scatter(mad, rms_values, s=5, c=_SCATTER_COLOR, linewidths=0, alpha=0.6, rasterized=True)
+    top = float(max(mad.max(), rms_values.max())) * 1.05 if mad.size else 1.0
+    ax.plot([0.0, top], [0.0, top], color=_IDENTITY_COLOR, lw=1.0, linestyle="--")
+    ax.set_xlim(0.0, top)
+    ax.set_ylim(0.0, top)
+    ax.set_aspect("equal", adjustable="box")
+    unit = noise.get("unit", "")
+    ax.set_xlabel(f"MAD-σ ({unit})")
+    ax.set_ylabel(f"RMS ({unit})")
+    from .channel_layout import _legend_line
+
+    handles = [
+        _legend_dot(_SCATTER_COLOR, "per electrode"),
+        _legend_line(_IDENTITY_COLOR, "RMS = MAD-σ", lw=1.0, linestyle="--"),
+    ]
+    legend_corner(
+        ax, handles=handles, fontsize=LEGEND_FONTSIZE, framealpha=LEGEND_FRAME_ALPHA,
+        title=_wrap_label(acronym_note("RMS", "MAD", short=True), width=_LEGEND_TITLE_WIDTH),
+        title_fontsize=_LEGEND_TITLE_FONTSIZE,
+    )
+    if fig is None:
+        return None
+    tighten(fig)
+    written = _save_tight(fig, out_path)
+    logger.info("wrote RMS-vs-MAD scatter: %s (%d electrodes)", written, int(mad.size))
+    return written

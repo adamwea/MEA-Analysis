@@ -401,7 +401,7 @@ def _summarize(stream_id, bounds, per_rec_gaps, fs_hz):
     return summary
 
 
-def concatenated_gaps(h5_path, stream_id, fs_hz=None):
+def concatenated_gaps(h5_path, stream_id, fs_hz=None, recs=None):
     """Every gap in a well, indexed on the CONCATENATED sample timeline.
 
     :func:`well_gap_summary` reports how much time is missing but deliberately
@@ -423,6 +423,13 @@ def concatenated_gaps(h5_path, stream_id, fs_hz=None):
     Costs one pass over every segment's frame counter — the same read
     :func:`well_gap_summary` already does, keeping the breaks instead of
     discarding them, so a whole well is seconds. ``raw`` is never touched.
+
+    `recs` names the segments that were actually joined, in the order they were
+    joined. Left None the table covers every recording in the well, in file
+    order, which is right only when the concatenation took all of them: a
+    concatenation of two segments out of sixteen puts its second segment at
+    sample `n` of the first, not wherever the file's own order would have put
+    it, and a between-segment gap is the gap to the previous JOINED segment.
     """
     import h5py
 
@@ -436,6 +443,12 @@ def concatenated_gaps(h5_path, stream_id, fs_hz=None):
         if fs_hz is None:
             fs_hz = _stream_sampling_hz(h5, stream_id)
         bounds = _segment_bounds(h5, stream_id)
+        if recs is not None:
+            by_rec = {rec: (rec, start, stop) for rec, start, stop in bounds}
+            unknown = [str(rec) for rec in recs if str(rec) not in by_rec]
+            if unknown:
+                raise ValueError(f"well {stream_id} holds no recording(s) {unknown}")
+            bounds = [by_rec[str(rec)] for rec in recs]
         # with_breaks=True is the whole difference from well_gap_summary: same
         # single pass over the counters, keeping the per-break detail it drops.
         per_rec = {

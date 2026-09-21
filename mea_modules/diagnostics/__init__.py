@@ -76,14 +76,20 @@ from .metric_maps import (
     plot_metric_maps,
     plot_noise_activity_map,
     plot_noise_map,
+    plot_rms_mad_ratio_map,
+    plot_rms_map,
+    plot_rms_vs_mad,
     robust_color_limits,
 )
-from .raster import (
-    decimation_for,
-    detect_threshold_crossings,
-    estimate_channel_thresholds,
-    plot_raster_threshold,
+from .buffer import SIGNAL_BUFFER_MODES, buffered_signal, signal_bytes
+from .collect_concat import (
+    CONCAT_DIAGNOSTIC_NAMES,
+    CONCAT_DIAGNOSTICS,
+    collect_concat_diagnostics,
+    segment_table,
 )
+from .electrode_coverage import plot_electrode_coverage, plot_segment_electrode_counts
+from .raster import plot_raster_threshold
 from .spectra import (
     plot_spectra_panels,
     welch_spectra,
@@ -91,12 +97,14 @@ from .spectra import (
 from .timebase import (
     gap_spans,
     real_time_axis,
+    rescale_time_gaps,
     resolve_time_gaps,
     sample_times,
 )
 from .traces import (
     channel_activity_rms,
     plot_traces,
+    plot_traces_with_layout,
     select_representative_channels,
 )
 from .unit_locations import (
@@ -108,6 +116,7 @@ __all__ = [
     # plot emitters
     "plot_channel_layout",
     "plot_traces",
+    "plot_traces_with_layout",
     "plot_raster_threshold",
     "plot_unit_locations",
     "UNIT_LOCATIONS_PLOT_FILENAME",
@@ -120,7 +129,13 @@ __all__ = [
     "plot_noise_activity_map",
     "plot_noise_map",
     "plot_firing_rate_map",
+    "plot_rms_map",
+    "plot_rms_mad_ratio_map",
+    "plot_rms_vs_mad",
     "robust_color_limits",
+    # how much of the array one well's recordings share
+    "plot_electrode_coverage",
+    "plot_segment_electrode_counts",
     # power spectra: the numbers, then the raw-vs-preprocessed panel
     "welch_spectra",
     "plot_spectra_panels",
@@ -137,6 +152,13 @@ __all__ = [
     "collect_segment_diagnostics",
     "SEGMENT_DIAGNOSTICS",
     "SEGMENT_DIAGNOSTIC_NAMES",
+    "collect_concat_diagnostics",
+    "CONCAT_DIAGNOSTICS",
+    "CONCAT_DIAGNOSTIC_NAMES",
+    "segment_table",
+    "SIGNAL_BUFFER_MODES",
+    "buffered_signal",
+    "signal_bytes",
     "DiagnosticSpec",
     "CachedProbe",
     "CachedTraces",
@@ -150,13 +172,10 @@ __all__ = [
     "channel_activity_rms",
     "detect_electrode_clusters",
     "estimate_electrode_pitch",
-    # threshold detection
-    "decimation_for",
-    "estimate_channel_thresholds",
-    "detect_threshold_crossings",
     # real elapsed time, for plots that must not pretend the gaps are not there
     "real_time_axis",
     "sample_times",
     "gap_spans",
+    "rescale_time_gaps",
     "resolve_time_gaps",
 ]

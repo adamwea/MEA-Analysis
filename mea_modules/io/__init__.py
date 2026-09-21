@@ -23,7 +23,7 @@ from .load import (
     load_maxwell,
     segment_index,
 )
-from .metadata import extract_metadata, find_common_electrodes, save_metadata
+from .metadata import electrode_coverage, extract_metadata, find_common_electrodes, save_metadata
 
 # Segment-oriented aliases: the vocabulary the pipeline speaks.
 load_segment = load_maxwell
@@ -51,6 +51,7 @@ __all__ = [
     "extract_metadata",
     "save_metadata",
     "find_common_electrodes",
+    "electrode_coverage",
     # device/setup facts measured from the file, never assumed
     "measure_electrode_geometry",
     "survey_well_device",

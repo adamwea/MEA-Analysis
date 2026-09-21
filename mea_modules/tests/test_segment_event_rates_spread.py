@@ -13,9 +13,9 @@ real zero rather than as an absent row, because it is the one an average would
 quietly be wrong without.
 
 No recording, no detection, no SpikeInterface: the (times, labels) pair these
-functions consume is exactly what
-`mea_modules.diagnostics.raster.detect_threshold_crossings` returns, and it is
-written out by hand so a failure is a real disagreement.
+functions consume is what `mea_modules.quality.detect_events` yields (its
+frames over the sampling rate, and its labels), written out by hand so a
+failure is a real disagreement.
 """
 
 import hashlib
@@ -188,22 +188,38 @@ def _many_channel_well(n_segments, per_segment_rates, n_channels=12, seed=0):
     )
 
 
-def test_two_segments_get_mann_whitney_and_three_or_more_get_kruskal():
-    """The test is chosen by group count, not by the caller: two-sample and
-    k-sample are different questions and picking the wrong one is a silently
-    plausible p value."""
+def test_two_segments_get_wilcoxon_and_three_or_more_get_friedman():
+    """The test is chosen by group count, not by the caller, and both are
+    repeated-measures tests: the same electrodes are measured in every
+    segment, and an unpaired test would throw that pairing away."""
     two = _many_channel_well(2, [1.0, 1.0])["activity_comparison"]
-    assert two["test"] == "Mann-Whitney U"
+    assert two["test"] == "Wilcoxon signed-rank"
+    assert two["effect_size_name"] == "matched-pairs rank-biserial"
     assert two["n_groups"] == 2
 
     three = _many_channel_well(3, [1.0, 1.0, 1.0])["activity_comparison"]
-    assert three["test"] == "Kruskal-Wallis H"
+    assert three["test"] == "Friedman"
+    assert three["effect_size_name"] == "Kendall's W"
     assert three["n_groups"] == 3
 
     for block in (two, three):
         assert block["alpha"] == 0.05
         assert block["p_value"] is not None
+        assert block["n_electrodes"] == 12
         assert isinstance(block["significant"], bool)
+        assert -1.0 <= block["effect_size"] <= 1.0
+
+
+def test_kendalls_w_is_friedmans_statistic_over_n_times_k_minus_one():
+    """W = chi2_F / (n (k - 1)): 0 when the segments rank the electrodes'
+    rates no differently, 1 when every electrode moves the same way."""
+    from scipy import stats
+
+    summary = _many_channel_well(3, [0.4, 2.0, 4.0], n_channels=24)
+    groups = [np.asarray(row["per_channel_events_per_s"]) for row in summary["segments"]]
+    expected = stats.friedmanchisquare(*groups).statistic / (24 * 2)
+    assert summary["activity_comparison"]["effect_size"] == pytest.approx(expected)
+    assert 0.0 <= expected <= 1.0
 
 
 def test_a_significant_difference_is_a_flag_and_says_so_rather_than_raising():
@@ -213,8 +229,8 @@ def test_a_significant_difference_is_a_flag_and_says_so_rather_than_raising():
     block = _many_channel_well(3, [0.4, 2.0, 4.0], n_channels=24)["activity_comparison"]
     assert block["significant"] is True
     assert block["p_value"] < block["alpha"]
-    assert "never a failure" in block["note"]
-    assert "worth looking at" in block["note"]
+    assert "never a gate" in block["note"]
+    assert "optimistic" in block["note"]
 
 
 def test_segments_drawn_from_the_same_activity_are_not_flagged():
@@ -222,6 +238,71 @@ def test_segments_drawn_from_the_same_activity_are_not_flagged():
     normally, or it is noise a reviewer learns to ignore."""
     block = _many_channel_well(3, [1.0, 1.0, 1.0], n_channels=24)["activity_comparison"]
     assert block["significant"] is False
+
+
+def _structured_well(channel_rates, segment_scales, seed=0):
+    """Per-electrode rates that differ strongly between electrodes, scaled per
+    segment: the busy electrodes stay the busy ones, the average moves."""
+    rng = np.random.default_rng(seed)
+    n_segments = len(segment_scales)
+    segments = [{"rec": f"rec{i:04d}", "n_samples": 1000} for i in range(n_segments)]
+    times, labels = [], []
+    for index, scale in enumerate(segment_scales):
+        for channel, rate in enumerate(channel_rates):
+            for _ in range(int(rng.poisson(rate * scale * 10.0))):
+                times.append(index * 10.0 + float(rng.uniform(0.0, 9.99)))
+                labels.append(channel)
+    order = np.argsort(np.asarray(times), kind="stable")
+    return segment_event_rate_summary(
+        segments,
+        np.asarray(times)[order],
+        FS_HZ,
+        stitch_frames=[1000 * i for i in range(1, n_segments)],
+        event_channel_labels=np.asarray(labels)[order],
+        channel_ids=[str(channel) for channel in range(len(channel_rates))],
+    )
+
+
+def test_stability_reads_high_when_the_same_electrodes_stay_busy():
+    """The headline: each consecutive pair of segments ranks the electrodes
+    alike, so rho is high on every pair even though the mean doubles."""
+    rates = np.linspace(0.5, 20.0, 24)
+    stability = _structured_well(rates, [1.0, 2.0, 1.0])["stability"]
+    assert stability["n_segments_compared"] == 3
+    assert stability["pairs"] == [["rec0000", "rec0001"], ["rec0001", "rec0002"]]
+    assert len(stability["consecutive_spearman_rho"]) == 2
+    assert stability["min_consecutive_rho"] > 0.9
+    assert stability["median_consecutive_rho"] >= stability["min_consecutive_rho"]
+
+
+def test_the_cv_is_the_sample_sd_of_the_segment_means_over_their_mean():
+    rates = np.linspace(0.5, 20.0, 24)
+    stability = _structured_well(rates, [1.0, 2.0, 1.0])["stability"]
+    means = np.asarray(stability["segment_means"])
+    assert stability["cv_of_segment_means"] == pytest.approx(
+        np.std(means, ddof=1) / means.mean()
+    )
+    assert stability["cv_of_segment_means"] > 0.2
+
+
+def test_a_pair_with_no_variation_has_no_rho_rather_than_a_made_up_one():
+    """Every electrode silent in one segment: there is nothing to rank, and a
+    rho of 0 would claim the ranking changed."""
+    summary = _structured_well(np.linspace(0.5, 20.0, 24), [1.0, 0.0])
+    stability = summary["stability"]
+    assert stability["consecutive_spearman_rho"] == [None]
+    assert stability["median_consecutive_rho"] is None
+    assert stability["min_consecutive_rho"] is None
+
+
+def test_no_per_channel_data_leaves_the_stability_block_empty_not_absent():
+    summary = segment_event_rate_summary(
+        SEGMENTS, EVENT_TIMES_S, FS_HZ, stitch_frames=STITCH_FRAMES, n_channels=4
+    )
+    stability = summary["stability"]
+    assert stability["n_segments_compared"] == 0
+    assert stability["consecutive_spearman_rho"] == []
+    assert stability["cv_of_segment_means"] is None
 
 
 def test_the_same_input_draws_the_same_summary_and_the_same_png(tmp_path):
@@ -249,7 +330,8 @@ def test_the_figure_reports_the_test_and_the_scatter_cap_it_drew_with(tmp_path):
     assert manifest["scatter_points_per_segment_cap"] > 0
     assert manifest["n_segments_scatter_thinned"] == 0  # 24 channels is under the cap
     assert manifest["n_segments_with_spread"] == 3
-    assert manifest["activity_comparison"]["test"] == "Kruskal-Wallis H"
+    assert manifest["activity_comparison"]["test"] == "Friedman"
+    assert manifest["stability"]["n_segments_compared"] == 3
 
 
 def test_a_summary_with_no_per_channel_data_still_draws_the_old_bars(tmp_path):

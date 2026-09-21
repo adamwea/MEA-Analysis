@@ -8,7 +8,7 @@ The synthetic well: 1000 Hz, four channels, ten seconds, unit-sigma Gaussian
 noise. Two faults are injected separately, into frames 4000..5000 of channel 1:
 
 * a NOISIER stretch (sigma 40) -- what the noise estimate is supposed to reject,
-* SPARSE large spikes -- what the crossing count is supposed to find.
+* SPARSE large spikes -- what the event detector is supposed to find.
 
 They cannot share a recording: a stretch noisy enough to move the MAD also
 raises that window's own detection threshold, which is exactly the behaviour
@@ -25,7 +25,7 @@ import numpy as np
 import pytest
 
 from mea_modules.diagnostics.traces import channel_activity_rms
-from mea_modules.quality import activity_rate, mad_noise
+from mea_modules.quality import detect_events, event_rates, mad_noise, rms_noise, rms_over_mad
 
 FS_HZ = 1000.0
 N_CHANNELS = 4
@@ -122,22 +122,76 @@ def test_mad_noise_summarises_across_channels_both_ways():
     assert result["mean_noise"] == pytest.approx(float(np.mean(result["noise"])))
 
 
-def test_activity_rate_reports_the_pooled_rate_and_the_window_median():
-    result = activity_rate(
-        _sparse_spike_recording(), threshold_sd=5.0, polarity="negative", **STRIDED
-    )
+def test_event_rates_count_the_whole_span_and_report_silent_channels_as_zero():
+    recording = _sparse_spike_recording()
+    noise = mad_noise(recording, **STRIDED)
+    result = event_rates(detect_events(recording, noise, detect_threshold=5.0))
 
-    pooled = result["rate_hz"][FAULT_CHANNEL]
-    per_window_median = result["rate_hz_median_window"][FAULT_CHANNEL]
-
-    # The spikes sit in one window of ten, so the pooled rate (a
-    # duration-weighted mean) carries them and the window median does not. A
-    # channel where those two disagree fired in a burst, not steadily.
-    assert pooled > 0.0
-    assert per_window_median == 0.0
-    assert result["window_aggregation"] == "duration-weighted mean"
+    # Forty troughs in ten seconds, one detection over the whole segment: the
+    # rate is the count over the span read, not a centre of per-window rates.
+    assert result["n_events"][FAULT_CHANNEL] == 40
+    assert result["rate_hz"][FAULT_CHANNEL] == pytest.approx(4.0)
+    assert result["duration_s"] == pytest.approx(N_SAMPLES / FS_HZ)
+    # A silent electrode is a real zero, reported, not dropped.
+    assert len(result["rate_hz"]) == N_CHANNELS
+    assert all(result["n_events"][c] == 0 for c in range(N_CHANNELS) if c != FAULT_CHANNEL)
     assert result["mean_rate_hz"] == pytest.approx(float(np.mean(result["rate_hz"])))
     assert result["median_rate_hz"] == pytest.approx(float(np.median(result["rate_hz"])))
+    assert result["window_aggregation"] == "whole span, one detection"
+
+
+def test_rms_reports_the_mean_beside_the_median_like_the_mad():
+    result = rms_noise(_noisy_window_recording(), **STRIDED)
+
+    assert result["rms"][FAULT_CHANNEL] == pytest.approx(SIGMA, rel=0.25)
+    assert result["rms_mean"][FAULT_CHANNEL] > 2.0 * result["rms"][FAULT_CHANNEL]
+    assert result["window_aggregation"] == "median"
+    assert result["median_rms"] == pytest.approx(float(np.median(result["rms"])))
+
+
+def test_rms_and_mad_agree_on_gaussian_noise_and_part_on_spikes():
+    """On pure Gaussian noise the two estimate the same sigma; the MAD ignores
+    the spikes and the RMS does not, so the spiking electrode rises above 1."""
+    clean = _clean_recording()
+    ratio = rms_over_mad(rms_noise(clean, **STRIDED), mad_noise(clean, **STRIDED))
+    assert all(value == pytest.approx(1.0, rel=0.1) for value in ratio["rms_over_mad"])
+
+    # Troughs every 25 frames across the WHOLE trace, so every window carries
+    # them: 4% of samples, too few to move the MAD, plenty to lift the RMS.
+    traces = _traces()
+    traces[::25, FAULT_CHANNEL] = -20.0 * SIGMA
+    spiking = _wrap(traces)
+    ratio = rms_over_mad(rms_noise(spiking, **STRIDED), mad_noise(spiking, **STRIDED))
+    assert ratio["rms_over_mad"][FAULT_CHANNEL] > 1.5
+    others = [ratio["rms_over_mad"][c] for c in range(N_CHANNELS) if c != FAULT_CHANNEL]
+    assert all(value == pytest.approx(1.0, rel=0.1) for value in others)
+    assert ratio["unit"] == "ratio"
+
+
+def test_rms_over_mad_refuses_two_units():
+    clean = _clean_recording()
+    rms = rms_noise(clean, **STRIDED)
+    noise = dict(mad_noise(clean, **STRIDED), unit="uV")
+    with pytest.raises(ValueError):
+        rms_over_mad(rms, noise)
+
+
+def test_rms_uses_the_same_windows_as_the_mad_under_one_seed():
+    """A ratio of two numbers measured on different stretches mixes the
+    question with the sampling. Here every second of the trace has its own
+    noise level, so a single window's MAD and RMS agree only if they read the
+    same second."""
+    rng = np.random.default_rng(2)
+    block = int(FS_HZ)
+    sigmas = np.repeat(np.arange(1, 11, dtype=float), block)
+    traces = (rng.normal(0.0, 1.0, (N_SAMPLES, N_CHANNELS)) * sigmas[:, None]).astype(np.float32)
+    recording = _wrap(traces)
+    kwargs = dict(duration_s=0.5, num_chunks=1, placement="random",
+                  highpass_hz=None, return_in_uV=False)
+    for seed in (3, 7, 11):
+        ratio = rms_over_mad(rms_noise(recording, seed=seed, **kwargs),
+                             mad_noise(recording, seed=seed, **kwargs))
+        assert all(value == pytest.approx(1.0, rel=0.15) for value in ratio["rms_over_mad"])
 
 
 def test_per_segment_rates_report_both_centres():

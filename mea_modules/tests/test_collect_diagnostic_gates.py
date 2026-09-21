@@ -83,12 +83,13 @@ def test_a_switched_off_diagnostic_records_why_and_costs_nothing(pair):
     assert "artifacts" not in metrics["timings"]
 
 
-def test_the_old_skip_keys_still_answer_for_the_two_the_tool_reads_by_name(pair):
-    """`raster_skipped` / `artifacts_skipped` are what the segment tool reads to
-    tell a reader why a figure is missing. They are now a view of `skipped`."""
+def test_skipped_is_the_one_record_of_why_a_figure_is_missing(pair):
+    """The per-name aliases (`raster_skipped`, `artifacts_skipped`) are gone:
+    a plot suite reads `skipped[name]`, one key for every diagnostic."""
     payload = _collect(pair, enabled=set(SEGMENT_DIAGNOSTIC_NAMES) - {"raster"})
     metrics = payload["metrics"]
-    assert metrics["raster_skipped"] == metrics["skipped"]["raster"]
+    assert metrics["skipped"]["raster"] == "not requested"
+    assert not any(key.endswith("_skipped") for key in metrics)
 
 
 def test_a_dependency_that_was_switched_off_skips_its_dependants_with_the_reason(pair):
@@ -120,7 +121,7 @@ def test_every_diagnostic_is_timed_including_one_that_fails(pair):
     metrics = payload["metrics"]
     assert "clipping" in metrics["timings"]
     assert "clipping" in metrics["errors"]
-    assert metrics["timings"]["clipping"] >= 0.0
+    assert metrics["timings"]["clipping"]["seconds"] >= 0.0
 
 
 def test_the_cache_meta_records_what_was_asked_for(pair):
@@ -134,16 +135,63 @@ def test_the_cache_meta_records_what_was_asked_for(pair):
 
 
 def test_the_detected_rate_recorded_is_the_rate_achieved_not_the_one_asked_for(pair):
-    payload = _collect(pair, enabled={"raster"}, raster_downsample_hz=3000.0)
+    """3 kHz is not a whole-hertz divisor path from 10 kHz; the resampler's
+    anti-aliased decimation runs at the next rate that is, and says so."""
+    payload = _collect(pair, enabled={"noise", "raster"}, raster_downsample_hz=3000.0)
     raster = payload["metrics"]["raster"]
-    assert raster["decimation_factor"] == 3
-    assert raster["detection_hz"] == pytest.approx(FS / 3)
+    assert raster["decimation_factor"] == 4
+    assert raster["detection_hz"] == pytest.approx(FS / 4)
+    assert raster["noise_source"] == "re-estimated on the decimated band"
     assert payload["meta"]["raster_downsample_hz"] == 3000.0
 
 
 def test_no_downsample_records_the_native_rate_and_factor_one(pair):
-    payload = _collect(pair, enabled={"raster"})
+    payload = _collect(pair, enabled={"noise", "raster"})
     raster = payload["metrics"]["raster"]
     assert raster["decimation_factor"] == 1
     assert raster["detection_hz"] == pytest.approx(FS)
     assert payload["meta"]["raster_downsample_hz"] is None
+
+
+def test_the_raster_needs_the_noise_and_says_so_when_it_is_off(pair):
+    payload = _collect(pair, enabled={"raster"})
+    assert "noise" in payload["metrics"]["skipped"]["raster"]
+    assert "raster" not in payload["events"]
+
+
+def test_a_downsampled_raster_does_not_run_the_full_detection_it_does_not_need(pair):
+    """With activity off and the raster on its own decimated band, the
+    whole-segment detection has no consumer, and it is not paid for."""
+    payload = _collect(pair, enabled={"noise", "raster"}, raster_downsample_hz=2000.0)
+    assert "detection" not in payload["metrics"]["timings"]
+
+
+@pytest.mark.parametrize("mode", ["memory", "disk"])
+def test_a_buffered_signal_gives_the_same_numbers_as_the_lazy_one(pair, tmp_path, mode):
+    """Buffering changes where the samples are read from, never what they are."""
+    lazy = _collect(pair)
+    buffered = _collect(pair, signal_buffer=mode, scratch_dir=tmp_path)
+    for name in ("noise", "rms"):
+        key = "noise" if name == "noise" else "rms"
+        assert buffered["metrics"][name][key] == pytest.approx(lazy["metrics"][name][key])
+    assert buffered["metrics"]["activity"]["n_events"] == lazy["metrics"]["activity"]["n_events"]
+    assert buffered["metrics"]["buffer"]["mode"] == mode
+    assert "buffer" in buffered["metrics"]["timings"]
+    assert buffered["meta"]["signal_buffer"] == mode
+    # The disk buffer cleans up after itself.
+    assert not any(tmp_path.glob("signal_buffer_*"))
+
+
+def test_a_registry_entry_is_what_it_computes_not_what_it_costs():
+    """What a diagnostic costs is measured per run (`timings`), never declared:
+    a declared cost goes stale on the first machine it was not written on."""
+    import dataclasses
+
+    from mea_modules.diagnostics.collect import DiagnosticSpec
+    from mea_modules.diagnostics.collect_concat import CONCAT_DIAGNOSTICS
+
+    assert [f.name for f in dataclasses.fields(DiagnosticSpec)] == [
+        "name", "summary", "default", "requires",
+    ]
+    for spec in (*SEGMENT_DIAGNOSTICS, *CONCAT_DIAGNOSTICS):
+        assert set(spec.requires) <= {s.name for s in (*SEGMENT_DIAGNOSTICS, *CONCAT_DIAGNOSTICS)}

@@ -2,19 +2,25 @@
 
 This deliberately does not sort. A spike sorter takes minutes to hours and can
 fail for reasons that have nothing to do with the tissue, which is useless as a
-QC gate. A per-channel MAD threshold with a refractory period takes seconds and
-answers the only question being asked at review time: is anything firing, on how
-many electrodes, and does it stop partway through the recording.
+QC gate. A per-electrode threshold takes seconds and answers the only question
+being asked at review time: is anything firing, on how many electrodes, and does
+it stop partway through the recording.
 
-The detection rule ported from the working build is a negative-going local
-minimum below `threshold_factor` * sigma, where sigma is estimated as
-MAD / 0.6745 over a few evenly spaced windows. Events on the same channel closer
-together than the refractory period are collapsed to the first.
+This module only DRAWS. The events come from the one detector,
+:func:`mea_modules.quality.detection.detect_events` (SpikeInterface's
+``detect_peaks``, by channel, thresholds at k x our MAD-sigma), run by whoever
+had the recording open -- a capsule, which caches them. Two home-grown
+detectors used to live here and in ``quality``; both are gone, so a raster and
+an activity rate can no longer disagree about what an event is.
 """
 
 import logging
 
-from ..quality.robust import mad_sigma
+from ..quality.detection import (
+    DEFAULT_DETECT_THRESHOLD,
+    DEFAULT_EXCLUDE_SWEEP_MS,
+    channel_labels,
+)
 
 from .channel_layout import (
     _add_caption,
@@ -55,7 +61,6 @@ from .traces import (
     _REAL_TIME_XLABEL,
     _frames_to_seconds,
     _has_time_vector,
-    _read_traces,
     _resolve_frame_window,
     resolve_plot_quality,
 )
@@ -64,23 +69,6 @@ logger = logging.getLogger(__name__)
 
 _RASTER_FIGSIZE = (16.0, 8.0)
 _RASTER_DPI = 180
-
-# Defaults ported from the working build.
-_DEFAULT_THRESHOLD_FACTOR = 5.0
-_DEFAULT_REFRACTORY_MS = 0.8
-_DEFAULT_NOISE_WINDOW_FRAMES = 20_000
-_DEFAULT_NOISE_WINDOWS = 4
-_DEFAULT_DETECTION_CHUNK_FRAMES = 50_000
-
-# Output samples of anti-alias filter transient discarded at each end of a
-# decimated block. `scipy.signal.decimate(ftype="fir", zero_phase=True)` runs a
-# length-(20q+1) FIR through `filtfilt`, whose edge transient reaches roughly
-# three filter lengths — 60 output samples. 64 is that with room to spare, and
-# against a 50,000-frame chunk it costs nothing.
-_DECIMATION_MARGIN_OUT = 64
-
-# MAD -> Gaussian sigma. Quartile-based so a few large spikes cannot inflate the
-# noise estimate the way a plain std would.
 
 # One Maxwell recording config routes at most ~1k electrodes; anything past that
 # is a full-array view no one wants to raster in a single figure.
@@ -92,112 +80,6 @@ _DEFAULT_DURATION_S = 60.0
 
 # Past this many rows individual tick labels are unreadable.
 _MAX_YTICKS = 64
-
-
-def decimation_for(sampling_frequency, downsample_to_hz):
-    """`(factor, effective_hz)` for detecting on a downsampled signal.
-
-    The factor is a whole number of native samples per detection sample, so
-    every detection sample lands exactly on a native one and an event's frame
-    is recoverable by multiplication — no interpolated timebase, no rounding
-    drift accumulating over a long window.
-
-    `None`, a non-positive target, or a target at or above the native rate all
-    give factor 1, which is the untouched native-rate path.
-
-    Public because a caller has to RECORD what it actually detected on. The
-    effective rate is rarely the number asked for (10 kHz asked down to 3 kHz
-    detects at 3.33 kHz), and a cache that stores the request rather than the
-    result describes a run that did not happen.
-    """
-    fs = float(sampling_frequency)
-    if not downsample_to_hz or float(downsample_to_hz) <= 0 or fs <= 0:
-        return 1, fs
-    factor = int(fs // float(downsample_to_hz))
-    if factor <= 1:
-        return 1, fs
-    return factor, fs / factor
-
-
-def _decimate(traces, factor):
-    """Anti-aliased decimation of a (frames, channels) block along time.
-
-    Plain striding is wrong here and quietly so. The preprocessing chain is a
-    300 Hz HIGH-pass with no low-pass at all, so the signal is full-band to
-    Nyquist; taking every k-th sample folds everything above the new Nyquist
-    back down into the spike band. That inflates the measured MAD, which raises
-    the threshold, which changes the event count — a figure that still renders
-    and is wrong. Filtering first costs a few percent and removes the whole
-    failure mode.
-    """
-    from scipy.signal import decimate as _scipy_decimate
-
-    return _scipy_decimate(traces, int(factor), axis=0, ftype="fir", zero_phase=True)
-
-
-def _detection_blocks(
-    recording, channel_ids, window_start, window_end, chunk_frames, factor, return_in_uV
-):
-    """Yield `(values, base_frame, emit_lo, emit_hi)` in DETECTION frames.
-
-    One detection frame is `factor` native frames, numbered from `window_start`,
-    so an event's native frame is `window_start + detection_frame * factor` for
-    every factor including 1. That is the whole reason the loop below counts in
-    this space: the native-rate and downsampled paths then run the *same*
-    local-minimum and refractory code, rather than one being a second, cheaper
-    copy of the other that can drift away from it.
-
-    `values` carries a margin on each side that `emit_lo`/`emit_hi` exclude: a
-    local minimum needs both its neighbours, and at factor > 1 the anti-alias
-    filter needs far more than one.
-    """
-    import numpy as np
-
-    factor = max(1, int(factor))
-    total = int(window_end - window_start) // factor
-    if total <= 0:
-        return
-
-    if factor == 1:
-        chunk = max(1024, int(chunk_frames))
-        for chunk_start in range(0, total, chunk):
-            chunk_stop = min(total, chunk_start + chunk)
-            # One sample of overlap on each side: a local minimum needs both
-            # neighbours, and the ones on the chunk seam live in the next chunk.
-            read_lo = max(0, chunk_start - 1)
-            read_hi = min(total, chunk_stop + 1)
-            traces = _read_traces(
-                recording,
-                window_start + read_lo,
-                window_start + read_hi,
-                channel_ids,
-                return_in_uV,
-            ).astype(float, copy=False)
-            yield traces, read_lo, chunk_start, chunk_stop
-        return
-
-    margin = int(_DECIMATION_MARGIN_OUT)
-    chunk = max(1024, int(chunk_frames) // factor)
-    for chunk_start in range(0, total, chunk):
-        chunk_stop = min(total, chunk_start + chunk)
-        # Margins measured in DETECTION frames, so the native read is a whole
-        # number of detection frames and decimated output lines up sample for
-        # sample with the frames it is supposed to represent.
-        lo_margin = min(margin, chunk_start)
-        hi_margin = min(margin, total - chunk_stop)
-        traces = _read_traces(
-            recording,
-            window_start + (chunk_start - lo_margin) * factor,
-            window_start + (chunk_stop + hi_margin) * factor,
-            channel_ids,
-            return_in_uV,
-        ).astype(float, copy=False)
-        if traces.shape[0] < factor * 2 or traces.shape[1] == 0:
-            continue
-        values = np.asarray(_decimate(traces, factor), dtype=float)
-        # `decimate` returns ceil(n / factor) rows; the read was a whole number
-        # of detection frames, so this is exactly the count asked for.
-        yield values, chunk_start - lo_margin, chunk_start, chunk_stop
 
 
 def _select_channels(recording, channel_ids, max_channels):
@@ -225,28 +107,23 @@ def _select_channels(recording, channel_ids, max_channels):
 
 
 def _channel_labels(channel_ids):
-    """Numeric y-axis labels for the raster rows.
+    """Numeric y-axis labels for the raster rows: the detector's own rule.
 
-    Maxwell channel ids are integer-like, and plotting the real id keeps the
-    raster comparable with the layout plot. When ids are not numeric at all,
-    fall back to row position for every channel so the axis stays consistent.
+    Imported rather than restated, because the event labels a raster plots come
+    out of :func:`mea_modules.quality.detection.channel_labels`, and a row axis
+    built by a second rule would not line up with them.
     """
-    import numpy as np
-
-    try:
-        return np.asarray([int(channel_id) for channel_id in channel_ids], dtype=np.int64)
-    except (TypeError, ValueError):
-        return np.arange(len(channel_ids), dtype=np.int64)
+    return channel_labels(channel_ids)
 
 
 def _seconds_to_frames(recording, times, fs, has_times):
     """Recover sample indices from event times so a gap axis can be applied.
 
-    :func:`detect_threshold_crossings` reports seconds, but the gap tables are
-    indexed by sample, so the mapping has to be undone before it can be redone
-    against real elapsed time. Without a time vector the inverse is exact —
-    the times came from ``frame / fs`` — and with one the recording is asked to
-    invert its own mapping.
+    Cached events are seconds, but the gap tables are indexed by sample, so the
+    mapping has to be undone before it can be redone against real elapsed time.
+    Without a time vector the inverse is exact — the times came from
+    ``frame / fs`` — and with one the recording is asked to invert its own
+    mapping.
     """
     import numpy as np
 
@@ -262,238 +139,37 @@ def _seconds_to_frames(recording, times, fs, has_times):
     return np.rint(times * float(fs)).astype(np.int64) if fs else times.astype(np.int64)
 
 
-def estimate_channel_thresholds(
-    recording,
-    channel_ids=None,
-    threshold_factor=_DEFAULT_THRESHOLD_FACTOR,
-    window_frames=_DEFAULT_NOISE_WINDOW_FRAMES,
-    n_windows=_DEFAULT_NOISE_WINDOWS,
-    start_time_s=0.0,
-    duration_s=None,
-    return_in_uV=False,
-    downsample_to_hz=None,
-):
-    """Per-channel detection threshold, as `threshold_factor` * MAD sigma.
-
-    Noise is estimated over `n_windows` evenly spaced windows of `window_frames`
-    samples and combined with a median, so a burst landing inside one window
-    cannot drag the threshold up. Returns a positive float array aligned with
-    `channel_ids`; the caller applies it as a negative-going bound.
-
-    `downsample_to_hz` must match whatever the detection will run at. The
-    anti-alias filter removes real signal power above the new Nyquist, so the
-    MAD of the decimated signal is genuinely smaller than the MAD of the native
-    one — estimating here at native rate and detecting there at a lower one
-    would apply a threshold calibrated to a band the detector never sees.
-    """
-    import numpy as np
-
-    if channel_ids is None:
-        channel_ids = list(recording.get_channel_ids())
-    channel_ids = list(channel_ids)
-    window_start, window_end, fs = _resolve_frame_window(recording, start_time_s, duration_s)
-    factor, _effective_hz = decimation_for(fs, downsample_to_hz)
-    span = int(window_end - window_start)
-    if span <= 0 or not channel_ids:
-        return np.asarray([], dtype=float)
-
-    window = max(256, min(int(window_frames), span))
-    max_start = max(0, span - window)
-    if max_start <= 0:
-        starts = [window_start]
-    else:
-        starts = (
-            window_start
-            + np.unique(np.linspace(0, max_start, num=max(1, int(n_windows)), dtype=np.int64))
-        ).tolist()
-
-    estimates = []
-    for start in starts:
-        traces = _read_traces(recording, int(start), min(window_end, int(start) + window), channel_ids, return_in_uV)
-        if traces.size == 0:
-            continue
-        if factor > 1 and traces.shape[0] > factor * 2:
-            traces = _decimate(np.asarray(traces, dtype=float), factor)
-        estimates.append(mad_sigma(traces))
-
-    if not estimates:
-        return np.full(len(channel_ids), max(1e-6, float(threshold_factor)), dtype=float)
-    thresholds = np.median(np.vstack(estimates), axis=0) * float(threshold_factor)
-    # A perfectly flat (dead or saturated) channel gives sigma 0, which would
-    # otherwise fire on every sample.
-    return np.clip(np.asarray(thresholds, dtype=float), 1e-6, None)
-
-
-def detect_threshold_crossings(
-    recording,
-    channel_ids=None,
-    thresholds=None,
-    threshold_factor=_DEFAULT_THRESHOLD_FACTOR,
-    refractory_period_ms=_DEFAULT_REFRACTORY_MS,
-    start_time_s=0.0,
-    duration_s=_DEFAULT_DURATION_S,
-    chunk_frames=_DEFAULT_DETECTION_CHUNK_FRAMES,
-    return_in_uV=False,
-    downsample_to_hz=None,
-):
-    """Find negative threshold crossings; return (event_times_s, event_labels).
-
-    An event is a sample that is below ``-threshold`` and is a local minimum
-    (``x[i] <= x[i-1]`` and ``x[i] < x[i+1]``). Events within
-    `refractory_period_ms` of the previous event *on the same channel* are
-    dropped, which is what stops one spike from being counted five times.
-
-    With `thresholds` None they are estimated over the same window via
-    :func:`estimate_channel_thresholds`. Traces are read in `chunk_frames`
-    chunks with a margin so crossings on a chunk edge are not lost.
-
-    Event times come from the recording's time vector when it has one, so a
-    concatenated recording rasters on its real timeline.
-
-    **`downsample_to_hz` trades resolution for time.** This is the expensive
-    diagnostic on a segment — it reads every sample of its window and then
-    walks the candidates one at a time in Python — and most of that work is
-    spent deciding about samples no spike is near. Detecting on an
-    anti-aliased decimation of the signal cuts the per-sample arithmetic and
-    the candidate count by the decimation factor.
-
-    What it costs: a spike trough is ~1 ms wide, so at a 10 kHz native rate it
-    spans ~10 samples and the three-sample local-minimum test has room. Below
-    roughly 2.5 kHz that trough is two samples or fewer and the test starts
-    missing spikes rather than merely locating them coarsely. Event TIMES also
-    quantize to the decimated grid, so a 0.8 ms refractory period is enforced
-    against a coarser ruler. This is a knob for looking at an array, not for
-    producing spike times anything downstream will sort on — which is why it
-    lives on the diagnostic detector and not on the preprocessing chain.
-
-    The returned times are in seconds on the recording's own timeline either
-    way, so nothing downstream has to know which rate was used. Ask
-    :func:`decimation_for` for the rate that was actually achieved, and record
-    it: the effective rate is `fs // target` samples apart, rarely the target.
-    """
-    import numpy as np
-
-    if channel_ids is None:
-        channel_ids = list(recording.get_channel_ids())
-    channel_ids = list(channel_ids)
-    window_start, window_end, fs = _resolve_frame_window(recording, start_time_s, duration_s)
-    empty = (np.asarray([], dtype=float), np.asarray([], dtype=np.int64))
-    if int(window_end - window_start) <= 0 or not channel_ids:
-        return empty
-
-    factor, effective_hz = decimation_for(fs, downsample_to_hz)
-    if factor > 1:
-        logger.info(
-            "detecting on a %.1f Hz decimation of a %.1f Hz signal (1 sample in %d)",
-            effective_hz, fs, factor,
-        )
-
-    if thresholds is None:
-        thresholds = estimate_channel_thresholds(
-            recording,
-            channel_ids=channel_ids,
-            threshold_factor=threshold_factor,
-            start_time_s=start_time_s,
-            duration_s=duration_s,
-            return_in_uV=return_in_uV,
-            downsample_to_hz=downsample_to_hz,
-        )
-    thresholds = np.asarray(thresholds, dtype=float)
-    if thresholds.size != len(channel_ids):
-        raise ValueError(f"thresholds has {thresholds.size} entries for {len(channel_ids)} channels")
-
-    labels = _channel_labels(channel_ids)
-    # In DETECTION frames, like everything else in this loop: at factor 1 that
-    # is the native rate and the arithmetic is unchanged; above it, a refractory
-    # period shorter than one detection frame floors at one, which is the
-    # honest answer — the detector cannot resolve two events closer than its
-    # own sample spacing.
-    refractory_samples = max(1, int(round(effective_hz * (float(refractory_period_ms) / 1000.0))))
-    last_emitted = np.full(len(channel_ids), -refractory_samples - 1, dtype=np.int64)
-
-    frame_parts = []
-    label_parts = []
-    for values, base_frame, emit_lo, emit_hi in _detection_blocks(
-        recording, channel_ids, window_start, window_end, chunk_frames, factor, return_in_uV
-    ):
-        if values.shape[0] < 3 or values.shape[1] == 0:
-            continue
-
-        center = values[1:-1, :]
-        crossing = (center <= -thresholds[None, :]) & (center <= values[:-2, :]) & (center < values[2:, :])
-        if not crossing.any():
-            continue
-
-        for channel_index in range(crossing.shape[1]):
-            candidates = np.flatnonzero(crossing[:, channel_index]).astype(np.int64) + 1 + base_frame
-            # Drop candidates from the margin so neighbouring blocks cannot
-            # both claim the same detection frame.
-            candidates = candidates[(candidates >= emit_lo) & (candidates < emit_hi)]
-            if candidates.size == 0:
-                continue
-            kept = []
-            previous = int(last_emitted[channel_index])
-            for frame in candidates.tolist():
-                if frame - previous < refractory_samples:
-                    continue
-                kept.append(frame)
-                previous = frame
-            last_emitted[channel_index] = previous
-            if kept:
-                frame_parts.append(np.asarray(kept, dtype=np.int64))
-                label_parts.append(np.full(len(kept), labels[channel_index], dtype=np.int64))
-
-    if not frame_parts:
-        return empty
-
-    # Detection frames back to native ones. Exact by construction: a detection
-    # frame IS a native frame, every `factor` of them.
-    frames = window_start + np.concatenate(frame_parts) * factor
-    event_labels = np.concatenate(label_parts)
-    order = np.argsort(frames, kind="stable")
-    frames = frames[order]
-    event_labels = event_labels[order]
-    times = _frames_to_seconds(recording, frames, fs, has_times=_has_time_vector(recording))
-    return times.astype(float, copy=False), event_labels
-
-
 def plot_raster_threshold(
     recording,
     out_path,
+    *,
+    events,
     channel_ids=None,
     max_channels=_DEFAULT_MAX_CHANNELS,
     start_time_s=0.0,
     duration_s=_DEFAULT_DURATION_S,
-    threshold_factor=_DEFAULT_THRESHOLD_FACTOR,
-    refractory_period_ms=_DEFAULT_REFRACTORY_MS,
-    chunk_frames=_DEFAULT_DETECTION_CHUNK_FRAMES,
+    threshold_factor=DEFAULT_DETECT_THRESHOLD,
+    exclude_sweep_ms=DEFAULT_EXCLUDE_SWEEP_MS,
     stitch_frames=(),
     title=None,
-    return_in_uV=False,
     figsize=_RASTER_FIGSIZE,
     dpi=_RASTER_DPI,
     time_gaps=None,
     quality=None,
     annotate=True,
-    events=None,
 ):
     """Write a threshold-crossing raster to `out_path`; return the path.
 
-    Detects events with :func:`detect_threshold_crossings` over `duration_s`
-    seconds from `start_time_s` (None for the whole recording) on at most
-    `max_channels` channels, then scatters them as time vs electrode id.
+    `events` is the ``(times_s, labels)`` pair a detection produced -- in
+    seconds on the recording's own timeline, labelled with integer electrode
+    ids -- and it is required: this emitter never detects. `recording` answers
+    only for geometry, the sampling rate and the analysed span, so a
+    :class:`mea_modules.diagnostics.cache.CachedProbe` is enough. Rows are the
+    channels in `channel_ids` (default: every channel, thinned evenly to
+    `max_channels`); events on other channels are simply not drawn.
 
-    `events` supplies that detection's result -- the ``(times_s, labels)`` pair
-    -- instead of running it. Detection is the expensive half of this figure,
-    and how expensive depends entirely on the channel count: ~2 minutes over a
-    segment's ~1000 routed channels, against ~3 seconds over a concatenated
-    well's 266-channel shared electrode set. It is also run TWICE per segment
-    today, because the real-elapsed twin re-detects the identical events. So a
-    caller that has already detected passes the result here, and `recording`
-    need only answer for geometry, sampling rate and the analysed span: a
-    :class:`mea_modules.diagnostics.cache.CachedProbe` is enough. The drawing
-    below is the same either way, which is the point -- one definition of this
-    figure, two sources for its numbers.
+    `threshold_factor` and `exclude_sweep_ms` are the detection's own settings,
+    passed so the legend states what the dots are. They change nothing drawn.
 
     `stitch_frames` draws the segment joins as dotted red verticals — pass the
     concatenation's join offsets in FRAMES (the one convention across every
@@ -520,10 +196,9 @@ def plot_raster_threshold(
     onto whichever axis is in force, by the same gap table as the events.
 
     `quality` picks a render preset (:data:`mea_modules.diagnostics.traces.
-    PLOT_QUALITY_PRESETS`): ``"draft"`` (the default, and what this development
-    pass ships) or ``"high"``, which raises the dots-per-inch so a dense raster
-    survives zooming instead of collapsing into a block. An explicit `dpi`
-    argument still wins over the preset.
+    PLOT_QUALITY_PRESETS`): ``"draft"`` (the default) or ``"high"``, which
+    raises the dots-per-inch so a dense raster survives zooming instead of
+    collapsing into a block. An explicit `dpi` argument still wins.
     """
     import numpy as np
 
@@ -537,19 +212,14 @@ def plot_raster_threshold(
         raise ValueError("recording has no channels to raster")
 
     if events is None:
-        event_times, event_labels = detect_threshold_crossings(
-            recording,
-            channel_ids=channel_ids,
-            threshold_factor=threshold_factor,
-            refractory_period_ms=refractory_period_ms,
-            start_time_s=start_time_s,
-            duration_s=duration_s,
-            chunk_frames=chunk_frames,
-            return_in_uV=return_in_uV,
-        )
-    else:
-        event_times, event_labels = (np.asarray(part) for part in events)
+        raise ValueError("pass the detected events; this emitter does not detect")
+    event_times, event_labels = (np.asarray(part) for part in events)
     labels = _channel_labels(channel_ids)
+    # Only the rows this figure has: a thinned raster must not draw the events
+    # of channels it left out on rows that belong to other electrodes.
+    if event_labels.size:
+        keep = np.isin(event_labels, labels)
+        event_times, event_labels = event_times[keep], event_labels[keep]
 
     gaps, segment_gaps = resolve_time_gaps(time_gaps)
     real_time = time_gaps is not None
@@ -636,8 +306,8 @@ def plot_raster_threshold(
         handles.append(
             _legend_dot(
                 "black",
-                f"≥{float(threshold_factor):g}× MAD-σ crossing "
-                f"({float(refractory_period_ms):g} ms)",
+                f"≥{float(threshold_factor):g}× MAD-σ peak "
+                f"({float(exclude_sweep_ms):g} ms)",
                 size=4.0,
             )
         )
@@ -678,8 +348,8 @@ def plot_raster_threshold(
         if real_time and any(shaded.values()):
             caption_parts.append(NO_DATA_SHADING)
         caption_parts.append(
-            "Detection is a threshold crossing count, not spike sorting: one dot is one "
-            "downward crossing on one electrode, not one identified neuron."
+            "Detection is per-electrode peak detection, not spike sorting: one dot is one "
+            "negative peak past threshold on one electrode, not one identified neuron."
         )
         caption = _fold_caption(caption_parts)
     _add_caption(fig, caption)

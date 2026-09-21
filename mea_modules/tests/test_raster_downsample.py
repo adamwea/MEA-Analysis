@@ -1,19 +1,21 @@
-"""Downsampled threshold detection.
+"""Detecting on a downsampled signal.
 
-The native-rate path is the contract: the detection loop was rewritten to count
-in detection frames so that one implementation serves both rates, and the proof
-that the rewrite was faithful is that factor 1 still finds exactly what it found
-before — on real data, against a cache written by the old code, and here on a
-synthetic signal whose answer is known by construction.
+The raster may detect on an anti-aliased decimation of the segment instead of
+the native signal. Two things have to hold for that to be honest: the rate it
+reports is the rate it actually ran at, and the decimation filters before it
+strides -- a plain stride folds the full-band noise above the new Nyquist back
+into the spike band, raises the threshold and changes the count, in a figure
+that still renders.
 """
 import numpy as np
 import pytest
 from spikeinterface.core import NumpyRecording
 
-from mea_modules.diagnostics.raster import (
-    decimation_for,
-    detect_threshold_crossings,
-    estimate_channel_thresholds,
+from mea_modules.quality import mad_noise
+from mea_modules.quality.detection import (
+    detect_events,
+    resample_rate_for,
+    resampled_for_detection,
 )
 
 FS = 10_000.0
@@ -39,60 +41,55 @@ def _recording(n_channels=4, seconds=2.0, spike_every_s=0.05, seed=0):
     )
 
 
-def test_decimation_for_reports_what_was_achieved_not_what_was_asked():
-    """10 kHz asked down to 3 kHz detects at 3333 Hz, and says so.
+def _noise(recording):
+    return mad_noise(
+        recording, duration_s=2.0, num_chunks=1, seed=0,
+        highpass_hz=None, return_in_uV=False,
+    )
 
-    A whole number of native samples per detection sample is what keeps an
-    event's frame exactly recoverable; the price is that the rate you get is
-    rarely the rate you typed, and a cache recording the request would describe
-    a run that did not happen."""
-    assert decimation_for(FS, 3000.0) == (3, pytest.approx(FS / 3))
-    assert decimation_for(FS, 5000.0) == (2, 5000.0)
+
+def test_the_rate_reported_is_the_rate_achieved_not_the_rate_asked():
+    """10 kHz asked down to 3 kHz detects at 3333.3 Hz? No: SpikeInterface's
+    resampler takes its anti-aliased decimation path only for a whole-hertz
+    rate that divides the native one, so the factor steps up to the next one
+    that does, and the result says so."""
+    assert resample_rate_for(FS, 5000.0) == (2, 5000.0)
+    assert resample_rate_for(FS, 3000.0) == (4, 2500.0)
+    factor, effective = resample_rate_for(FS, 2000.0)
+    assert (factor, effective) == (5, 2000.0)
+    assert FS / factor == int(FS / factor)
 
 
 @pytest.mark.parametrize("target", [None, 0, 0.0, FS, FS * 2])
 def test_no_target_or_a_target_at_or_above_the_native_rate_is_the_native_path(target):
     """Factor 1 is not a special case to be handled, it is the default."""
-    assert decimation_for(FS, target) == (1, FS)
+    assert resample_rate_for(FS, target) == (1, FS)
+    recording, _ = _recording(seconds=0.2)
+    same, factor, effective = resampled_for_detection(recording, target)
+    assert same is recording and factor == 1 and effective == FS
 
 
-def test_native_rate_detection_is_unchanged_by_the_detection_frame_rewrite():
-    """The loop now counts in detection frames; at factor 1 that IS native."""
+def test_native_detection_finds_each_planted_spike_once_per_channel():
+    """The 1 ms exclusion sweep is what stops a ten-sample trough counting ten times."""
     recording, planted = _recording()
-    times, labels = detect_threshold_crossings(
-        recording, threshold_factor=5.0, start_time_s=0.0, duration_s=2.0
-    )
-    # One event per planted spike per channel, and no more: the refractory
-    # period is what stops a ten-sample trough counting ten times.
-    assert times.size == planted.size * 4
-    assert set(np.unique(labels).tolist()) == {0, 1, 2, 3}
+    events = detect_events(recording, _noise(recording), detect_threshold=5.0)
+    assert events["frames"].size == planted.size * 4
+    assert set(np.unique(events["labels"]).tolist()) == {0, 1, 2, 3}
 
 
 def test_downsampled_detection_finds_the_same_spikes_on_a_coarser_grid():
-    """Decimating to 5 kHz still resolves a 1 ms trough; the times quantize."""
     recording, planted = _recording()
-    times, _ = detect_threshold_crossings(
-        recording, threshold_factor=5.0, start_time_s=0.0, duration_s=2.0,
-        downsample_to_hz=5000.0,
-    )
-    assert times.size == planted.size * 4
-    # Every event lands on the decimated grid: two native samples apart.
-    frames = np.rint(times * FS).astype(int)
-    assert set((frames % 2).tolist()) == {0}
-
-
-def test_an_event_frame_is_exactly_recoverable_at_any_factor():
-    """Times are seconds on the recording's own clock either way, so nothing
-    downstream has to know which rate ran. What must hold is that a decimated
-    event sits on a native sample, never between two."""
-    recording, _ = _recording()
-    for target in (None, 5000.0, 2000.0):
-        times, _ = detect_threshold_crossings(
-            recording, threshold_factor=5.0, start_time_s=0.0, duration_s=2.0,
-            downsample_to_hz=target,
-        )
-        frames = times * FS
-        assert np.allclose(frames, np.rint(frames))
+    decimated, factor, effective = resampled_for_detection(recording, 5000.0)
+    assert (factor, effective) == (2, 5000.0)
+    assert decimated.get_sampling_frequency() == pytest.approx(5000.0)
+    events = detect_events(decimated, _noise(decimated), detect_threshold=5.0)
+    assert events["frames"].size == planted.size * 4
+    # Mapped back to native frames, every event sits within one decimated
+    # sample of a planted trough's centre.
+    native = events["frames"] * factor
+    centres = planted + int(0.0005 * FS)
+    nearest = np.abs(native[:, None] - centres[None, :]).min(axis=1)
+    assert nearest.max() <= 2 * factor
 
 
 def test_thresholds_are_estimated_on_the_band_the_detector_will_see():
@@ -100,37 +97,23 @@ def test_thresholds_are_estimated_on_the_band_the_detector_will_see():
     genuinely smaller. Estimating at native rate and detecting at a lower one
     would apply a threshold calibrated to a band the detector never sees."""
     recording, _ = _recording()
-    native = estimate_channel_thresholds(recording, threshold_factor=5.0, duration_s=2.0)
-    decimated = estimate_channel_thresholds(
-        recording, threshold_factor=5.0, duration_s=2.0, downsample_to_hz=2000.0
-    )
-    assert native.size == decimated.size == 4
-    assert np.all(decimated < native)
+    decimated, _, _ = resampled_for_detection(recording, 2000.0)
+    native = np.asarray(_noise(recording)["noise"])
+    band = np.asarray(_noise(decimated)["noise"])
+    assert native.size == band.size == 4
+    assert np.all(band < native)
 
 
 def test_decimation_does_not_alias_the_noise_floor_upward():
-    """A plain stride would fold everything above the new Nyquist back into the
-    band and INFLATE the measured noise. Anti-aliased decimation must not."""
+    """White noise decimated with an anti-alias filter keeps roughly 1/5 of its
+    power; a naive stride keeps all of it. The filtered estimate must be the
+    smaller of the two, by a clear margin rather than by rounding."""
     rng = np.random.default_rng(1)
-    n = int(2.0 * FS)
-    traces = rng.normal(0.0, 1.0, size=(n, 2)).astype(np.float32)
+    traces = rng.normal(0.0, 1.0, size=(int(2.0 * FS), 2)).astype(np.float32)
     recording = NumpyRecording([traces], sampling_frequency=FS, channel_ids=[0, 1])
 
-    decimated = estimate_channel_thresholds(
-        recording, threshold_factor=1.0, duration_s=2.0, downsample_to_hz=2000.0
-    )
+    decimated, _, _ = resampled_for_detection(recording, 2000.0)
+    filtered = np.asarray(_noise(decimated)["noise"])
     strided = np.median(np.abs(traces[::5] - np.median(traces[::5], axis=0)), axis=0) / 0.6745
 
-    # White noise decimated with an anti-alias filter keeps roughly 1/5 of its
-    # power; a naive stride keeps all of it. The filtered estimate must be the
-    # smaller of the two, by a clear margin rather than by rounding.
-    assert np.all(decimated < strided * 0.8)
-
-
-def test_a_window_shorter_than_one_detection_frame_yields_nothing_rather_than_raising():
-    recording, _ = _recording(seconds=0.2)
-    times, labels = detect_threshold_crossings(
-        recording, threshold_factor=5.0, start_time_s=0.0, duration_s=0.0,
-        downsample_to_hz=2000.0,
-    )
-    assert times.size == 0 and labels.size == 0
+    assert np.all(filtered < strided * 0.8)

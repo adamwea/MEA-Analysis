@@ -4,13 +4,15 @@ Every metric here answers the same question from a different angle: is this
 channel — and by extension this well — carrying signal worth spending a sort on?
 
 * :func:`mad_noise` — how loud is the baseline on each channel,
-* :func:`activity_rate` — how often does each channel cross a spike threshold,
+* :func:`rms_noise` — the same windows' RMS, which does count the spikes,
 * :func:`detect_bad_channels` — SpikeInterface's own dead/noisy classifier,
 * :func:`dead_well_flags` — reduces the above to one verdict per well.
 
-These are the only functions in the package that read traces, and they do so on
-a *bounded* sample: a handful of short windows drawn from the recording, never
-the whole file. A Maxwell AxonTracking scan is tens of GB per segment, so the
+How often each channel fires is not measured here: it is a detection, and the
+one detector lives in :mod:`mea_modules.quality.detection`.
+
+The functions here read a *bounded* sample: a handful of short windows drawn
+from the recording, never the whole file. A Maxwell AxonTracking scan is tens of GB per segment, so the
 sampling budget (`duration_s`) is the parameter that decides the runtime, not
 the file size. Peak memory is one window, because windows are streamed rather
 than concatenated.
@@ -244,12 +246,8 @@ def mad_noise(
     return result
 
 
-def activity_rate(
+def rms_noise(
     recording,
-    threshold_sd=5.0,
-    polarity="negative",
-    refractory_ms=1.0,
-    noise=None,
     duration_s=DEFAULT_DURATION_S,
     num_chunks=DEFAULT_NUM_CHUNKS,
     seed=DEFAULT_SEED,
@@ -257,131 +255,75 @@ def activity_rate(
     highpass_hz=DEFAULT_HIGHPASS_HZ,
     return_in_uV=True,
 ):
-    """Per-channel threshold-crossing rate, in events per second.
+    """Per-channel root-mean-square amplitude over the same windows as the MAD.
 
-    A cheap stand-in for a firing rate: no sorting, no templates, just how often
-    the trace leaves the noise band. Useful for telling a silent channel from a
-    live one before committing to a sort.
+    RMS about each window's own mean, so a residual offset does not read as
+    signal; on a high-passed trace that mean is ~0 and this is the conventional
+    RMS noise figure much of the MEA literature thresholds against.
 
-    `threshold_sd` is in units of that channel's own noise (see :func:`mad_noise`),
-    and `polarity` selects which side to count — extracellular spikes are
-    negative-going, which is the default. `refractory_ms` is the dead time after
-    a crossing: without it the ringing of one spike is counted several times.
+    It is reported BESIDE the MAD, never instead of it. The two answer different
+    questions: the MAD is blind to the spikes by design, the RMS is not, so on
+    an active electrode the RMS runs above the MAD-sigma and the gap between
+    them is roughly how much of the trace is signal rather than noise. That is
+    why the estimate here uses the same seed, and therefore the same windows,
+    as :func:`mad_noise` -- a ratio of two numbers measured on different
+    stretches of the recording would mix the question with the sampling.
 
-    By default the threshold is recomputed from each window's own MAD, which
-    keeps it honest under slow drift. Pass `noise` — the dict from
-    :func:`mad_noise`, or a per-channel sequence in the same units — to hold the
-    threshold fixed across windows instead.
+    The per-window values are combined by median, as the MAD's are.
 
-    Rates are counts over the *sampled* seconds, not the recording's full
-    duration. Counting per window costs at most one spurious event per window,
-    when a window happens to open mid-excursion; at realistic duty cycles that
-    is far below the noise on the estimate.
-
-    ``rate_hz`` pools counts over the sampled seconds, which is a mean over
-    windows weighted by their duration. ``rate_hz_median_window`` is the median
-    of the same per-window rates, and ``mean_rate_hz``/``median_rate_hz``
-    summarise ``rate_hz`` across channels. Nothing consumes the extra keys --
-    ``rate_hz`` remains the rate -- but a channel whose pooled rate far exceeds
-    its per-window median was carried by one burst rather than firing steadily.
-
-    Returns a dict with ``channel_ids``, ``rate_hz``, ``rate_hz_median_window``,
-    ``n_events``, ``mean_rate_hz``, ``median_rate_hz``, the threshold settings,
-    and the sampling parameters used.
+    Returns a dict with ``channel_ids``, ``rms`` (one value per channel, in
+    ``unit``), ``rms_mean``, ``median_rms``, ``mean_rms`` and the sampling
+    parameters used.
     """
-    if polarity not in ("negative", "positive", "both"):
-        raise ValueError(f"polarity must be 'negative', 'positive' or 'both', got {polarity!r}")
-
     prepared, return_in_uV, unit, applied_hp = _prepare(recording, highpass_hz, return_in_uV)
     windows = _plan_windows(recording, duration_s, num_chunks, seed, placement)
 
-    fixed_noise = None
-    if noise is not None:
-        fixed_noise = np.asarray(_metric_values(noise, "noise"), dtype=np.float64)
-        n_channels = recording.get_num_channels()
-        if fixed_noise.size != n_channels:
-            raise ValueError(f"noise has {fixed_noise.size} values but recording has {n_channels} channels")
-
-    fs = float(recording.get_sampling_frequency())
-    refractory_frames = int(round(float(refractory_ms) * 1e-3 * fs))
-    counts = np.zeros(recording.get_num_channels(), dtype=np.int64)
-    per_window_rates = []
-    for (_segment, start, end), traces in zip(
-        windows, _iter_traces(prepared, windows, return_in_uV)
-    ):
-        level = fixed_noise if fixed_noise is not None else _chunk_mad(traces)
-        window_counts = _count_crossings(
-            traces, level * float(threshold_sd), polarity, refractory_frames
-        )
-        counts += window_counts
-        window_s = (end - start) / fs if fs else 0.0
-        if window_s > 0:
-            per_window_rates.append(window_counts / window_s)
-
-    meta = _sampling_meta(recording, windows, unit, applied_hp, seed, placement)
-    sampled_s = meta["sampled_s"]
-    rates = counts / sampled_s if sampled_s else np.zeros_like(counts, dtype=np.float64)
-    # Pooling counts over the total sampled seconds IS a mean over windows --
-    # weighted by duration, which is the right weighting when the windows differ
-    # in length. Its robust counterpart is the median of the per-window rates,
-    # reported beside it rather than in place of it.
-    if per_window_rates:
-        rates_median_window = np.median(np.stack(per_window_rates), axis=0)
-    else:
-        rates_median_window = np.zeros_like(rates)
+    per_window = []
+    for traces in _iter_traces(prepared, windows, return_in_uV):
+        values = np.asarray(traces, dtype=np.float64)
+        per_window.append(np.sqrt(np.mean((values - values.mean(axis=0)) ** 2, axis=0)))
+    stacked = np.stack(per_window)
+    rms = np.median(stacked, axis=0)
 
     result = {
         "channel_ids": _channel_ids(recording),
-        "rate_hz": [float(v) for v in rates],
-        "rate_hz_median_window": [float(v) for v in rates_median_window],
-        "n_events": [int(v) for v in counts],
-        "mean_rate_hz": float(np.mean(rates)),
-        "median_rate_hz": float(np.median(rates)),
-        "window_aggregation": "duration-weighted mean",
-        "threshold_sd": float(threshold_sd),
-        "polarity": polarity,
-        "refractory_ms": float(refractory_ms),
-        "fixed_threshold": fixed_noise is not None,
+        "rms": [float(v) for v in rms],
+        "rms_mean": [float(v) for v in np.mean(stacked, axis=0)],
+        "median_rms": float(np.median(rms)),
+        "mean_rms": float(np.mean(rms)),
+        "window_aggregation": "median",
     }
-    result.update(meta)
+    result.update(_sampling_meta(recording, windows, unit, applied_hp, seed, placement))
     return result
 
 
-def _count_crossings(traces, threshold, polarity, refractory_frames):
-    """Count threshold excursions per channel, one dead time apart at minimum.
+def rms_over_mad(rms, noise):
+    """Per-channel RMS / MAD-sigma, for display beside the two maps.
 
-    An excursion counts when the trace is over threshold *and* nothing was over
-    threshold in the preceding `refractory_frames` samples. That collapses both
-    a long excursion and a ringing multi-crossing into a single event, without
-    a per-channel Python loop: the "was anything recently over" test is a
-    difference of cumulative counts.
+    1.0 is what Gaussian noise gives; an electrode carrying spikes sits above
+    it, because the RMS counts them and the MAD does not. This is a picture of
+    the two estimates' relationship, not a verdict: nothing thresholds it.
+
+    Both dicts must describe the same channels in the same unit. A channel with
+    no measurable MAD has no ratio (``None``) rather than an infinite one.
     """
-    traces = np.asarray(traces, dtype=np.float32)
-    centered = traces - np.median(traces, axis=0, keepdims=True)
-    threshold = np.abs(np.asarray(threshold, dtype=np.float32))
-
-    if polarity == "negative":
-        over = centered < -threshold
-    elif polarity == "positive":
-        over = centered > threshold
-    else:
-        over = np.abs(centered) > threshold
-
-    if refractory_frames <= 0:
-        # Plain rising edges: sample over threshold, previous sample not.
-        events = over.copy()
-        events[1:] &= ~over[:-1]
-        return events.sum(axis=0, dtype=np.int64)
-
-    cumulative = np.cumsum(over, axis=0, dtype=np.int32)
-    before = np.zeros_like(cumulative)
-    before[1:] = cumulative[:-1]  # crossings up to and including i-1
-    window_start = np.zeros_like(cumulative)
-    window_start[refractory_frames + 1 :] = cumulative[: -(refractory_frames + 1)]
-    recent = before - window_start  # crossings inside [i - refractory, i - 1]
-
-    events = over & (recent == 0)
-    return events.sum(axis=0, dtype=np.int64)
+    if rms.get("unit") != noise.get("unit"):
+        raise ValueError(
+            f"RMS is in {rms.get('unit')!r} but the MAD is in {noise.get('unit')!r}"
+        )
+    keyed = {str(cid): value for cid, value in zip(noise["channel_ids"], noise["noise"])}
+    ratios = []
+    for cid, value in zip(rms["channel_ids"], rms["rms"]):
+        mad = keyed.get(str(cid))
+        ratios.append(float(value) / float(mad) if mad else None)
+    finite = [value for value in ratios if value is not None]
+    return {
+        "channel_ids": list(rms["channel_ids"]),
+        "rms_over_mad": ratios,
+        "median_rms_over_mad": float(np.median(finite)) if finite else None,
+        "mean_rms_over_mad": float(np.mean(finite)) if finite else None,
+        "unit": "ratio",
+    }
 
 
 def detect_bad_channels(
@@ -461,7 +403,8 @@ def dead_well_flags(
 ):
     """Reduce per-channel metrics to a single verdict: is this well dead?
 
-    Takes the dicts returned by :func:`mad_noise`, :func:`activity_rate` and
+    Takes the dicts returned by :func:`mad_noise`,
+    :func:`mea_modules.quality.detection.event_rates` and
     :func:`detect_bad_channels` — any subset, and each may equally be a plain
     per-channel sequence — and turns them into array-level fractions.
 

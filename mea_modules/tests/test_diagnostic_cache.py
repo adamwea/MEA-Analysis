@@ -358,3 +358,132 @@ def test_a_window_with_no_recorded_unit_serves_either_request():
 
     assert view.get_traces(start_frame=0, end_frame=5, return_in_uV=True).shape == (5, 2)
     assert view.get_traces(start_frame=0, end_frame=5, return_in_uV=False).shape == (5, 2)
+
+
+# --------------------------------------------------------------------------
+# version 2: gap tables travel with the cache, and a stale cache is not ready
+# --------------------------------------------------------------------------
+
+_NATIVE_GAPS = {
+    "gaps": {"break_sample_indices": [300, 4_500], "break_gap_frames": [3, 11]},
+    "segment_gaps": [{"start_sample": 4_000, "gap_before_s": 30.0}],
+    "n_samples": N_FRAMES,
+}
+
+
+def test_a_gap_table_round_trips_in_the_shape_an_emitter_takes(tmp_path):
+    from mea_modules.diagnostics.timebase import sample_times
+
+    _write(tmp_path, time_gaps={"native": _NATIVE_GAPS, "absent": None})
+    cached = read_cache(tmp_path, capsule="preprocess_segment")
+
+    assert cached.time_gap_names() == ["native"]
+    assert cached.time_gaps("absent") is None
+    structure = cached.time_gaps("native")
+    assert list(structure["gaps"]["break_sample_indices"]) == [300, 4_500]
+    assert list(structure["gaps"]["break_gap_frames"]) == pytest.approx([3.0, 11.0])
+    assert structure["segment_gaps"] == _NATIVE_GAPS["segment_gaps"]
+    assert structure["n_samples"] == N_FRAMES
+
+    frames = np.arange(0, N_FRAMES, 997)
+    assert np.allclose(
+        sample_times(frames, FS_HZ, gaps=structure["gaps"], segment_gaps=structure["segment_gaps"]),
+        sample_times(frames, FS_HZ, gaps=_NATIVE_GAPS["gaps"],
+                     segment_gaps=_NATIVE_GAPS["segment_gaps"]),
+    )
+
+
+def test_a_decimated_trace_block_records_its_step_and_its_gap_table(tmp_path):
+    traces = {
+        "preprocessed": {
+            "channel_ids": ["e1", "e2"],
+            "traces": _window(),
+            "frame_offset": 0,
+            "sampling_frequency": FS_HZ / 20,
+            "unit": "uV",
+            "frame_step": 20,
+            "time_gaps": "traces",
+        }
+    }
+    _write(tmp_path, traces=traces)
+    block = read_cache(tmp_path).trace_block("preprocessed")
+    assert block["frame_step"] == 20
+    assert block["time_gaps"] == "traces"
+    assert block["sampling_frequency"] == FS_HZ / 20
+
+
+def test_a_full_rate_block_defaults_to_step_one(tmp_path):
+    _write(tmp_path)
+    block = read_cache(tmp_path).trace_block("preprocessed")
+    assert block["frame_step"] == 1
+    assert block["time_gaps"] is None
+
+
+def test_an_older_cache_is_refused_and_says_which_capsule_to_rerun(tmp_path):
+    _write(tmp_path)
+    record_path = cache_dir(tmp_path) / RECORD_NAME
+    record = json.loads(record_path.read_text())
+    record["version"] = CACHE_VERSION - 1
+    record_path.write_text(json.dumps(record))
+
+    with pytest.raises(CacheVersionMismatch, match="Re-run the `preprocess_segment` capsule"):
+        read_cache(tmp_path, capsule="preprocess_segment")
+
+
+def test_cache_ready_means_ready_for_this_reader(tmp_path):
+    """A resume check that accepted any cache would keep one no suite can draw."""
+    from mea_modules.diagnostics.cache import cache_version
+
+    assert cache_version(tmp_path) is None and cache_ready(tmp_path) is False
+    _write(tmp_path)
+    assert cache_version(tmp_path) == CACHE_VERSION and cache_ready(tmp_path) is True
+
+    record_path = cache_dir(tmp_path) / RECORD_NAME
+    record = json.loads(record_path.read_text())
+    record["version"] = CACHE_VERSION - 1
+    record_path.write_text(json.dumps(record))
+    assert cache_version(tmp_path) == CACHE_VERSION - 1
+    assert cache_ready(tmp_path) is False
+
+
+def test_traces_drawn_from_cache_on_the_real_elapsed_axis_are_byte_identical(tmp_path):
+    """The cached gap table and the cached window together redraw the live
+    real-elapsed figure exactly: the shading and the time axis both come out of
+    the round trip."""
+    import hashlib
+
+    from probeinterface import Probe
+    from spikeinterface.core import NumpyRecording
+
+    from mea_modules.diagnostics import plot_traces
+
+    rng = np.random.default_rng(3)
+    samples = rng.normal(0.0, 5.0, (N_FRAMES, 4)).astype(np.float32)
+    recording = NumpyRecording([samples], sampling_frequency=FS_HZ, channel_ids=CHANNEL_IDS)
+    probe = Probe(ndim=2)
+    probe.set_contacts(positions=np.asarray(LOCATIONS), shapes="square", shape_params={"width": 5})
+    probe.set_device_channel_indices(np.arange(4))
+    recording.set_probe(probe, in_place=True)
+
+    window = int(0.6 * FS_HZ)
+    traces = {
+        "preprocessed": {
+            "channel_ids": ["e1", "e3"],
+            "traces": recording.get_traces(start_frame=0, end_frame=window, channel_ids=["e1", "e3"]),
+            "frame_offset": 0,
+            "sampling_frequency": FS_HZ,
+            "unit": None,
+            "time_gaps": "native",
+        }
+    }
+    _write(tmp_path, probe=CachedProbe.from_recording(recording), traces=traces,
+           time_gaps={"native": _NATIVE_GAPS})
+    cached = read_cache(tmp_path)
+
+    kwargs = dict(channel_ids=["e1", "e3"], start_time_s=0.0, duration_s=0.6,
+                  return_in_uV=False, annotate=False)
+    live = plot_traces(recording, tmp_path / "live.png", time_gaps=_NATIVE_GAPS, **kwargs)
+    drawn = plot_traces(cached.traces("preprocessed"), tmp_path / "cached.png",
+                        time_gaps=cached.time_gaps("native"), **kwargs)
+    digest = lambda path: hashlib.sha256(path.read_bytes()).hexdigest()  # noqa: E731
+    assert digest(live) == digest(drawn)

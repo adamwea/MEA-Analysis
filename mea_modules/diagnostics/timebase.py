@@ -449,6 +449,53 @@ def resolve_time_gaps(time_gaps):
     return items, ()
 
 
+def rescale_time_gaps(time_gaps, step):
+    """The same gap structure, addressed on a timeline decimated by `step`.
+
+    A cached series that keeps every `step`-th native sample is numbered in its
+    OWN samples, so a gap table indexed by native frame would shade the wrong
+    stretch of it. This re-addresses both gap kinds onto the decimated
+    numbering without changing a single duration:
+
+    * a within-segment break at native frame ``i`` applies to every kept sample
+      at or after it, i.e. from decimated sample ``ceil(i / step)``, and its
+      ``d - 1`` missing native frames become ``(d - 1) / step`` decimated ones
+      -- the same seconds at the decimated rate;
+    * a between-segment gap moves to ``ceil(start_sample / step)`` and keeps its
+      ``gap_before_s``, which was always in seconds.
+
+    Returns ``{"gaps": ..., "segment_gaps": ...}``, the shape every emitter's
+    ``time_gaps`` takes. `step` 1 hands the same numbers back.
+    """
+    import numpy as np
+
+    step = max(1, int(step))
+    gaps, segment_gaps = resolve_time_gaps(time_gaps)
+    indices, missing = _normalize_gaps(gaps)
+    rescaled_gaps = {
+        "break_sample_indices": [int(v) for v in -(-indices // step)],
+        "break_gap_frames": [float(v) for v in (missing / step + 1.0)],
+    }
+
+    if _is_mapping(segment_gaps):
+        segment_gaps = segment_gaps.get("segments") or ()
+    rescaled_segments = []
+    for item in segment_gaps or ():
+        entry = dict(item) if _is_mapping(item) else {
+            "start_sample": tuple(item)[0], "gap_before_s": tuple(item)[1],
+        }
+        index = entry.get("start_sample", entry.get("sample_index"))
+        if index is not None:
+            entry["start_sample"] = int(-(-int(index) // step))
+            entry.pop("sample_index", None)
+        rescaled_segments.append(entry)
+    return {
+        "gaps": rescaled_gaps,
+        "segment_gaps": rescaled_segments,
+        "frame_step": step,
+    }
+
+
 def _shade_gap_spans(
     axis,
     spans,

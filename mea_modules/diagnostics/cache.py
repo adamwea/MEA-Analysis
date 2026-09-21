@@ -55,6 +55,13 @@ What is cached, and why each thing rather than the obvious alternative:
 ``spectra``
     Welch output per source, already reduced.
 
+``time_gaps``
+    The gap structure the real-elapsed figures are drawn on, read off the
+    source file once by the capsule. A concatenated well runs to ~200 k
+    within-segment breaks, so the break arrays go in the ``.npz`` and only the
+    per-segment rows stay in the JSON. Caching it is what lets a redraw work on
+    a machine that no longer has the scan mounted.
+
 One file per kind: a JSON for the dicts and geometry, an ``.npz`` for the
 arrays. Both live in a ``diagnostics/`` folder inside the capsule's own output
 directory, so a run that has the capsule has the cache, and a tool that cannot
@@ -80,8 +87,12 @@ _UV_UNITS = frozenset({"uV", "µV", "microvolts"})
 SPECTRA_ARRAYS = ("freqs", "power")
 
 # Bumped when a reader can no longer make sense of an older writer's output. A
-# tool that meets a newer version says so and stops rather than half-drawing.
-CACHE_VERSION = 1
+# reader meets exactly its own version or stops: an older cache lacks what the
+# current figures read (version 2 added the RMS metrics, the SpikeInterface
+# detector's events and the first-class gap tables), and a newer one may mean
+# anything. `cache_ready` answers False for either, so a resuming capsule
+# recomputes the cache rather than leaving one no suite can draw.
+CACHE_VERSION = 2
 
 
 class CacheMissing(FileNotFoundError):
@@ -340,6 +351,7 @@ def write_cache(
     traces=None,
     events=None,
     spectra=None,
+    time_gaps=None,
     meta=None,
 ):
     """Write one entity's diagnostic cache; return the directory it went to.
@@ -349,8 +361,10 @@ def write_cache(
     "sampling_frequency", "unit"}`` -- frames, not seconds, because that is what
     the trace emitters decimate and shade from; `events` maps a name to
     ``{"times_s", "labels"}``; `spectra` maps a source name to a
-    :func:`mea_modules.diagnostics.spectra.welch_spectra` result. `metrics` and
-    `meta` are plain JSON-able dicts.
+    :func:`mea_modules.diagnostics.spectra.welch_spectra` result; `time_gaps`
+    maps a name to any gap structure an emitter's ``time_gaps`` accepts (the
+    trace block that needs a re-addressed one names it). `metrics` and `meta`
+    are plain JSON-able dicts.
 
     Arrays and dicts are written to two files, not interleaved: the JSON stays
     readable by a person opening it to check a number, which is most of why the
@@ -377,6 +391,11 @@ def write_cache(
             "sampling_frequency": float(
                 block.get("sampling_frequency", probe._fs or 0.0)
             ),
+            # Native frames per cached sample. 1 for a full-rate window; a
+            # whole-timeline series kept at a display rate records its step so
+            # nobody reads its frame numbers as native ones.
+            "frame_step": int(block.get("frame_step", 1)),
+            "time_gaps": block.get("time_gaps"),
         }
         _store("traces", name, "traces", block["traces"], dtype=np.float32)
 
@@ -396,6 +415,30 @@ def write_cache(
         for key in SPECTRA_ARRAYS:
             _store("spectra", name, key, block[key])
 
+    gap_sources = {}
+    for name, structure in (time_gaps or {}).items():
+        if structure is None:
+            continue
+        from .timebase import _normalize_gaps, resolve_time_gaps
+
+        gaps, segment_gaps = resolve_time_gaps(structure)
+        indices, missing = _normalize_gaps(gaps)
+        _store("time_gaps", name, "break_sample_indices", indices, dtype=np.int64)
+        # Stored as the counter step (missing + 1), the convention every reader
+        # of a gap table expects; float, because a re-addressed table carries
+        # fractional frames.
+        _store("time_gaps", name, "break_gap_frames", missing + 1.0)
+        if hasattr(segment_gaps, "get"):
+            segment_gaps = segment_gaps.get("segments") or []
+        gap_sources[name] = {
+            "segment_gaps": _jsonable(list(segment_gaps or [])),
+            **{
+                key: _jsonable(value)
+                for key, value in (structure.items() if hasattr(structure, "items") else [])
+                if key not in ("gaps", "segment_gaps", "break_sample_indices", "break_gap_frames")
+            },
+        }
+
     record = {
         "version": CACHE_VERSION,
         "geometry": {
@@ -408,6 +451,7 @@ def write_cache(
         "traces": trace_sources,
         "events": event_sources,
         "spectra": spectra_sources,
+        "time_gaps": gap_sources,
         "meta": _jsonable(meta or {}),
     }
 
@@ -456,6 +500,30 @@ class DiagnosticCache:
 
     def spectra_names(self):
         return list(self._record.get("spectra", {}))
+
+    def time_gap_names(self):
+        return list(self._record.get("time_gaps", {}))
+
+    def time_gaps(self, name):
+        """One cached gap structure, in the shape an emitter's ``time_gaps`` takes.
+
+        None when the capsule could not read one (the source file had no frame
+        counter, or was unreadable) -- the figures then draw on file time only.
+        """
+        block = self._record.get("time_gaps", {}).get(name)
+        if block is None:
+            return None
+        structure = {key: value for key, value in block.items() if key != "segment_gaps"}
+        structure["gaps"] = {
+            "break_sample_indices": self._arrays[f"time_gaps/{name}/break_sample_indices"],
+            "break_gap_frames": self._arrays[f"time_gaps/{name}/break_gap_frames"],
+        }
+        structure["segment_gaps"] = list(block.get("segment_gaps") or [])
+        return structure
+
+    def trace_block(self, name):
+        """The cached trace window's own record: channels, rate, step, gap table name."""
+        return dict(self._record["traces"][name])
 
     def traces(self, name):
         """One cached trace window, as a :class:`CachedTraces` view.
@@ -518,10 +586,11 @@ def read_cache(capsule_out_dir, capsule="the upstream capsule"):
 
     record = json.loads(record_path.read_text())
     version = int(record.get("version", 0))
-    if version > CACHE_VERSION:
+    if version != CACHE_VERSION:
         raise CacheVersionMismatch(
             f"{record_path} was written at cache version {version}; this reader "
-            f"understands {CACHE_VERSION}. Re-run the `{capsule}` capsule."
+            f"understands {CACHE_VERSION}. Re-run the `{capsule}` capsule for this "
+            "entity -- with resume on it recomputes only the diagnostics."
         )
 
     arrays_path = directory / ARRAYS_NAME
@@ -529,6 +598,22 @@ def read_cache(capsule_out_dir, capsule="the upstream capsule"):
     return DiagnosticCache(record, arrays, directory)
 
 
+def cache_version(capsule_out_dir):
+    """The version a cache on disk was written at, or None when there is none."""
+    path = cache_dir(capsule_out_dir) / RECORD_NAME
+    if not path.is_file():
+        return None
+    try:
+        return int(json.loads(path.read_text()).get("version", 0))
+    except (OSError, ValueError, TypeError):
+        return 0
+
+
 def cache_ready(capsule_out_dir):
-    """True when a readable cache is present. For a resume check, not a gate."""
-    return (cache_dir(capsule_out_dir) / RECORD_NAME).is_file()
+    """True when a cache THIS reader can use is present. For a resume check.
+
+    A cache written at another version is not ready: resuming over it would
+    keep a cache no current suite can draw, which is the permanent hard failure
+    this check exists to prevent.
+    """
+    return cache_version(capsule_out_dir) == CACHE_VERSION

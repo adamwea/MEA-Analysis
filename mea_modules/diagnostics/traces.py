@@ -876,6 +876,7 @@ def plot_traces_with_layout(
     caption_extra=None,
     quality=None,
     annotate=True,
+    probe=None,
 ):
     """Draw the layout and the traces of the SAME channels; return a manifest dict.
 
@@ -895,8 +896,8 @@ def plot_traces_with_layout(
     Parameters
     ----------
     recording : RecordingExtractor
-        Read for both halves: probe geometry for the layout panel, bounded
-        blocks of samples for the traces.
+        Read for the traces, in bounded blocks -- and for the layout panel's
+        geometry too, unless `probe` is given.
     out_path : path-like
         Where to write the PNG. Required — a composed sheet owns its figure, so
         there is no axes to draw into instead.
@@ -931,6 +932,13 @@ def plot_traces_with_layout(
     annotate : bool
         False drops the figure title, both panel titles and the caption block,
         keeping the axes, the units and both legends.
+    probe : recording-like or None
+        The array the layout panel draws, when it is not `recording`. A cached
+        trace window holds only the channels it traces, so drawn as its own
+        layout it would show those few electrodes and none of the array they
+        sit in; handing the full array's geometry here (a
+        :class:`mea_modules.diagnostics.cache.CachedProbe`) puts them back in
+        context. None draws `recording`'s own geometry, as before.
 
     Returns
     -------
@@ -978,7 +986,7 @@ def plot_traces_with_layout(
         fig.suptitle(title)
 
     plot_channel_layout(
-        recording,
+        recording if probe is None else probe,
         ax=layout_ax,
         title=_LAYOUT_PANEL_TITLE,
         highlight_channel_ids=channel_ids,

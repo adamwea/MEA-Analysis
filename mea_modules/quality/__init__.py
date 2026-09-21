@@ -2,11 +2,14 @@
 
 Public API::
 
-    from mea_modules.quality import mad_noise, activity_rate, detect_bad_channels, dead_well_flags
+    from mea_modules.quality import mad_noise, rms_noise, detect_events, event_rates
+    from mea_modules.quality import detect_bad_channels, dead_well_flags
 
-The first three measure one recording (a well/segment) and return per-channel
-numbers; `dead_well_flags` reduces those numbers to one verdict per well. All
-four return JSON-serializable dicts and read only a bounded sample of traces.
+`mad_noise`, `rms_noise` and `detect_bad_channels` measure one recording (a
+well/segment) over a bounded sample of traces; `detect_events` is the one
+threshold-crossing detector (SpikeInterface's, called one way) and
+`event_rates` reduces its events to a rate per channel; `dead_well_flags`
+reduces all of it to one verdict per well.
 """
 
 from .robust import MAD_TO_SIGMA, mad_sigma
@@ -15,10 +18,18 @@ from .metrics import (
     DEFAULT_HIGHPASS_HZ,
     DEFAULT_NUM_CHUNKS,
     DEFAULT_SEED,
-    activity_rate,
     dead_well_flags,
     detect_bad_channels,
     mad_noise,
+    rms_noise,
+    rms_over_mad,
+)
+from .detection import (
+    DEFAULT_DETECT_THRESHOLD,
+    DEFAULT_EXCLUDE_SWEEP_MS,
+    DEFAULT_PEAK_SIGN,
+    detect_events,
+    event_rates,
 )
 
 __all__ = [
@@ -26,7 +37,13 @@ __all__ = [
     "mad_noise",
     "mad_sigma",
     "MAD_TO_SIGMA",
-    "activity_rate",
+    "rms_noise",
+    "rms_over_mad",
+    "detect_events",
+    "event_rates",
+    "DEFAULT_DETECT_THRESHOLD",
+    "DEFAULT_EXCLUDE_SWEEP_MS",
+    "DEFAULT_PEAK_SIGN",
     "detect_bad_channels",
     "dead_well_flags",
     # sampling defaults, so callers can report what they used

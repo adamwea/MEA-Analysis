@@ -348,7 +348,7 @@ def _metrics(recording):
     activity = {
         "channel_ids": ids,
         "rate_hz": rng.random(len(ids)) * 3.0,
-        "threshold_sd": 5.0,
+        "detect_threshold": 5.0,
     }
     return noise, activity
 
@@ -391,7 +391,7 @@ def test_metric_maps_micrometre_axes_are_real_mathtext(capture, recording, tmp_p
 
 def test_metric_maps_annotate_false_drops_both_title_layers(capture, recording, tmp_path):
     """No suptitle and no panel titles; the colour bars still name each panel,
-    including the estimator (MAD) and the threshold (SD) — the numbers that
+    including the estimator (MAD) and the threshold (5× MAD-σ) — the numbers that
     used to live only in the panel title, which annotate=False drops."""
     noise, activity = _metrics(recording)
     mm.plot_noise_activity_map(
@@ -402,7 +402,7 @@ def test_metric_maps_annotate_false_drops_both_title_layers(capture, recording, 
     assert capture.figure._suptitle is None
     assert capture.titles == []
     assert "MAD noise (uV)" in capture.axis_labels
-    assert "≥5 SD crossing rate (events / s)" in capture.axis_labels
+    assert "≥5× MAD-σ peak rate (events / s)" in capture.axis_labels
     assert capture.count(f"x ({mm._UM_LABEL})") == 2
     assert capture.count(f"y ({mm._UM_LABEL})") == 1
 
@@ -428,7 +428,7 @@ def test_firing_rate_map_takes_annotate_through_its_kwargs(capture, recording, t
 
     assert "P003454" not in capture.everything
     assert capture.titles == []
-    assert "≥5 SD crossing rate (events / s)" in capture.axis_labels
+    assert "≥5× MAD-σ peak rate (events / s)" in capture.axis_labels
     assert capture.count(f"x ({mm._UM_LABEL})") == 1
 
 
@@ -450,15 +450,16 @@ def test_plot_noise_map_is_the_individual_twin_of_the_activity_map(capture, reco
 
 def test_metric_map_legend_expands_its_acronym_once(capture, recording, tmp_path):
     """Review ruling: "needing legends describing metric used for noise /
-    activity." MAD and SD are expanded in the legend title, the way
-    spectra.py expands PSD."""
+    activity." MAD is expanded in the legend title, the way spectra.py
+    expands PSD. The activity threshold is a multiple of the MAD-sigma now, so
+    there is no second statistic (the old SD) left to expand."""
     noise, activity = _metrics(recording)
     mm.plot_noise_activity_map(recording, noise, activity, tmp_path / "map.png", annotate=False)
 
     assert capture.legend_titles, "no panel carries a legend title"
     joined = " || ".join(capture.legend_titles)
     assert _norm(ACRONYMS_SHORT["MAD"]) in _norm(joined)
-    assert _norm(ACRONYMS_SHORT["SD"]) in _norm(joined)
+    assert _norm(ACRONYMS_SHORT["SD"]) not in _norm(joined)
 
 
 def test_colorbar_side_mirrors_the_panels_column(capture, recording, tmp_path):
@@ -527,3 +528,67 @@ def test_plot_metric_maps_draws_into_callers_axes(recording, tmp_path):
 
 if __name__ == "__main__":
     raise SystemExit(pytest.main([__file__, "-v"]))
+
+
+# --------------------------------------------------------------------------
+# the RMS pair and the RMS-vs-MAD scatter
+# --------------------------------------------------------------------------
+
+
+def _rms(recording, noise):
+    """An RMS result beside `noise`: the same channels, the same unit."""
+    from mea_modules.quality import rms_over_mad
+
+    values = np.asarray(noise["noise"], dtype=float) * 1.3
+    rms = {"channel_ids": list(noise["channel_ids"]), "rms": list(values), "unit": noise["unit"]}
+    rms.update(rms_over_mad(rms, noise))
+    rms["unit"] = noise["unit"]
+    return rms
+
+
+def test_rms_map_is_a_single_panel_labelled_with_its_unit(capture, recording, tmp_path):
+    noise, _ = _metrics(recording)
+    out = mm.plot_rms_map(recording, _rms(recording, noise), tmp_path / "rms.png", annotate=False)
+
+    assert out.exists() and out.stat().st_size > 5_000
+    assert capture.titles == []
+    assert "RMS (uV)" in capture.axis_labels
+    assert capture.count(f"x ({mm._UM_LABEL})") == 1
+
+
+def test_rms_mad_ratio_map_needs_the_ratio(capture, recording, tmp_path):
+    noise, _ = _metrics(recording)
+    rms = _rms(recording, noise)
+    out = mm.plot_rms_mad_ratio_map(recording, rms, tmp_path / "ratio.png", annotate=False)
+    assert out.exists()
+    assert "RMS / MAD-σ" in capture.axis_labels
+
+    bare = {key: value for key, value in rms.items() if key != "rms_over_mad"}
+    with pytest.raises(ValueError, match="no ratio"):
+        mm.plot_rms_mad_ratio_map(recording, bare, tmp_path / "bare.png")
+
+
+def test_rms_vs_mad_draws_the_identity_line_on_square_equal_axes(capture, recording, tmp_path):
+    noise, _ = _metrics(recording)
+    out = mm.plot_rms_vs_mad(noise, _rms(recording, noise), tmp_path / "scatter.png")
+
+    assert out.exists()
+    assert "MAD-σ (uV)" in capture.axis_labels and "RMS (uV)" in capture.axis_labels
+    assert any("RMS = MAD-σ" in label for label in capture.legend_labels)
+
+    # The geometry, drawn into an axes the test keeps: one range on both axes
+    # and an equal aspect, so the identity line is the diagonal.
+    import matplotlib.pyplot as plt
+
+    fig, ax = plt.subplots()
+    assert mm.plot_rms_vs_mad(noise, _rms(recording, noise), None, ax=ax) is None
+    assert ax.get_xlim() == ax.get_ylim()
+    assert ax.get_aspect() == 1.0
+    plt.close(fig)
+
+
+def test_rms_vs_mad_refuses_two_units(recording, tmp_path):
+    noise, _ = _metrics(recording)
+    rms = dict(_rms(recording, noise), unit="raw")
+    with pytest.raises(ValueError, match="raw"):
+        mm.plot_rms_vs_mad(noise, rms, tmp_path / "scatter.png")

@@ -22,16 +22,27 @@ figure's error bars and its scatter of individual electrodes are drawn from, and
 what makes a tall bar readable as a shifted population rather than one loud
 electrode.
 
-Whether the segments differ at all is reported as ``activity_comparison``: a
-non-parametric test over those per-electrode arrays (Mann-Whitney U for two
-segments, Kruskal-Wallis H for three or more — a per-channel rate is bounded
-below by zero and has a long right tail, which is the shape a t-test handles
-worst). It is a WARNING FLAG and nothing else. Segments of one well would
-normally be expected to behave similarly, so a significant difference is worth
-looking at; it is never a failure, nothing here raises on it, and no gate reads
-it. The figure states this result whether or not it fires — a flag that only
-speaks up when significant is one a reader cannot tell from a test that was
-never run.
+Whether the segments held steady is reported two ways, and the order matters.
+
+``stability`` is the headline: for each pair of consecutive segments, the
+Spearman rank correlation between their per-electrode rates -- did the same
+electrodes stay the busy ones -- reported as every pair's rho plus the median
+and the minimum, and the coefficient of variation of the segment means -- how
+far the average moved, relative to its own size. Neither assumes the electrodes
+are independent of each other, which is why they lead.
+
+``activity_comparison`` is secondary, and says so. The same electrodes recur in
+every segment, so the test is the repeated-measures one: Friedman with Kendall's
+W for three or more segments, Wilcoxon signed-rank with the matched-pairs
+rank-biserial correlation for two. Even paired, its p value is optimistic:
+electrodes share network bursts and see the same units, so they are not the
+independent replicates the test counts them as (Lazic 2010; Aarts et al. 2014).
+It is a flag, never a gate -- nothing here raises on it and nothing reads it --
+and there is no "stable" threshold on the headline either: what a steady well
+looks like is for the reference wells to show, not for a constant to assert.
+
+The figure states both whether or not anything moved: a flag that only speaks up
+when it fires cannot be told from a test that was never run.
 
 The number and the picture are deliberately separable:
 
@@ -49,10 +60,9 @@ This is the un-sorted counterpart to
 answers the same per-segment question about a SORT's units. This one needs no
 sorter: it runs on threshold crossings, before hours are spent.
 
-Detection itself lives in :mod:`mea_modules.diagnostics.raster`
-(:func:`~mea_modules.diagnostics.raster.estimate_channel_thresholds` and
-:func:`~mea_modules.diagnostics.raster.detect_threshold_crossings`); this module
-takes the times and labels those return and never detects anything of its own.
+Detection itself is :func:`mea_modules.quality.detection.detect_events`; this
+module takes the times and labels it returns and never detects anything of its
+own.
 
 Pure library: no argparse, no printing, no ``__main__``.
 """
@@ -201,21 +211,34 @@ _BRACKET_Y = 0.93
 _BRACKET_TICK = 0.03
 _BRACKET_TEXT_PAD = 0.015
 
-# scipy's own name for the k-sample test carries a trailing statistic letter
-# ("Kruskal-Wallis H") that belongs in the JSON, which is provenance, but reads
-# as noise in three words of figure text; the two-sample test's own "U" stays,
-# since that is how it is conventionally cited. Display-only: `test` in the
-# returned `activity_comparison` block is never touched.
-_TEST_DISPLAY_NAMES = {"Kruskal-Wallis H": "Kruskal-Wallis"}
+# Figure text for each test: short, conventional, never the JSON's full name.
+_TEST_DISPLAY_NAMES = {
+    "Friedman": "Friedman",
+    "Wilcoxon signed-rank": "Wilcoxon",
+}
+_EFFECT_DISPLAY_NAMES = {
+    "Kendall's W": "W",
+    "matched-pairs rank-biserial": "r",
+}
+# The secondary line is smaller again than the headline: it is a caveated test,
+# and it must never read as loud as the stability numbers above it.
+_SECONDARY_FONTSIZE = 5.5
+_SECONDARY_COLOR = "0.35"
 
 _COMPARISON_ALPHA = 0.05
 
-# The note travels with the number because the number IS a flag and nothing
-# more: it is what stops the next reader turning a p value into a pass/fail.
+# The notes travel with the numbers: they are what stops the next reader turning
+# a rho into a verdict or a p value into a pass/fail.
+_STABILITY_NOTE = (
+    "Headline stability: consecutive-segment Spearman rho of the per-electrode "
+    "rates (did the same electrodes stay the busy ones) and the coefficient of "
+    "variation of the segment means (how far the average moved). Descriptive; "
+    "no threshold is applied."
+)
 _COMPARISON_NOTE = (
-    "Warning flag only, never a failure: segments would normally be expected to "
-    "behave similarly, so a significant difference is worth looking at, not a "
-    "reason to reject anything. Nothing in this pipeline gates on it."
+    "Secondary and optimistic: a repeated-measures test over the same electrodes, "
+    "but electrodes share network bursts and units, so they are not independent "
+    "replicates and this p value overstates the evidence. A flag, never a gate."
 )
 _NO_COMPARISON_NOTE = (
     "No per-channel rates in this summary, so no comparison was run: pass "
@@ -260,8 +283,8 @@ def _per_channel_counts(placed, event_channel_labels, channel_ids, n_segments):
         Segment index per event, as :func:`segment_event_rate_summary` computed
         it.
     event_channel_labels : array-like
-        One channel label per event, the second return of
-        :func:`mea_modules.diagnostics.raster.detect_threshold_crossings`.
+        One channel label per event: the ``labels`` of
+        :func:`mea_modules.quality.detect_events`.
     channel_ids : sequence
         The channels detection ran over, in the order it was given them.
     n_segments : int
@@ -364,42 +387,105 @@ def _per_channel_row(counts, recorded_s):
     }
 
 
-def _activity_comparison(rows, alpha=_COMPARISON_ALPHA):
-    """Do the segments' per-channel rate distributions differ? A flag, not a gate.
+def _measured_groups(rows):
+    """``(recs, groups)``: the per-electrode rate arrays of the segments that have one."""
+    import numpy as np
 
-    Non-parametric on purpose. A per-channel rate is bounded below by zero and
-    carries a long right tail — a handful of electrodes produce most of the
-    crossings — so the normality a t-test or an ANOVA assumes is exactly what
-    these numbers do not have. Two segments get Mann-Whitney U, three or more
-    Kruskal-Wallis H.
+    kept = [row for row in rows if row.get("per_channel_events_per_s")]
+    return (
+        [row.get("rec") for row in kept],
+        [np.asarray(row["per_channel_events_per_s"], dtype=float) for row in kept],
+    )
 
-    Returns the ``activity_comparison`` block: ``test``, ``statistic``,
-    ``p_value``, ``n_groups``, ``significant``, ``alpha`` and ``note``. The keys
-    are always present; the ones a test did not produce are ``None`` rather than
-    missing, so a consumer never has to branch on a key's existence, and
-    ``significant`` is ``None`` when nothing was tested rather than ``False``,
-    which would claim the segments had been compared and found alike.
 
-    scipy is imported here rather than at module scope, as the rest of the
-    package does it: the arithmetic above must stay importable without it.
+def _finite_or_none(value):
+    import numpy as np
+
+    return float(value) if value is not None and np.isfinite(value) else None
+
+
+def _stability(rows):
+    """The headline: consecutive-segment rank correlation and the CV of the means.
+
+    Spearman rho between each segment's per-electrode rates and the next
+    segment's -- the same electrodes, paired -- answers "did the busy
+    electrodes stay the busy ones". A pair where one segment's rates carry no
+    variation at all has no rank correlation, and is reported as ``None``
+    rather than a number it does not have.
+
+    The coefficient of variation is the sample SD of the segment means over
+    their mean: one dispersion figure for "how far did the average move",
+    scaled to its own size (the regularity measure MEA work reports over
+    developmental time, e.g. Cotterill et al. 2016).
     """
     import numpy as np
 
-    groups = [
-        np.asarray(row["per_channel_events_per_s"], dtype=float)
-        for row in rows
-        if row.get("per_channel_events_per_s")
-    ]
+    recs, groups = _measured_groups(rows)
+    block = {
+        "pairs": [],
+        "consecutive_spearman_rho": [],
+        "median_consecutive_rho": None,
+        "min_consecutive_rho": None,
+        "segment_means": [float(np.mean(group)) for group in groups],
+        "cv_of_segment_means": None,
+        "n_segments_compared": len(groups),
+        "note": _STABILITY_NOTE,
+    }
+    if len(groups) >= 2:
+        from scipy import stats
+
+        for index in range(len(groups) - 1):
+            a, b = groups[index], groups[index + 1]
+            if np.ptp(a) == 0 or np.ptp(b) == 0:
+                rho = None
+            else:
+                rho = _finite_or_none(stats.spearmanr(a, b).statistic)
+            block["pairs"].append([recs[index], recs[index + 1]])
+            block["consecutive_spearman_rho"].append(rho)
+        defined = [rho for rho in block["consecutive_spearman_rho"] if rho is not None]
+        if defined:
+            block["median_consecutive_rho"] = float(np.median(defined))
+            block["min_consecutive_rho"] = float(np.min(defined))
+        means = np.asarray(block["segment_means"], dtype=float)
+        if means.mean() > 0:
+            block["cv_of_segment_means"] = float(np.std(means, ddof=1) / means.mean())
+    return block
+
+
+def _activity_comparison(rows, alpha=_COMPARISON_ALPHA):
+    """The secondary, caveated test: repeated measures over the same electrodes.
+
+    Friedman (electrode as the block) with Kendall's W for three or more
+    segments; Wilcoxon signed-rank with the matched-pairs rank-biserial
+    correlation for two. Both use electrode identity, which the unpaired tests
+    this replaced threw away -- and with it the between-electrode baseline,
+    which is most of the spread and has nothing to do with the segments.
+
+    Returns ``test``, ``statistic``, ``p_value``, ``effect_size_name``,
+    ``effect_size``, ``n_groups``, ``n_electrodes``, ``significant``, ``alpha``
+    and ``note``, always all present. ``significant`` is ``None`` when nothing
+    was tested rather than ``False``, which would claim the segments had been
+    compared and found alike.
+    """
+    import numpy as np
+
+    _recs, groups = _measured_groups(rows)
     block = {
         "test": None,
         "statistic": None,
         "p_value": None,
+        "effect_size_name": None,
+        "effect_size": None,
         "n_groups": len(groups),
+        "n_electrodes": int(groups[0].size) if groups else 0,
         "significant": None,
         "alpha": float(alpha),
         "note": _NO_COMPARISON_NOTE,
     }
     if len(groups) < 2:
+        return block
+    if len({group.size for group in groups}) != 1:
+        block["note"] = "segments carry different electrode counts, so they cannot be paired"
         return block
 
     try:
@@ -411,35 +497,31 @@ def _activity_comparison(rows, alpha=_COMPARISON_ALPHA):
 
     try:
         if len(groups) == 2:
-            name = "Mann-Whitney U"
-            result = stats.mannwhitneyu(groups[0], groups[1], alternative="two-sided")
+            name, effect_name = "Wilcoxon signed-rank", "matched-pairs rank-biserial"
+            result = stats.wilcoxon(groups[0], groups[1])
+            diff = groups[0] - groups[1]
+            diff = diff[diff != 0]
+            ranks = stats.rankdata(np.abs(diff))
+            total = ranks.sum()
+            effect = (
+                float((ranks[diff > 0].sum() - ranks[diff < 0].sum()) / total)
+                if total else None
+            )
         else:
-            name = "Kruskal-Wallis H"
-            result = stats.kruskal(*groups)
+            name, effect_name = "Friedman", "Kendall's W"
+            result = stats.friedmanchisquare(*groups)
+            n, k = groups[0].size, len(groups)
+            effect = float(result.statistic / (n * (k - 1))) if n and k > 1 else None
     except ValueError as error:
-        # scipy refuses a comparison with no variation anywhere in it (every
-        # electrode of every segment on the same rate). That is not a failure:
-        # it is the cleanest possible "these do not differ", so it is recorded
-        # as a note and the rest of the summary stands.
+        # scipy refuses a comparison with no variation anywhere in it. That is
+        # not a failure: it is the cleanest possible "these do not differ".
         block["note"] = f"no test was run ({error}); {_COMPARISON_NOTE}"
         return block
 
-    # The SAME degenerate input does not always raise. `mannwhitneyu` rejects it
-    # with a ValueError, but `kruskal` hands back a nan statistic and a nan p
-    # value instead -- and `nan < alpha` is False, which would write
-    # `significant: False` into the summary and print a p of nan on the figure.
-    # Both of those claim the segments were compared and found alike when
-    # nothing was compared at all, which is exactly what the `None` in this
-    # block's contract exists to prevent. Treat a non-finite result as the
-    # refusal it is.
     if not (np.isfinite(result.statistic) and np.isfinite(result.pvalue)):
         block["note"] = (
             "no test was run (the rates carry no variation to test, so the "
             f"statistic is undefined); {_COMPARISON_NOTE}"
-        )
-        logger.info(
-            "%s over %d segment(s) is undefined on this input; segments were not compared",
-            name, len(groups),
         )
         return block
 
@@ -449,16 +531,17 @@ def _activity_comparison(rows, alpha=_COMPARISON_ALPHA):
             "test": name,
             "statistic": float(result.statistic),
             "p_value": p_value,
+            "effect_size_name": effect_name,
+            "effect_size": _finite_or_none(effect),
             "significant": bool(p_value < float(alpha)),
             "note": _COMPARISON_NOTE,
         }
     )
-    if block["significant"]:
-        logger.warning(
-            "%s across %d segment(s): p = %.3g < %g — activity differs between "
-            "segments. Worth a look, not a failure.",
-            name, len(groups), p_value, float(alpha),
-        )
+    logger.info(
+        "%s across %d segment(s): p = %.3g, %s = %s (secondary, optimistic)",
+        name, len(groups), p_value, effect_name,
+        "n/a" if block["effect_size"] is None else f"{block['effect_size']:.3f}",
+    )
     return block
 
 
@@ -492,9 +575,9 @@ def segment_event_rate_summary(
         label) and ``n_samples`` (its own length in frames). Extra keys are
         ignored, so a manifest row can be passed straight through.
     event_times_s : array-like
-        Event times in seconds on the CONCATENATED timeline, e.g. the first
-        return of
-        :func:`mea_modules.diagnostics.raster.detect_threshold_crossings`.
+        Event times in seconds on the CONCATENATED timeline, e.g. the
+        ``frames`` of :func:`mea_modules.quality.detect_events` over the
+        sampling rate.
     fs_hz : float
         Sampling rate, used for both the join positions and the durations.
     stitch_frames : sequence of int
@@ -515,8 +598,8 @@ def segment_event_rate_summary(
         here re-thresholds — but a rate is unreadable without it, so it travels
         with the numbers.
     event_channel_labels : array-like or None
-        One channel label per entry of `event_times_s`, i.e. the SECOND return
-        of :func:`~mea_modules.diagnostics.raster.detect_threshold_crossings`.
+        One channel label per entry of `event_times_s`, i.e. the ``labels`` of
+        :func:`mea_modules.quality.detect_events`.
         With `channel_ids`, this adds the per-electrode breakdown. Without both,
         the per-channel keys stay absent and the summary is exactly what it was.
     channel_ids : sequence or None
@@ -529,8 +612,9 @@ def segment_event_rate_summary(
     dict
         ``threshold_factor``, ``n_channels``, ``total_events``, ``note``,
         ``zero_event_segments`` (the labels of segments nothing crossed in, the
-        dead-configuration check), ``activity_comparison`` (see
-        :func:`_activity_comparison` — a warning flag, never a gate) and
+        dead-configuration check), ``stability`` (the headline, see
+        :func:`_stability`), ``activity_comparison`` (the secondary test, see
+        :func:`_activity_comparison` — a flag, never a gate) and
         ``segments``, one row each with ``segment_index``, ``rec``,
         ``n_events``, ``recorded_s``, ``events_per_s`` and
         ``events_per_s_per_channel``.
@@ -639,6 +723,7 @@ def segment_event_rate_summary(
         "total_events": int(times.size),
         "note": PER_SEGMENT_ONLY,
         "zero_event_segments": dead,
+        "stability": _stability(rows),
         "activity_comparison": _activity_comparison(rows),
         "segments": rows,
     }
@@ -674,15 +759,26 @@ def _format_p(p_value):
     return f"p = {p_value:.2g}"
 
 
-def _comparison_label(comparison):
-    """One line of figure text for `comparison`, or None if nothing was tested.
+def _stability_label(stability):
+    """The headline line of figure text, or None when nothing was compared."""
+    if not stability:
+        return None
+    median = stability.get("median_consecutive_rho")
+    minimum = stability.get("min_consecutive_rho")
+    cv = stability.get("cv_of_segment_means")
+    parts = []
+    if median is not None:
+        parts.append(f"consecutive ρ median {median:.2f}, min {minimum:.2f}")
+    if cv is not None:
+        parts.append(f"CV of means {cv:.2f}")
+    return "; ".join(parts) or None
 
-    Same string whether the bracket form (two groups) or the single-line form
-    (three or more) draws it — see :func:`_TEST_DISPLAY_NAMES` for the one
-    place the test's name is shortened for the figure. The verdict is
-    ``", n.s."`` when the comparison did not clear alpha and nothing extra when
-    it did: the number already says how significant, and "significant" printed
-    next to a p value would only repeat it.
+
+def _comparison_label(comparison):
+    """The secondary line of figure text for `comparison`, or None if untested.
+
+    The test's short name, its p value (``n.s.`` when it did not clear alpha),
+    its effect size, and the word that says it is the optimistic one.
     """
     test = comparison.get("test")
     p_value = comparison.get("p_value")
@@ -690,7 +786,13 @@ def _comparison_label(comparison):
         return None
     name = _TEST_DISPLAY_NAMES.get(test, test)
     verdict = "" if comparison.get("significant") else ", n.s."
-    return f"{name}, {_format_p(p_value)}{verdict}"
+    effect = comparison.get("effect_size")
+    effect_text = (
+        ""
+        if effect is None
+        else f", {_EFFECT_DISPLAY_NAMES.get(comparison.get('effect_size_name'), 'effect')} = {effect:.2f}"
+    )
+    return f"{name} {_format_p(p_value)}{verdict}{effect_text} (optimistic)"
 
 
 def _bar_colors(n_bars):
@@ -727,33 +829,29 @@ def _rates_figure_size(n_segments):
     return (width_in, _RATES_FIGSIZE[1])
 
 
-def _draw_activity_comparison(ax, comparison, grouped_positions, all_positions):
-    """State the between-segment test on `ax`, significant or not.
+def _draw_activity_comparison(ax, stability, comparison, grouped_positions, all_positions):
+    """State the stability headline and the secondary test on `ax`.
 
-    A warning flag has to say so even when it is quiet (review ruling,
-    2026-09-19): a reader seeing no mark at all cannot tell "not significant"
-    from "never tested". Exactly two groups with two known bar positions
-    draw a BRACKET spanning them, so the mark visibly belongs to that pair
-    rather than to the figure in general; anything else (three or more
-    groups, or a two-group comparison whose bar positions could not be
-    pinned down) draws a plain RULE spanning every bar instead, since the
-    omnibus test speaks for the whole row rather than one pair of them.
+    Drawn whether or not anything moved (review ruling, 2026-09-19): a reader
+    seeing no mark at all cannot tell "held steady" from "never measured".
+    Exactly two measured bars draw a BRACKET spanning them, since the pair is
+    what was compared; anything else draws a RULE spanning every bar. The
+    headline sits above the line; the secondary test, smaller and greyer,
+    under the headline.
 
     Both forms draw an actual line, not just text, and that is deliberate
     rather than decorative: :func:`mea_modules.diagnostics.figure_style.legend_corner`
     scores a corner by the artist points it finds there through ``transData``,
     and text is invisible to that scan. A line spanning every bar reaches into
-    BOTH upper corners, which is what pushes the legend down into whichever
-    lower corner the scatter leaves emptiest instead of letting it land on top
-    of this mark — exactly the ordering callers rely on by drawing this before
-    the legend.
+    BOTH upper corners, which pushes the legend down into whichever lower
+    corner the scatter leaves emptiest instead of letting it land on this mark.
 
     Plain DATA coordinates throughout, scaled off the axis's OWN current top
-    (`ax.get_ylim()[1]`, set by the caller's scatter-cut before this runs) —
-    see :data:`_BRACKET_Y` for why. Returns nothing.
+    (`ax.get_ylim()[1]`, set by the caller's scatter-cut before this runs).
     """
-    label = _comparison_label(comparison)
-    if label is None:
+    headline = _stability_label(stability)
+    secondary = _comparison_label(comparison)
+    if headline is None and secondary is None:
         return
 
     axis_top = float(ax.get_ylim()[1])
@@ -771,15 +869,27 @@ def _draw_activity_comparison(ax, comparison, grouped_positions, all_positions):
     else:
         x0, x1 = min(all_positions), max(all_positions)
         ax.plot([x0, x1], [y_bar, y_bar], color=_MARK_COLOR, linewidth=1.0)
-    ax.text(
-        (x0 + x1) / 2.0,
-        y_bar + _BRACKET_TEXT_PAD * axis_top,
-        label,
-        ha="center",
-        va="bottom",
-        fontsize=_MARK_FONTSIZE,
-        color=_MARK_COLOR,
-    )
+    centre = (x0 + x1) / 2.0
+    if headline is not None:
+        ax.text(
+            centre,
+            y_bar + _BRACKET_TEXT_PAD * axis_top,
+            headline,
+            ha="center",
+            va="bottom",
+            fontsize=_MARK_FONTSIZE,
+            color=_MARK_COLOR,
+        )
+    if secondary is not None:
+        ax.text(
+            centre,
+            y_bar - _BRACKET_TEXT_PAD * axis_top,
+            secondary,
+            ha="center",
+            va="top",
+            fontsize=_SECONDARY_FONTSIZE,
+            color=_SECONDARY_COLOR,
+        )
 
 
 def _scatter_values(row, cap=_MAX_SCATTER_POINTS):
@@ -881,12 +991,12 @@ def plot_segment_event_rates(
         computes and reports both regardless of this choice — only which one
         is DRAWN changes.
     show_comparison : bool
-        True (the default) states the between-segment test on the axes
-        whether or not it is significant — a bracket over the two bars for a
-        two-group comparison, one line for three or more — because a warning
-        flag that only speaks up when it fires is one a reader cannot tell
-        from a test that was never run. Drawn regardless of `annotate`, since
-        it is a result rather than chrome. False suppresses it entirely.
+        True (the default) states the stability headline and the secondary
+        test on the axes whether or not anything moved — a bracket over the two
+        bars for a two-segment well, one line for three or more — because a
+        flag that only speaks up when it fires is one a reader cannot tell from
+        a test that was never run. Drawn regardless of `annotate`, since it is
+        a result rather than chrome. False suppresses it entirely.
 
     Returns
     -------
@@ -1056,6 +1166,7 @@ def plot_segment_event_rates(
         ax.set_title(heading, fontsize=_TITLE_FONTSIZE, wrap=True)
 
     comparison = dict((summary or {}).get("activity_comparison") or {})
+    stability = dict((summary or {}).get("stability") or {})
     p_value = comparison.get("p_value")
     if show_comparison:
         # Same rows/order `_activity_comparison` filtered to build its groups,
@@ -1066,7 +1177,7 @@ def plot_segment_event_rates(
         ]
         # A measurement, not chrome, so it is drawn regardless of `annotate`
         # and whether or not it is significant — see `_draw_activity_comparison`.
-        _draw_activity_comparison(ax, comparison, grouped_positions, positions)
+        _draw_activity_comparison(ax, stability, comparison, grouped_positions, positions)
 
     # Legend every encoding: a whisker and a dot are not self-evident, and a
     # reader cannot otherwise tell the spread of the electrodes from the error
@@ -1138,6 +1249,8 @@ def plot_segment_event_rates(
                     "so the bars stay comparable, and every rate is in the summary "
                     "beside this figure."
                 )
+            if _stability_label(stability):
+                parts.append(f"{_stability_label(stability)}. {_STABILITY_NOTE}")
             if comparison.get("test") and p_value is not None:
                 parts.append(
                     f"{comparison['test']} across segments: {_format_p(p_value)} "
@@ -1172,6 +1285,7 @@ def plot_segment_event_rates(
         "scatter_points_per_segment_cap": _MAX_SCATTER_POINTS,
         "n_segments_scatter_thinned": thinned,
         "n_scatter_points_above_axis": above_axis,
+        "stability": stability or None,
         "activity_comparison": comparison or None,
     }
 

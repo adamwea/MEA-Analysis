@@ -149,6 +149,22 @@ def recording():
     return FakeRecording()
 
 
+def _events(recording, duration_s=1.0):
+    """The raster's input, the shape a detection hands it: seconds and labels.
+
+    The emitter never detects, so the legend tests feed it the fake's planted
+    deflections directly. The ids are not numeric, so the labels are row
+    positions -- the detector's own fallback.
+    """
+    fs = recording.get_sampling_frequency()
+    end = int(duration_s * fs)
+    frames, rows = np.nonzero(recording._data[:end] < -50.0)
+    return frames / fs, rows.astype(np.int64)
+
+
+_NO_EVENTS = (np.asarray([], dtype=float), np.asarray([], dtype=np.int64))
+
+
 # --------------------------------------------------------------------------
 # channel_layout — Adam's trigger case
 # --------------------------------------------------------------------------
@@ -297,14 +313,14 @@ def test_traces_name_the_two_gap_kinds_separately(capture, recording, tmp_path):
 def test_raster_legend_states_threshold_and_units(capture, recording, tmp_path):
     ra.plot_raster_threshold(
         recording, tmp_path / "raster_threshold.png",
-        duration_s=1.0, stitch_frames=(4_000, 12_000),
+        events=_events(recording), duration_s=1.0, stitch_frames=(4_000, 12_000),
     )
     labels = " || ".join(capture._frozen_legends)
     # Publication shorthand (2026-09-20): the key is a noun phrase rather than
     # a sentence, but it still carries the three numbers a reader cannot
     # recover from the picture -- the threshold, the estimator it is expressed
-    # in, and the refractory window that decides what counts as one event.
-    assert "crossing" in labels
+    # in, and the exclusion sweep that decides what counts as one event.
+    assert "peak" in labels
     assert "MAD-σ" in labels
     assert "5×" in labels
     assert "ms" in labels
@@ -312,24 +328,24 @@ def test_raster_legend_states_threshold_and_units(capture, recording, tmp_path):
 
 
 def test_raster_omits_threshold_key_when_nothing_crossed(capture, recording, tmp_path):
-    """Unlike every other key on this figure, the crossing key used to be
-
-    added unconditionally, so a well with zero detections still claimed one
-    was drawn. A threshold no real deflection can clear proves the negative.
+    """Unlike every other key on this figure, the event key used to be added
+    unconditionally, so a well with zero detections still claimed one was
+    drawn. An empty detection proves the negative.
     """
     ra.plot_raster_threshold(
         recording, tmp_path / "raster_no_events.png",
-        duration_s=1.0, stitch_frames=(4_000, 12_000),
-        threshold_factor=1.0e6,
+        events=_NO_EVENTS, duration_s=1.0, stitch_frames=(4_000, 12_000),
     )
     labels = " || ".join(capture._frozen_legends)
-    assert "threshold crossing" not in labels
+    assert "peak" not in labels
     # The join key is a separate artist and stays regardless.
     assert JOIN_LABEL_INSTANT in labels
 
 
 def test_raster_caption_expands_MAD(capture, recording, tmp_path):
-    ra.plot_raster_threshold(recording, tmp_path / "raster.png", duration_s=1.0)
+    ra.plot_raster_threshold(
+        recording, tmp_path / "raster.png", events=_events(recording), duration_s=1.0,
+    )
     text = capture._frozen_text
     assert "median absolute deviation" in text
     assert "0.6745" in text
@@ -337,7 +353,9 @@ def test_raster_caption_expands_MAD(capture, recording, tmp_path):
 
 def test_raster_caption_says_it_is_not_spike_sorting(capture, recording, tmp_path):
     """The 'proxy not a model' caveat belongs on the figure."""
-    ra.plot_raster_threshold(recording, tmp_path / "raster.png", duration_s=1.0)
+    ra.plot_raster_threshold(
+        recording, tmp_path / "raster.png", events=_events(recording), duration_s=1.0,
+    )
     assert "not spike sorting" in capture._frozen_text
 
 
@@ -819,6 +837,7 @@ def test_raster_caption_stays_clear_of_the_axes(geometry, recording, tmp_path, f
     ra.plot_raster_threshold(
         recording,
         tmp_path / "raster_threshold.png",
+        events=_events(recording),
         duration_s=1.0,
         stitch_frames=(4_000, 12_000),
         figsize=figsize,
@@ -1052,7 +1071,7 @@ def test_one_interior_join_does_not_collapse_the_raster_x_axis(drawn, recording,
     """
     ra.plot_raster_threshold(
         recording, tmp_path / "raster_threshold.png",
-        duration_s=1.0, stitch_frames=(_JOIN_FRAME,),
+        events=_events(recording), duration_s=1.0, stitch_frames=(_JOIN_FRAME,),
     )
     (panel,) = drawn["panels"]
     assert panel["join_rules"] == pytest.approx([0.5])
@@ -1270,3 +1289,22 @@ def test_composite_is_deterministic(recording, tmp_path):
         recording, tmp_path / "b.png", channel_ids=["ch0", "ch5"], duration_s=1.0)
     assert (tmp_path / "a.png").read_bytes() == (tmp_path / "b.png").read_bytes()
     assert first["channel_ids"] == second["channel_ids"]
+
+
+def test_the_raster_refuses_to_run_without_events(recording, tmp_path):
+    """This emitter never detects: a caller that forgot to pass the detection
+    gets an error, not a silent second detector."""
+    with pytest.raises(ValueError, match="does not detect"):
+        ra.plot_raster_threshold(recording, tmp_path / "raster.png", events=None, duration_s=1.0)
+
+
+def test_a_thinned_raster_draws_no_events_on_rows_it_left_out(drawn, recording, tmp_path):
+    """Events on channels outside the thinned set are dropped, not drawn on
+    another electrode's row."""
+    times = np.asarray([0.1, 0.2, 0.3])
+    labels = np.asarray([0, 1, 35], dtype=np.int64)
+    ra.plot_raster_threshold(
+        recording, tmp_path / "raster.png", events=(times, labels),
+        channel_ids=["ch0", "ch1"], duration_s=1.0,
+    )
+    assert "peak" in " || ".join(drawn["legends"])

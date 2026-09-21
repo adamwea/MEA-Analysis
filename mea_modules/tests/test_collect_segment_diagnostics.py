@@ -102,9 +102,11 @@ def collected(recording):
 
 
 def test_one_call_produces_everything_the_figures_need(collected):
-    assert set(collected) == {"probe", "metrics", "traces", "events", "spectra", "meta"}
+    assert set(collected) == {
+        "probe", "metrics", "traces", "events", "spectra", "time_gaps", "meta",
+    }
     metrics = collected["metrics"]
-    for name in ("noise", "activity", "flags", "flagged", "clipping", "artifacts"):
+    for name in ("noise", "rms", "activity", "flags", "flagged", "clipping", "artifacts"):
         assert metrics[name] is not None, f"{name} was not collected"
     assert set(collected["traces"]) == {"preprocessed", "raw"}
     assert "raster" in collected["events"]
@@ -117,17 +119,57 @@ def test_nothing_failed_quietly(collected):
     assert collected["metrics"]["errors"] == {}
 
 
-def test_the_noise_and_the_rates_were_measured_on_the_same_windows(collected):
-    """activity_rate is handed the noise dict, so the threshold is fixed across
-    windows and the two halves of the report cannot drift apart."""
+def test_the_rates_were_cut_at_the_noise_reported_beside_them(recording, collected):
+    """The detector is handed the noise dict, so the thresholds the rates were
+    counted against are k times the very MAD-sigma the noise map shows -- not a
+    second estimate SpikeInterface would otherwise make for itself."""
+    from mea_modules.quality import detect_events
+
     noise = collected["metrics"]["noise"]
     activity = collected["metrics"]["activity"]
-    assert activity["threshold_sd"] == MAD_THRESHOLD
-    # The rates were cut at the noise reported beside them, not at a level
-    # re-estimated per window.
-    assert activity["fixed_threshold"] is True
+    assert activity["detect_threshold"] == MAD_THRESHOLD
+    assert "mad_noise" in activity["noise_levels"]
     assert len(activity["rate_hz"]) == len(noise["noise"])
-    assert activity["seed"] == noise["seed"] == 17
+    assert noise["seed"] == 17
+
+    again = detect_events(recording, noise, detect_threshold=MAD_THRESHOLD)
+    assert np.allclose(again["thresholds"], MAD_THRESHOLD * np.asarray(noise["noise"]))
+    assert sum(activity["n_events"]) == again["frames"].size
+
+
+def test_the_native_raster_is_a_view_of_the_same_detection(collected):
+    """One detection serves both: the raster's events are the activity's events
+    inside the raster window, so the two figures cannot disagree about what an
+    event is."""
+    raster = collected["metrics"]["raster"]
+    assert raster["decimation_factor"] == 1
+    assert raster["noise_source"] == "the segment's MAD noise"
+    times = collected["events"]["raster"]["times_s"]
+    assert times.size == raster["n_events"] > 0
+    assert float(times.max()) < WINDOW_S
+    # Every excursion planted inside the window, on every channel.
+    planted = np.arange(500, int(WINDOW_S * FS_HZ), 287)
+    assert raster["n_events"] == planted.size * N_CHANNELS
+
+
+def test_the_rms_sits_beside_the_mad_with_its_ratio(collected):
+    rms = collected["metrics"]["rms"]
+    assert len(rms["rms"]) == len(rms["rms_over_mad"]) == N_CHANNELS
+    assert rms["seed"] == collected["metrics"]["noise"]["seed"]
+    # Measured on the same windows as the MAD, so the ratio is exactly the
+    # quotient of the two numbers the maps show.
+    noise = collected["metrics"]["noise"]["noise"]
+    assert rms["rms_over_mad"] == pytest.approx(
+        [value / mad for value, mad in zip(rms["rms"], noise)]
+    )
+
+
+def test_every_step_is_timed_with_its_start_and_end(collected):
+    timings = collected["metrics"]["timings"]
+    for name in ("noise", "rms", "detection", "activity", "raster"):
+        entry = timings[name]
+        assert entry["seconds"] >= 0.0
+        assert entry["started"] <= entry["ended"]
 
 
 def test_the_seed_travels_into_the_record(collected):
@@ -179,10 +221,12 @@ def test_the_cached_spectra_draw(cached, tmp_path):
 def test_a_raster_from_the_collected_events_is_byte_identical(
     tmp_path, recording, cached, collected
 ):
+    block = collected["events"]["raster"]
     live = plot_raster_threshold(
         recording, tmp_path / "live.png", max_channels=64,
         start_time_s=0.0, duration_s=WINDOW_S,
         threshold_factor=MAD_THRESHOLD, annotate=False,
+        events=(block["times_s"], block["labels"]),
     )
     drawn = plot_raster_threshold(
         cached.probe, tmp_path / "cached.png", max_channels=64,

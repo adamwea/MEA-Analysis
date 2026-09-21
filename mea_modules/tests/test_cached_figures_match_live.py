@@ -17,7 +17,7 @@ import pytest
 
 from mea_modules.diagnostics import plot_raster_threshold, plot_traces
 from mea_modules.diagnostics.cache import CachedProbe, CachedTraces
-from mea_modules.diagnostics.raster import detect_threshold_crossings
+from mea_modules.quality import detect_events, mad_noise
 
 FS_HZ = 10_000.0
 N_CHANNELS = 8
@@ -65,20 +65,31 @@ def recording():
 # --------------------------------------------------------------------------
 
 
+def _window_events(recording):
+    """What the capsule caches: one detection, as seconds and electrode labels."""
+    noise = mad_noise(recording, duration_s=WINDOW_S, num_chunks=1, seed=0,
+                      highpass_hz=None, return_in_uV=False)
+    detected = detect_events(
+        recording, noise, detect_threshold=THRESHOLD_FACTOR,
+        end_frame=int(WINDOW_S * FS_HZ),
+    )
+    return detected["frames"] / FS_HZ, detected["labels"]
+
+
 def test_a_raster_drawn_from_cached_events_is_byte_identical(tmp_path, recording):
+    events = _window_events(recording)
+    assert events[0].size, "the planted excursions must be detected"
     live = plot_raster_threshold(
         recording,
         tmp_path / "live.png",
         duration_s=WINDOW_S,
         threshold_factor=THRESHOLD_FACTOR,
         annotate=False,
+        events=events,
     )
 
-    # What the capsule would cache: the detection result, plus geometry and the
-    # span that was analysed. No samples.
-    events = detect_threshold_crossings(
-        recording, threshold_factor=THRESHOLD_FACTOR, duration_s=WINDOW_S
-    )
+    # The cached path: the same events plus geometry and the span that was
+    # analysed. No samples.
     probe = CachedProbe.from_recording(recording)
 
     cached = plot_raster_threshold(

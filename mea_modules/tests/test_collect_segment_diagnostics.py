@@ -164,6 +164,19 @@ def test_the_rms_sits_beside_the_mad_with_its_ratio(collected):
     )
 
 
+def test_the_collected_rms_keeps_its_unit_and_draws_against_the_collected_mad(
+    recording, collected, tmp_path
+):
+    """The RMS and the MAD are one unit, so the renderers can put them on one
+    axis; the ratio merged beside the RMS must not relabel it."""
+    from mea_modules.diagnostics.metric_maps import plot_rms_map, plot_rms_vs_mad
+
+    noise, rms = collected["metrics"]["noise"], collected["metrics"]["rms"]
+    assert rms["unit"] == noise["unit"] != "ratio"
+    assert plot_rms_vs_mad(noise, rms, tmp_path / "rms_vs_mad.png").exists()
+    assert plot_rms_map(recording, rms, tmp_path / "rms.png", annotate=False).exists()
+
+
 def test_every_step_is_timed_with_its_start_and_end(collected):
     timings = collected["metrics"]["timings"]
     for name in ("noise", "rms", "detection", "activity", "raster"):

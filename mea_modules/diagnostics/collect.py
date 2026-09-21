@@ -459,7 +459,10 @@ def collect_segment_diagnostics(
             # The ratio only exists beside a MAD; without one the RMS stands
             # alone and says why it has no ratio.
             if noise is not None:
-                result.update(rms_over_mad(result, noise))
+                # The ratio's own unit is "ratio"; merged whole it would
+                # relabel the RMS it sits beside.
+                ratio = rms_over_mad(result, noise)
+                result.update({k: v for k, v in ratio.items() if k not in ("unit", "channel_ids")})
             else:
                 result["rms_over_mad"] = None
                 result["rms_over_mad_skipped"] = "requires noise"

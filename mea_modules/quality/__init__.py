@@ -6,10 +6,10 @@ Public API::
     from mea_modules.quality import detect_bad_channels, dead_well_flags
 
 `mad_noise`, `rms_noise` and `detect_bad_channels` measure one recording (a
-well/segment) over a bounded sample of traces; `detect_events` is the one
-threshold-crossing detector (SpikeInterface's, called one way) and
-`event_rates` reduces its events to a rate per channel; `dead_well_flags`
-reduces all of it to one verdict per well.
+well/segment) over a bounded sample of traces; `detect_events` is the
+diagnostics' per-electrode threshold-crossing detector (SpikeInterface's,
+called one way) and `event_rates` reduces its events to a rate per channel;
+`dead_well_flags` reduces all of it to one verdict per well.
 """
 
 from .robust import MAD_TO_SIGMA, mad_sigma

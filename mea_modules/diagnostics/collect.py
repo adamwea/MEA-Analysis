@@ -41,7 +41,7 @@ reads that one copy. Which of the three is the caller's decision: it depends
 on how many siblings the process runs beside, which only the caller knows.
 
 **One detection, two consumers.** The activity rate and the raster are both
-threshold-crossing events, and they come from ONE call to the one detector
+threshold-crossing events, and they come from ONE call to the same detector
 (:func:`mea_modules.quality.detection.detect_events`) over the whole segment:
 the rate divides its counts by the segment's duration, the raster keeps the
 events inside its window. They can no longer disagree about what an event is.

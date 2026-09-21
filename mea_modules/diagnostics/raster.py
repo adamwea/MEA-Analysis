@@ -6,7 +6,7 @@ QC gate. A per-electrode threshold takes seconds and answers the only question
 being asked at review time: is anything firing, on how many electrodes, and does
 it stop partway through the recording.
 
-This module only DRAWS. The events come from the one detector,
+This module only DRAWS. The events come from the diagnostics' detector,
 :func:`mea_modules.quality.detection.detect_events` (SpikeInterface's
 ``detect_peaks``, by channel, thresholds at k x our MAD-sigma), run by whoever
 had the recording open -- a capsule, which caches them. Two home-grown

@@ -1,4 +1,4 @@
-"""Threshold-crossing events: one detector for every caller.
+"""Threshold-crossing events: one per-electrode detector for every diagnostic.
 
 Two home-grown detectors used to live in this package: a rising-edge count with
 a 1.0 ms dead time behind the activity rate, and a local-minimum rule with a
@@ -16,7 +16,10 @@ The call, fixed here so every consumer makes the same one::
 * ``by_channel``, not ``locally_exclusive``. The latter credits a spike seen on
   five neighbouring electrodes to one of them, which is the right answer to
   "is anything alive" and the wrong one to "how active is each electrode" --
-  every figure here is a per-electrode figure.
+  every figure here is a per-electrode figure. The post-sort spike census
+  (:mod:`mea_modules.diagnostics.spike_accounting`) asks the other question --
+  how many spikes should a sorter have found across the array -- and keeps its
+  own ``locally_exclusive`` call for that reason.
 * ``exclude_sweep_ms=1.0`` matches the old activity dead time. SpikeInterface's
   default of 0.1 ms would raise every count ~5% as an unannounced side effect.
   Measured on a real 266-channel slice: 48,358 events against the old

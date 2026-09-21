@@ -9,7 +9,7 @@ channel — and by extension this well — carrying signal worth spending a sort
 * :func:`dead_well_flags` — reduces the above to one verdict per well.
 
 How often each channel fires is not measured here: it is a detection, and the
-one detector lives in :mod:`mea_modules.quality.detection`.
+diagnostics' detector lives in :mod:`mea_modules.quality.detection`.
 
 The functions here read a *bounded* sample: a handful of short windows drawn
 from the recording, never the whole file. A Maxwell AxonTracking scan is tens of GB per segment, so the

@@ -99,9 +99,11 @@ def _prepare(recording, highpass_hz, return_in_uV):
     elif recording.is_filtered():
         logger.debug("recording reports is_filtered; skipping the %s Hz high-pass", highpass_hz)
     else:
-        from spikeinterface.preprocessing import highpass_filter
+        # The chain's own high-pass, settling margin included, so a noise
+        # window reads the same samples however the read is chunked.
+        from ..preprocessing.filters import highpass
 
-        prepared = highpass_filter(prepared, freq_min=float(highpass_hz))
+        prepared = highpass(prepared, freq_min=float(highpass_hz))
         applied_hp = float(highpass_hz)
 
     # A recording without gain/offset cannot be scaled; asking anyway raises deep

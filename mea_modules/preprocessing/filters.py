@@ -13,6 +13,8 @@ who need a different chain are not forced to fork the whole thing.
 
 import logging
 
+import numpy as np
+
 logger = logging.getLogger(__name__)
 
 # Maxwell writes unsigned counts. Filtering those without a signed cast wraps
@@ -107,11 +109,75 @@ def ensure_signed(recording):
     return signed
 
 
+# A filter's impulse response counts as settled once it has fallen below this
+# fraction of its peak (float32 resolution), and the margin is this many times
+# that settling time: once for the forward-backward pass, and once more for a
+# chunk edge that starts far from the output's scale (a raw DC offset).
+_SETTLING_TOL = 1e-7
+_SETTLING_FACTOR = 2.0
+_SPIKEINTERFACE_FILTER_ORDER = 5
+_SPIKEINTERFACE_FTYPE = "butter"
+
+
+def settling_margin_ms(sampling_frequency, band, btype, filter_order=_SPIKEINTERFACE_FILTER_ORDER,
+                       ftype=_SPIKEINTERFACE_FTYPE):
+    """How far past a chunk's edges the filter must read, in milliseconds.
+
+    SpikeInterface filters a lazy read chunk by chunk, each with `margin_ms` of
+    signal on either side, and its default of 5 ms is shorter than a 300 Hz
+    filter takes to settle. Every sample within ~45 ms of a chunk join then
+    differs, by up to a few microvolts, from what one continuous pass gives, so
+    the same segment read in different chunks gives different numbers (measured
+    2026-09-21 on a 985-electrode segment: a 1 s-chunked buffer against one
+    long read). With this margin the two are bit-identical.
+
+    Computed from the filter actually designed -- its type, order and cut-off
+    at the recording's rate -- so a different cut-off or order gets its own
+    margin: 47 ms for the standard 300 Hz 5th-order Butterworth at 20 kHz,
+    about 2.6x that at 100 Hz.
+    """
+    from scipy import signal
+
+    fs = float(sampling_frequency)
+    sos = signal.iirfilter(int(filter_order), band, fs=fs, btype=btype, ftype=ftype, output="sos")
+    length = int(fs)
+    while True:
+        impulse = np.zeros(length)
+        impulse[0] = 1.0
+        response = np.abs(signal.sosfilt(sos, impulse))
+        last = int(np.nonzero(response > _SETTLING_TOL * response.max())[0][-1])
+        if last < length - 1 or length >= int(60 * fs):
+            break
+        length *= 2
+    return _SETTLING_FACTOR * 1000.0 * (last + 1) / fs
+
+
+def _with_settling_margin(recording, band, btype, filter_kwargs):
+    """`filter_kwargs` with a settling margin, unless the caller chose one.
+
+    A caller handing its own coefficients has a filter this cannot design, so
+    its margin is left to it.
+    """
+    if "margin_ms" in filter_kwargs or filter_kwargs.get("coeff") is not None:
+        return filter_kwargs
+    margin = settling_margin_ms(
+        recording.get_sampling_frequency(), band, btype,
+        filter_kwargs.get("filter_order", _SPIKEINTERFACE_FILTER_ORDER),
+        filter_kwargs.get("ftype", _SPIKEINTERFACE_FTYPE),
+    )
+    return {**filter_kwargs, "margin_ms": margin}
+
+
 def highpass(recording, freq_min=DEFAULT_FREQ_MIN, **filter_kwargs):
-    """High-pass filter at `freq_min` Hz (300 Hz is the standard spike band edge)."""
+    """High-pass filter at `freq_min` Hz (300 Hz is the standard spike band edge).
+
+    Reads a settling margin past every chunk edge (:func:`settling_margin_ms`),
+    so a chunked read gives the same samples as a continuous one.
+    """
     import spikeinterface.preprocessing as spre
 
-    return spre.highpass_filter(recording, freq_min=float(freq_min), **filter_kwargs)
+    kwargs = _with_settling_margin(recording, float(freq_min), "highpass", filter_kwargs)
+    return spre.highpass_filter(recording, freq_min=float(freq_min), **kwargs)
 
 
 def bandpass(recording, freq_min=DEFAULT_FREQ_MIN, freq_max=DEFAULT_FREQ_MAX, **filter_kwargs):
@@ -119,14 +185,18 @@ def bandpass(recording, freq_min=DEFAULT_FREQ_MIN, freq_max=DEFAULT_FREQ_MAX, **
 
     Not part of the standard chain — that one high-passes only, leaving the top
     of the band alone — but offered for callers who want the classic spike band.
+    Reads a settling margin past every chunk edge, as :func:`highpass` does.
     """
     import spikeinterface.preprocessing as spre
 
+    kwargs = _with_settling_margin(
+        recording, [float(freq_min), float(freq_max)], "bandpass", filter_kwargs,
+    )
     return spre.bandpass_filter(
         recording,
         freq_min=float(freq_min),
         freq_max=float(freq_max),
-        **filter_kwargs,
+        **kwargs,
     )
 
 

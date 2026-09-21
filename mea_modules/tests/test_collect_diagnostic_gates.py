@@ -195,3 +195,24 @@ def test_a_registry_entry_is_what_it_computes_not_what_it_costs():
     ]
     for spec in (*SEGMENT_DIAGNOSTICS, *CONCAT_DIAGNOSTICS):
         assert set(spec.requires) <= {s.name for s in (*SEGMENT_DIAGNOSTICS, *CONCAT_DIAGNOSTICS)}
+
+
+@pytest.mark.parametrize("raster_on", [True, False])
+def test_choosing_the_raster_channels_is_part_of_the_raster(pair, monkeypatch, raster_on):
+    """Picking the channels is the raster's own work: switched off, it is not
+    done at all; failing, it costs the raster and not the segment."""
+    import mea_modules.diagnostics.collect as collect
+
+    def refuse(*args, **kwargs):
+        raise RuntimeError("no channels to choose from")
+
+    monkeypatch.setattr(collect, "_select_channels", refuse)
+    enabled = set(SEGMENT_DIAGNOSTIC_NAMES) - (set() if raster_on else {"raster"})
+    payload = _collect(pair, enabled=enabled)
+    metrics = payload["metrics"]
+    assert metrics["noise"] is not None and "raster" not in payload["events"]
+    if raster_on:
+        assert "no channels to choose from" in metrics["errors"]["raster"]
+    else:
+        assert metrics["skipped"]["raster"] == "not requested"
+        assert "raster" not in metrics["errors"]

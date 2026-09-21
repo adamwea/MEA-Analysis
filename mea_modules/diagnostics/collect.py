@@ -566,9 +566,9 @@ def collect_segment_diagnostics(
         if raster_max_channels <= 0:
             runner.skip("raster", "not requested (raster_max_channels <= 0)")
         else:
-            raster_channels = _select_channels(qc, None, raster_max_channels)
             detected = runner.run("raster", "raster events", lambda: _raster_events(
-                qc, noise, events_all, raster_channels=raster_channels,
+                qc, noise, events_all,
+                raster_channels=_select_channels(qc, None, raster_max_channels),
                 window_s=window_s, detect_threshold=mad_threshold,
                 exclude_sweep_ms=exclude_sweep_ms, downsample_hz=raster_downsample_hz,
                 duration_s=duration_s, num_chunks=num_chunks, seed=seed,

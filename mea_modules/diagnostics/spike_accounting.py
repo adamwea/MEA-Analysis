@@ -504,8 +504,12 @@ def threshold_detection_census(h5_path, manifest, *,
     manifest), rebuild the preprocessing chain from that segment's descriptor
     (`preprocess_segment(**kwargs)` — the same call `concatenate` replays),
     slice to the concatenation's common electrodes, and run a locally-exclusive
-    MAD `detect_peaks`. The census therefore sees the identical highpass +
-    local-CMR, common-channel signal KiloSort sorted — not the raw file.
+    MAD `detect_peaks`. The census therefore sees the same highpass +
+    local-CMR, common-channel signal KiloSort sorted — not the raw file. For a
+    concatenation written before the chain's filters read a settling margin
+    (2026-09-21) the replay differs from what was sorted by up to a few
+    microvolts within ~45 ms of each of that binary's chunk joins: the margin
+    is part of the code, not of the recorded settings.
 
     Returns per-segment crossing counts + the pooled rate. This is a COARSE
     completeness context, not a curated spike count (see the module docstring):

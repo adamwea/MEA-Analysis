@@ -22,8 +22,10 @@ The call, fixed here so every consumer makes the same one::
   own ``locally_exclusive`` call for that reason.
 * ``exclude_sweep_ms=1.0`` matches the old activity dead time. SpikeInterface's
   default of 0.1 ms would raise every count ~5% as an unannounced side effect.
-  Measured on a real 266-channel slice: 48,358 events against the old
-  detector's 48,210 (0.3%).
+  Measured on one real segment (266 electrodes, 16.2 s, the same MAD noise
+  for both): 75,642 events against the old activity detector's 75,403
+  (+0.32%) and the old raster detector's 76,914 (-1.65%), with the
+  per-electrode ranking unchanged (Spearman 1.0000 and 0.9998).
 * ``noise_levels`` is OUR noise estimate, :func:`mea_modules.quality.mad_noise`
   -- the same MAD-sigma, the same seeded windows, the same median across them.
   Left to itself, SpikeInterface would estimate its own (a mean across 20

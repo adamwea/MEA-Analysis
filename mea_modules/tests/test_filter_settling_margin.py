@@ -43,6 +43,16 @@ def test_the_margin_follows_the_filter_it_protects():
     assert settling_margin_ms(FS, [300.0, 6000.0], "bandpass") == pytest.approx(standard, rel=0.25)
 
 
+def test_a_margin_of_seconds_is_announced(caplog):
+    import logging
+
+    with caplog.at_level(logging.WARNING, logger="mea_modules.preprocessing.filters"):
+        assert settling_margin_ms(FS, 300.0, "highpass") < 1000.0
+        assert not caplog.records
+        assert settling_margin_ms(FS, 1.0, "highpass") > 1000.0
+    assert any("margin per chunk edge" in r.getMessage() for r in caplog.records)
+
+
 def test_the_chain_filters_carry_the_margin_unless_the_caller_chose_one():
     raw = _raw(seconds=0.2)
     assert highpass(raw)._kwargs["margin_ms"] == settling_margin_ms(FS, 300.0, "highpass")

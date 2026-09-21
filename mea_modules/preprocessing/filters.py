@@ -116,6 +116,8 @@ def ensure_signed(recording):
 _SETTLING_TOL = 1e-7
 _SETTLING_FACTOR = 2.0
 _SPIKEINTERFACE_FILTER_ORDER = 5
+# Above this, a margin is announced: a low cut-off can need seconds per edge.
+_LONG_MARGIN_MS = 1000.0
 _SPIKEINTERFACE_FTYPE = "butter"
 
 
@@ -149,7 +151,15 @@ def settling_margin_ms(sampling_frequency, band, btype, filter_order=_SPIKEINTER
         if last < length - 1 or length >= int(60 * fs):
             break
         length *= 2
-    return _SETTLING_FACTOR * 1000.0 * (last + 1) / fs
+    margin = _SETTLING_FACTOR * 1000.0 * (last + 1) / fs
+    if margin > _LONG_MARGIN_MS:
+        # A very low cut-off rings for seconds; every chunk then reads that
+        # much signal on each side. Correct, but worth saying.
+        logger.warning(
+            "a %s filter at %s Hz needs a %.1f s margin per chunk edge to settle",
+            btype, band, margin / 1000.0,
+        )
+    return margin
 
 
 def _with_settling_margin(recording, band, btype, filter_kwargs):

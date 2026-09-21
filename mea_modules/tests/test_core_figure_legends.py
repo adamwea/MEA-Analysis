@@ -902,10 +902,12 @@ def test_no_emitter_pins_its_own_figure_legend(recording, tmp_path):
     import mea_modules
 
     root = Path(inspect.getfile(mea_modules)).parent
+    # The package's own tests live under it and quote the call they forbid.
     offenders = sorted(
         str(path.relative_to(root))
         for path in root.rglob("*.py")
         if path.name != "channel_layout.py"
+        and "tests" not in path.relative_to(root).parts
         and "fig.legend(" in path.read_text(encoding="utf-8")
     )
     assert not offenders, (

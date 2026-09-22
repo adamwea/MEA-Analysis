@@ -49,16 +49,3 @@ Yuxin_MEA/
 MEA_stim_analysis
 MEA-Analysis-Plotter
 MaxwellMEA-Toolkit-MATLAB
-
-# graphify knowledge graph (regenerate with `graphify update .`)
-graphify-out/
-.graphify/
-
-# Harness / agent artifacts — never committed (the in-repo harness stays out of
-# version control; laid down per-machine, config lives outside git).
-CLAUDE.md
-.claude/
-.claude-plugin/
-harness.toml
-.graphifyignore
-mea_modules/.claude/

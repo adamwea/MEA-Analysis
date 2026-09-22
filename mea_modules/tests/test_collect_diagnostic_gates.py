@@ -9,9 +9,12 @@ import pytest
 from spikeinterface.core import NumpyRecording, generate_recording
 
 from mea_modules.diagnostics.collect import (
+    FILTERED_READERS,
+    RAW_ONLY,
     SEGMENT_DIAGNOSTIC_NAMES,
     SEGMENT_DIAGNOSTICS,
     collect_segment_diagnostics,
+    reads_filtered_signal,
 )
 
 FS = 10_000.0
@@ -216,3 +219,39 @@ def test_choosing_the_raster_channels_is_part_of_the_raster(pair, monkeypatch, r
     else:
         assert metrics["skipped"]["raster"] == "not requested"
         assert "raster" not in metrics["errors"]
+
+def test_nothing_that_reads_the_filtered_signal_is_asked_for_so_it_is_not_buffered(pair):
+    """Materialising a whole segment to compute a census of the RAW view is the
+    one case where the buffer is paid for and never read (B2b-M5)."""
+    payload = _collect(pair, enabled={"clipping"}, signal_buffer="memory")
+    metrics = payload["metrics"]
+    assert metrics["buffer"]["mode"] == "lazy"
+    assert metrics["buffer"]["requested"] == "memory"
+    assert "buffer" not in metrics["timings"]
+    # what was ASKED for is still what the cache meta records
+    assert payload["meta"]["signal_buffer"] == "memory"
+    # and the numbers are the lazy run's, exactly
+    lazy = _collect(pair, enabled={"clipping"}, signal_buffer="lazy")
+    assert payload["metrics"]["clipping"] == lazy["metrics"]["clipping"]
+
+
+def test_a_reader_of_the_filtered_signal_still_buffers(pair):
+    payload = _collect(pair, enabled={"noise"}, signal_buffer="memory")
+    assert payload["metrics"]["buffer"]["mode"] == "memory"
+    assert "buffer" in payload["metrics"]["timings"]
+
+
+def test_a_diagnostic_skipped_for_its_dependency_does_not_pay_for_the_buffer(pair):
+    """`raster` needs `noise`; asked for alone it never runs, so nothing reads
+    the filtered signal."""
+    assert reads_filtered_signal({"raster", "noise"}) is True
+    assert reads_filtered_signal({"raster"}) is False
+    assert reads_filtered_signal({"artifacts"}, artifacts_duration_s=0) is False
+    assert reads_filtered_signal({"artifacts"}, artifacts_duration_s=0.2) is True
+
+
+def test_every_diagnostic_is_classified_as_reading_the_filtered_signal_or_not():
+    """A diagnostic added later cannot stay unclassified: the buffer decision
+    would then be made for it by accident."""
+    assert FILTERED_READERS | RAW_ONLY == set(SEGMENT_DIAGNOSTIC_NAMES)
+    assert not FILTERED_READERS & RAW_ONLY

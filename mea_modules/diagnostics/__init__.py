@@ -47,6 +47,9 @@ from .activity_map import (
 )
 from .artifacts import artifact_census
 from .collect import (
+    FILTERED_READERS,
+    RAW_ONLY,
+    reads_filtered_signal,
     SEGMENT_DIAGNOSTICS,
     SEGMENT_DIAGNOSTIC_NAMES,
     DiagnosticSpec,
@@ -118,6 +121,10 @@ from .unit_locations import (
 __all__ = [
     # readable JSON beside a segment's or a concatenated well's cache
     "CONCAT_REPORTS",
+    # which diagnostics read the filtered signal (so whether to buffer it)
+    "FILTERED_READERS",
+    "RAW_ONLY",
+    "reads_filtered_signal",
     # what those diagnostics cost, beside the same cache
     "TIMING_NAME",
     "clear_timing",

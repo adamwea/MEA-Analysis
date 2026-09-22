@@ -208,6 +208,38 @@ SEGMENT_DIAGNOSTICS = (
 SEGMENT_DIAGNOSTIC_NAMES = tuple(spec.name for spec in SEGMENT_DIAGNOSTICS)
 
 
+# Which diagnostics read the FILTERED signal -- the one `buffered_signal` would
+# materialise. Declared beside the registry rather than on DiagnosticSpec: a
+# spec says what a diagnostic IS, never what it costs here. `clipping` reads the
+# raw view, and `flags` only re-reads values the others already produced.
+FILTERED_READERS = frozenset({
+    "noise", "rms", "activity", "bad_channels", "artifacts", "traces", "raster", "spectra",
+})
+RAW_ONLY = frozenset({"clipping", "flags"})
+
+
+def reads_filtered_signal(enabled=None, *, artifacts_duration_s=None):
+    """True when a diagnostic that will actually RUN reads the filtered signal.
+
+    A diagnostic that is skipped reads nothing, so the runner's dependency gate
+    is mirrored here: `raster` asked for without `noise` never runs. A zero
+    `artifacts_duration_s` switches its census off the same way. The raster's
+    own budget cannot decide this one: it requires `noise`, which reads the
+    filtered signal itself.
+    """
+    wanted = set(_wanted(enabled))
+    specs = {spec.name: spec for spec in SEGMENT_DIAGNOSTICS}
+    while True:
+        runnable = {name for name in wanted
+                    if all(dep in wanted for dep in specs[name].requires)}
+        if runnable == wanted:
+            break
+        wanted = runnable
+    if artifacts_duration_s is not None and float(artifacts_duration_s) <= 0:
+        wanted.discard("artifacts")
+    return bool(wanted & FILTERED_READERS)
+
+
 def _wanted(enabled, registry=SEGMENT_DIAGNOSTICS):
     """The set of diagnostics to compute; `None` means every default.
 
@@ -437,9 +469,23 @@ def collect_segment_diagnostics(
     events = {}
     spectra = {}
 
-    with buffered_signal(qc_rec, signal_buffer, scratch_dir=scratch_dir) as (qc, buffer_info):
+    # Nothing enabled reads the filtered signal: materialising the segment
+    # would be paid for and never read. What was ASKED for is kept, in the cache
+    # meta and in `requested`, so a reader can tell this from a lazy request.
+    effective_buffer = signal_buffer
+    if signal_buffer != "lazy" and not reads_filtered_signal(
+        enabled, artifacts_duration_s=artifacts_duration_s,
+    ):
+        logger.info("no enabled diagnostic reads the filtered signal; not buffering it "
+                    "(%s was asked for)", signal_buffer)
+        effective_buffer = "lazy"
+
+    with buffered_signal(qc_rec, effective_buffer, scratch_dir=scratch_dir) as (qc, buffer_info):
         metrics["buffer"] = buffer_info
-        if signal_buffer != "lazy":
+        if effective_buffer != signal_buffer:
+            metrics["buffer"] = dict(buffer_info, requested=signal_buffer,
+                                     skipped="no enabled diagnostic reads the filtered signal")
+        if effective_buffer != "lazy":
             runner.timings["buffer"] = {
                 "seconds": buffer_info["seconds"],
                 "started": buffer_info.get("started"),

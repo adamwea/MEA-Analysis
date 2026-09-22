@@ -72,12 +72,15 @@ def test_clearing_is_idempotent_and_never_makes_a_diagnostics_folder(computed, t
     assert not cache_dir(borrowed).exists()
 
 
-def test_a_timing_only_folder_does_not_survive_the_clear(tmp_path):
-    """The stale-file rule cannot leave an empty diagnostics/ behind: the run
-    layer reads one as 'the cache is local', and a viewer would then look here
-    instead of the run this entity borrows from."""
+def test_the_clear_takes_the_file_and_leaves_the_folder(tmp_path):
+    """A diagnostics/ folder is a CLAIM -- the run layer reads it as "this run
+    computes its cache here", deliberately, so that a local attempt that failed
+    shows no cache rather than falling through to a base run's cache computed
+    with other settings. Removing the folder would quietly withdraw that claim
+    on behalf of whoever made it, which is never this function's to do."""
     write_timing(tmp_path, capsule="ingest", entity={"well": "well000"},
                  steps={"common_electrodes": {"seconds": 0.1, "started": 1.0, "ended": 1.1}})
     assert cache_dir(tmp_path).is_dir()
     assert clear_timing(tmp_path) is True
-    assert not cache_dir(tmp_path).exists()
+    assert cache_dir(tmp_path).is_dir()  # the claim stands
+    assert not (cache_dir(tmp_path) / TIMING_NAME).exists()

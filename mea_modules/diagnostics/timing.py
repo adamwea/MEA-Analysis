@@ -19,7 +19,7 @@ the launch before it.
 import datetime
 import json
 
-from .cache import CACHE_DIRNAME, _jsonable, cache_dir
+from .cache import _jsonable, cache_dir
 
 TIMING_NAME = "timing.json"
 
@@ -50,14 +50,16 @@ def write_timing(capsule_out_dir, *, capsule, entity, diagnostics=None, buffer=N
 def clear_timing(capsule_out_dir):
     """Remove an entity's ``timing.json``; True when one was there.
 
-    Never creates the diagnostics folder, and removes it again when it was the
-    only thing in it: an empty ``diagnostics/`` is how a run says a cache lives
-    here rather than in the run it borrows from.
+    The file only, and never the folder it sits in. A ``diagnostics/`` folder is
+    a claim -- the run layer reads its presence as "this run computes its cache
+    here" -- made deliberately so that an attempt that failed here shows no
+    cache rather than falling through to a base run's cache computed with other
+    settings. Withdrawing that claim is not something a stale measurement's
+    cleanup may do on behalf of whoever made it. The folder is never created
+    here either: a launch that computes nothing leaves nothing behind.
     """
     folder = cache_dir(capsule_out_dir, create=False)
     path = folder / TIMING_NAME
     existed = path.is_file()
     path.unlink(missing_ok=True)
-    if folder.is_dir() and not any(folder.iterdir()):
-        folder.rmdir()
     return existed

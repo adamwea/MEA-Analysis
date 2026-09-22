@@ -8,11 +8,13 @@ a number nobody computed.
 
 The content goes to a temporary file in the SAME directory, so the replace is a
 rename inside one filesystem, and the reader sees the old file or the new one.
-The temp name carries the writer's pid so two writers never share one.
+The temp name carries the writer's pid AND thread, because a well can be written
+by two threads of one process as well as by two processes.
 """
 
 import json
 import os
+import threading
 from pathlib import Path
 
 
@@ -24,9 +26,10 @@ def write_with(path, write_body):
     the temporary behind.
     """
     path = Path(path)
-    tmp = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+    tmp = path.with_name(f".{path.name}.{os.getpid()}.{threading.get_ident()}.tmp")
     try:
         write_body(tmp)
+        _flush(tmp)
         os.replace(tmp, path)
     except BaseException:
         try:
@@ -35,6 +38,25 @@ def write_with(path, write_body):
             pass
         raise
     return path
+
+
+def _flush(path):
+    """Get the bytes to the disk before the rename that publishes them.
+
+    Without it "whole or not at all" holds against a process that dies and not
+    against a machine that does: the rename can reach the disk before the
+    content, leaving a file of the right name and no bytes.
+    """
+    try:
+        handle = os.open(path, os.O_RDONLY)
+    except OSError:  # noqa: BLE001 - the write below is what matters
+        return
+    try:
+        os.fsync(handle)
+    except OSError:
+        pass
+    finally:
+        os.close(handle)
 
 
 def write_text(path, text):

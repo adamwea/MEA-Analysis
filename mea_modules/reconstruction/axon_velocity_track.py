@@ -205,7 +205,7 @@ def track_unit_axon(template, locations, fs, **overrides):
     return gtr
 
 
-def _tojsonable(value):
+def _to_jsonable(value):
     """Recursively convert numpy arrays/scalars to plain JSON-safe Python.
 
     `axon_velocity`'s branch dicts hold a mix of numpy arrays (`channels`,
@@ -217,9 +217,9 @@ def _tojsonable(value):
     from `save_reconstruction` which already needs numpy for nothing else.
     """
     if isinstance(value, dict):
-        return {k: _tojsonable(v) for k, v in value.items()}
+        return {k: _to_jsonable(v) for k, v in value.items()}
     if isinstance(value, (list, tuple)):
-        return [_tojsonable(v) for v in value]
+        return [_to_jsonable(v) for v in value]
     if hasattr(value, "tolist"):  # numpy ndarray
         return value.tolist()
     if hasattr(value, "item"):  # numpy scalar (float64, int64, bool_, ...)
@@ -264,9 +264,9 @@ def save_reconstruction(gtr, out_dir, unit_id=None):
         "reason": None,
         "n_branches": len(gtr.branches),
         "n_selected_channels": int(len(gtr.selected_channels)),
-        "init_channel": _tojsonable(gtr.init_channel),
-        "selected_channels": _tojsonable(gtr.selected_channels),
-        "branches": [_tojsonable(branch) for branch in gtr.branches],
+        "init_channel": _to_jsonable(gtr.init_channel),
+        "selected_channels": _to_jsonable(gtr.selected_channels),
+        "branches": [_to_jsonable(branch) for branch in gtr.branches],
     }
 
     _write_json(out_dir / SUMMARY_FILENAME, summary)

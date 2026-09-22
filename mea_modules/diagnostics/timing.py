@@ -19,7 +19,8 @@ the launch before it.
 import datetime
 import json
 
-from .cache import jsonable, cache_dir
+from .atomic import write_json
+from .cache import cache_dir, jsonable
 
 TIMING_NAME = "timing.json"
 
@@ -42,9 +43,7 @@ def write_timing(capsule_out_dir, *, capsule, entity, diagnostics=None, buffer=N
     }
     if buffer is not None:
         document["buffer"] = jsonable(buffer)
-    path = folder / TIMING_NAME
-    path.write_text(json.dumps(document, indent=2, sort_keys=False), encoding="utf-8")
-    return path
+    return write_json(folder / TIMING_NAME, document)
 
 
 def clear_timing(capsule_out_dir):

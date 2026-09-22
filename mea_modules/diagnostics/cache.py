@@ -457,9 +457,12 @@ def write_cache(
         "meta": jsonable(meta or {}),
     }
 
-    # Both whole or not at all: a suite reading this entity while the capsule
-    # writes must see the previous cache or this one, never a mixture of the
-    # two -- and never a record whose arrays have not landed yet.
+    # Each file lands whole. The PAIR is not a transaction -- two replaces
+    # cannot be one -- so a reader between them sees this run's arrays beside
+    # the previous record. The order is chosen for that window: arrays first
+    # means a record never names an array that is not there yet, which is the
+    # direction that would raise; the other way round, a reader gets a complete
+    # older record and the arrays it names.
     def _arrays(tmp):
         # a file object, not a path: savez appends `.npz` to a name that lacks
         # it, and the temporary name deliberately does not end in `.npz`

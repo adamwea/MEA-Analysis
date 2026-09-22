@@ -119,7 +119,7 @@ DEFAULT_AVERAGING_METHOD = "spike_count"
 WEIGHTING_MODES = AVERAGING_METHODS
 
 
-def jsonable_id(value):
+def _jsonable_id(value):
     """A channel/unit id as something `json.dumps` accepts.
 
     SpikeInterface hands ids back as numpy scalar types (`int64` / `str_`),
@@ -633,7 +633,7 @@ def merge_segment_templates(
         # segments_index.json is the marker that the retention set beside it
         # is whole, so a killed run leaves no index rather than a lying one.
         (segment_retention_dir / "unit_ids.json").write_text(
-            json.dumps([jsonable_id(u) for u in seen_unit_ids], indent=2)
+            json.dumps([_jsonable_id(u) for u in seen_unit_ids], indent=2)
         )
         (segment_retention_dir / "segments_index.json").write_text(
             json.dumps(retained_segments, indent=2)
@@ -698,7 +698,7 @@ def _write_segment_contribution(
     np.save(seg_out / "spike_counts.npy", counts)
     np.save(seg_out / "locations_xy.npy", np.asarray(locations_xy, dtype=np.float64))
     (seg_out / "channel_ids.json").write_text(
-        json.dumps([jsonable_id(c) for c in channel_ids], indent=2)
+        json.dumps([_jsonable_id(c) for c in channel_ids], indent=2)
     )
     return {
         "index": int(index),

@@ -3,7 +3,7 @@
 This is the producer half of the compute-in-capsule / plot-from-cache split.
 The capsule that opens a segment calls :func:`collect_segment_diagnostics` while
 it has the recording in hand, and hands the result straight to
-:func:`mea_modules.diagnostics.cache.write_cache`. The plot tool then reads that
+:func:`mea_modules.diagnostics.cache.write_cache`. The plot suite then reads that
 cache and draws. Neither side re-derives anything the other computed.
 
 **Why it lives here and not in the capsule.** Put this computation in the

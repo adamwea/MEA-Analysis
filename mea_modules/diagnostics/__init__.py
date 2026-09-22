@@ -168,7 +168,7 @@ __all__ = [
     "plot_flagged_channels",
     "clipping_census",
     "artifact_census",
-    # the compute-once cache a capsule writes and a plot tool reads
+    # the compute-once cache a capsule writes and a plot suite reads
     "collect_segment_diagnostics",
     "SEGMENT_DIAGNOSTICS",
     "SEGMENT_DIAGNOSTIC_NAMES",

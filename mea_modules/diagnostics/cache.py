@@ -1,8 +1,8 @@
-"""The diagnostic cache: what a compute capsule leaves behind for a plot tool.
+"""The diagnostic cache: what a compute capsule leaves behind for a plot suite.
 
 The shape this exists to enforce: **a diagnostic is computed once, coincidently,
 inside the capsule that already has the recording open, and lands in that
-capsule's own canonical output. A plot tool then draws from that cache and never
+capsule's own canonical output. A plot suite then draws from that cache and never
 touches the recording again.**
 
 Why it matters in numbers, measured on one 16-segment well and attributed to
@@ -466,7 +466,7 @@ def write_cache(
 
 
 class DiagnosticCache:
-    """One entity's cached diagnostics, as a plot tool consumes them."""
+    """One entity's cached diagnostics, as a plot suite consumes them."""
 
     def __init__(self, record, arrays, path):
         self.path = Path(path)

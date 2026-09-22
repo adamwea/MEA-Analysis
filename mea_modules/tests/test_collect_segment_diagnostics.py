@@ -1,4 +1,4 @@
-"""The producer half: what a capsule collects is what the tool can draw.
+"""The producer half: what a capsule collects is what the suite can draw.
 
 `collect_segment_diagnostics` is the one computation both sides agree on. These
 tests hold it to the two things the split actually needs:

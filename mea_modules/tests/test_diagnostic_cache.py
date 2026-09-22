@@ -1,4 +1,4 @@
-"""The compute-once contract between a capsule and a plot tool.
+"""The compute-once contract between a capsule and a plot suite.
 
 The cache is what makes "diagnostics are computed inside the capsule, plots are
 drawn from cache" enforceable rather than aspirational, so these tests are about

@@ -481,10 +481,9 @@ def collect_segment_diagnostics(
         effective_buffer = "lazy"
 
     with buffered_signal(qc_rec, effective_buffer, scratch_dir=scratch_dir) as (qc, buffer_info):
-        metrics["buffer"] = buffer_info
-        if effective_buffer != signal_buffer:
-            metrics["buffer"] = dict(buffer_info, requested=signal_buffer,
-                                     skipped="no enabled diagnostic reads the filtered signal")
+        metrics["buffer"] = buffer_info if effective_buffer == signal_buffer else dict(
+            buffer_info, requested=signal_buffer,
+            skipped="no enabled diagnostic reads the filtered signal")
         if effective_buffer != "lazy":
             runner.timings["buffer"] = {
                 "seconds": buffer_info["seconds"],

@@ -124,6 +124,22 @@ def test_a_concatenated_well_s_reports_come_from_its_cache(tmp_path):
     assert written["gap_table.json"] is None and written["motion.json"] is None
 
 
+def test_the_median_rate_is_the_detector_s_own_number(tmp_path):
+    """The QC report copies the median rate the detector recorded; it never
+    recomputes one from the cached array (a viewer must not re-derive numbers)."""
+    recording = _recording()
+    payload = collect_segment_diagnostics(
+        recording, recording, source="preprocessed", duration_s=1.0, num_chunks=2, seed=5,
+        mad_threshold=5.0, dead_noise_ratio=0.1, artifacts_duration_s=1.0, window_s=1.0,
+        trace_channels=2, raster_max_channels=8, meta={},
+    )
+    payload["metrics"]["activity"]["median_rate_hz"] = 123.0  # a number only the detector wrote
+    write_cache(tmp_path, **payload)
+    written = write_segment_reports(tmp_path, capsule="preprocess_segment", well="well000")
+    qc = json.loads(written["qc_report.json"].read_text())
+    assert qc["summary"]["median_rate_hz"] == 123.0
+
+
 def test_without_noise_there_is_no_qc_report(tmp_path):
     _cache(tmp_path, enabled={"clipping": True})
     written = write_segment_reports(tmp_path, capsule="preprocess_segment", well="well000")

@@ -6,11 +6,15 @@ the flagged channels, the clipping and artifact censuses -- copied out of the
 cache, so the numbers in them and the numbers behind the figures are one set.
 A file whose diagnostic was not computed is removed: a refresh that switched a
 diagnostic off never leaves the previous numbers behind to be mistaken for new.
+
+What these files cannot say is whether they are current. Nothing is rewritten
+when the diagnostics are switched off altogether, or when collecting or writing
+them fails: the previous files stay. The capsule that writes them records a
+completion marker beside the cache only after a successful write, so a reader
+trusts the files (and the cache) while that marker stands, never the files alone.
 """
 
 import json
-
-import numpy as np
 
 from .cache import RECORD_NAME, _jsonable, read_cache
 
@@ -109,9 +113,8 @@ def _qc_report(cache, common, label, noise):
             "source": meta.get("source"),
             "median_noise": noise["median_noise"],
             "noise_unit": noise["unit"],
-            "median_rate_hz": (
-                float(np.median(activity["rate_hz"])) if activity and n_channels else None
-            ),
+            # the detector's own number, copied, never recomputed here
+            "median_rate_hz": (activity or {}).get("median_rate_hz"),
             "active_fraction": (flags or {}).get("active_fraction"),
             "flagged_fraction": (flagged or {}).get("flagged_fraction"),
             "is_dead": (flags or {}).get("is_dead"),

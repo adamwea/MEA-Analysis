@@ -255,3 +255,14 @@ def test_every_diagnostic_is_classified_as_reading_the_filtered_signal_or_not():
     would then be made for it by accident."""
     assert FILTERED_READERS | RAW_ONLY == set(SEGMENT_DIAGNOSTIC_NAMES)
     assert not FILTERED_READERS & RAW_ONLY
+
+def test_the_buffer_prediction_agrees_with_what_each_diagnostic_actually_does(pair):
+    """The prediction is a SECOND reading of the runner's own gates, so it can
+    drift from them -- and the dangerous direction is silent: it says nothing
+    reads the filtered signal, the buffer is skipped, and every diagnostic that
+    does read it re-filters per chunk instead. Each name is therefore checked
+    against a real run of itself."""
+    for name in sorted(SEGMENT_DIAGNOSTIC_NAMES):
+        payload = _collect(pair, enabled={name}, signal_buffer="memory")
+        buffered = payload["metrics"]["buffer"]["mode"] == "memory"
+        assert reads_filtered_signal({name}) is buffered, name

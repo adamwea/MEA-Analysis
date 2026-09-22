@@ -1,4 +1,4 @@
-"""A segment's readable diagnostics: JSON a person or a review script reads.
+"""Readable diagnostics: JSON a person or a review script reads.
 
 The cache beside them (:mod:`.cache`) is what figures are drawn from. These
 files re-serve the numbers a reader looks up rather than plots -- the QC report,
@@ -15,6 +15,7 @@ import numpy as np
 from .cache import RECORD_NAME, _jsonable, read_cache
 
 SEGMENT_REPORTS = ("qc_report.json", "bad_channels.json", "clipping.json", "artifacts.json")
+CONCAT_REPORTS = ("segment_activity.json", "gap_table.json", "motion.json")
 
 
 def write_segment_reports(capsule_out_dir, *, capsule, well, rec=None, label=None):
@@ -37,8 +38,40 @@ def write_segment_reports(capsule_out_dir, *, capsule, well, rec=None, label=Non
         if census is not None:
             reports[f"{name}.json"] = {**common, **census}
 
+    return _write(cache, reports, SEGMENT_REPORTS)
+
+
+def write_concat_reports(capsule_out_dir, *, capsule, well):
+    """Write one concatenated well's readable JSON beside its cache.
+
+    ``segment_activity.json`` (the per-segment table and the activity summary
+    with its stability statistics), ``gap_table.json`` (the joined segments'
+    wall-clock table, when the gap table was read) and ``motion.json`` (when
+    motion was estimated). Returns ``{file name: path or None}``.
+    """
+    cache = read_cache(capsule_out_dir, capsule=capsule)
+    common = {"computed_by": capsule, "well": well}
+    table = cache.metric("segment_table") or []
+    reports = {}
+    activity = cache.metric("segment_activity")
+    if activity is not None:
+        reports["segment_activity.json"] = {
+            **common, "segments": table, "activity": activity,
+            "detection": cache.meta.get("detection"),
+            "threshold_factor": cache.meta.get("detect_threshold"),
+        }
+    if "native" in cache.time_gap_names():
+        reports["gap_table.json"] = {**common, "segments": table}
+    motion = cache.metric("motion")
+    if motion is not None:
+        reports["motion.json"] = {**common, **motion}
+    return _write(cache, reports, CONCAT_REPORTS)
+
+
+def _write(cache, reports, names):
+    """Write `reports` beside the cache; remove any of `names` not among them."""
     written = {}
-    for name in SEGMENT_REPORTS:
+    for name in names:
         path = cache.path / name
         if name in reports:
             path.write_text(json.dumps(_jsonable(reports[name]), indent=2))

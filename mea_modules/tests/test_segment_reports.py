@@ -95,6 +95,35 @@ def test_a_diagnostic_switched_off_leaves_no_old_report_behind(reported):
     assert written["qc_report.json"].is_file()
 
 
+def _concat_cache(out_dir, enabled=None):
+    from mea_modules.diagnostics.collect_concat import collect_concat_diagnostics
+
+    recording = _recording()
+    rows = [{"rec": "rec0000", "n_samples": 20_000, "start_frame": 0, "end_frame": 20_000,
+             "n_electrodes": 10},
+            {"rec": "rec0001", "n_samples": 20_000, "start_frame": 20_000, "end_frame": 40_000,
+             "n_electrodes": 9}]
+    payload = collect_concat_diagnostics(
+        recording, segments=rows, stitch_frames=[20_000], seed=5, detect_threshold=5.0,
+        duration_s=1.0, num_chunks=2, trace_channels=2, enabled=enabled)
+    write_cache(out_dir, **payload)
+
+
+def test_a_concatenated_well_s_reports_come_from_its_cache(tmp_path):
+    from mea_modules.diagnostics import CONCAT_REPORTS, write_concat_reports
+
+    _concat_cache(tmp_path)
+    written = write_concat_reports(tmp_path, capsule="concatenate", well="well000")
+    assert set(written) == set(CONCAT_REPORTS)
+    activity = json.loads(written["segment_activity.json"].read_text())
+    cache = read_cache(tmp_path)
+    assert activity["computed_by"] == "concatenate" and activity["threshold_factor"] == 5.0
+    assert [row["n_electrodes"] for row in activity["segments"]] == [10, 9]
+    assert activity["activity"] == json.loads(json.dumps(cache.metric("segment_activity")))
+    # no source file was named, so no gap table; motion is off by default
+    assert written["gap_table.json"] is None and written["motion.json"] is None
+
+
 def test_without_noise_there_is_no_qc_report(tmp_path):
     _cache(tmp_path, enabled={"clipping": True})
     written = write_segment_reports(tmp_path, capsule="preprocess_segment", well="well000")

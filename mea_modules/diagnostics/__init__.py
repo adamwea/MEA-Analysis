@@ -69,7 +69,7 @@ from .channel_layout import (
     plot_channel_layout,
 )
 from .clipping import clipping_census
-from .readable import SEGMENT_REPORTS, write_segment_reports
+from .readable import CONCAT_REPORTS, SEGMENT_REPORTS, write_concat_reports, write_segment_reports
 from .figure_style import emptiest_corner, legend_corner, tighten
 from .motion import estimate_motion_over_recording, plot_motion_estimate
 from .metric_maps import (
@@ -114,8 +114,10 @@ from .unit_locations import (
 )
 
 __all__ = [
-    # readable JSON beside a segment's cache
+    # readable JSON beside a segment's or a concatenated well's cache
+    "CONCAT_REPORTS",
     "SEGMENT_REPORTS",
+    "write_concat_reports",
     "write_segment_reports",
     # plot emitters
     "plot_channel_layout",

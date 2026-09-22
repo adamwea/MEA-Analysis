@@ -199,8 +199,11 @@ def _as_axes_list(axes):
     return list(axes)
 
 
-def _have_wall_clock(segments):
+def wall_clock_available(segments):
     """Whether every segment carries both timestamps the lower panel needs.
+
+    Public so a caller naming the figure (file time only, or file time against
+    real time) asks this rule rather than restating it.
 
     All or nothing on purpose: a panel drawn from a partial set would place the
     segments it does have at offsets measured from a first segment whose own
@@ -595,7 +598,7 @@ def plot_segment_boundary_map(
     if supplied is not None and not supplied:
         raise ValueError("axes was given but holds no axes to draw into")
 
-    have_wall_clock = _have_wall_clock(segments)
+    have_wall_clock = wall_clock_available(segments)
     wanted = _WANTED_PANELS[panels]
     note = None
 

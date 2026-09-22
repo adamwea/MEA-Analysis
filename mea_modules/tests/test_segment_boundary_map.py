@@ -20,7 +20,10 @@ the join is the single instant 10.0 s, and on the clock it is the PAIR 10.0 s /
 import pytest
 
 from mea_modules.diagnostics.figure_text import FILE_TIME_AXIS, REAL_TIME_AXIS
-from mea_modules.diagnostics.segment_boundary_map import plot_segment_boundary_map
+from mea_modules.diagnostics.segment_boundary_map import (
+    plot_segment_boundary_map,
+    wall_clock_available,
+)
 from mea_modules.diagnostics.timebase import JOIN_LABEL_INSTANT, JOIN_LABEL_SPANNING
 
 FS_HZ = 100.0
@@ -462,3 +465,13 @@ def test_a_clock_only_figure_refuses_a_source_with_no_clock():
 
 if __name__ == "__main__":
     raise SystemExit(pytest.main([__file__, "-v"]))
+
+
+def test_the_map_says_whether_it_can_draw_real_time():
+    """A caller naming the figure asks the renderer rather than re-deriving
+    the rule: real time is drawn only when every segment carries both stamps."""
+    both = [{"start_time": "2025-03-10T10:00:00", "stop_time": "2025-03-10T10:01:00"},
+            {"start_time": "2025-03-10T10:02:00", "stop_time": "2025-03-10T10:03:00"}]
+    assert wall_clock_available(both) is True
+    assert wall_clock_available([both[0], {"start_time": None, "stop_time": None}]) is False
+    assert wall_clock_available([]) is False

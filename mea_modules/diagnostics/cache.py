@@ -419,7 +419,7 @@ def write_cache(
     for name, structure in (time_gaps or {}).items():
         if structure is None:
             continue
-        from .timebase import _normalize_gaps, resolve_time_gaps
+        from .gap_table import _normalize_gaps, resolve_time_gaps
 
         gaps, segment_gaps = resolve_time_gaps(structure)
         indices, missing = _normalize_gaps(gaps)

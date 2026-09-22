@@ -71,9 +71,9 @@ from .artifacts import artifact_census
 from .buffer import buffered_signal
 from .channel_flags import flag_channels
 from .clipping import clipping_census
-from .raster import _select_channels
-from .spectra import welch_spectra
-from .traces import _frames_to_seconds, _has_time_vector, select_representative_channels
+from .selection import _select_channels
+from .welch import welch_spectra
+from .selection import _frames_to_seconds, _has_time_vector, select_representative_channels
 
 logger = logging.getLogger(__name__)
 

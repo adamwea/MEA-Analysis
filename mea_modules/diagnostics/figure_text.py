@@ -20,6 +20,11 @@ never seen our code read the figure unaided? Keep entries terse — an expansion
 plus a clause of meaning, not a paragraph. A figure caption is a caption.
 """
 
+# computed in .activity_stats (the compute side imports no drawing code); re-exported here
+from .activity_stats import (  # noqa: F401
+    PER_SEGMENT_ONLY,
+)
+
 # --- Acronyms -------------------------------------------------------------
 #
 # Expansion + one clause of what it MEANS. Used on first appearance in a
@@ -110,13 +115,6 @@ SEGMENT_BAND = (
     "segment."
 )
 
-PER_SEGMENT_ONLY = (
-    "Each segment's number is computed from its own samples and its own recorded "
-    "duration; nothing is computed across a join, because the gap between one "
-    "segment's last spike and the next segment's first is microseconds in the "
-    "file but minutes in real time — any rate, interval, correlation or slope "
-    "spanning a join would be inventing structure out of the stitching."
-)
 
 REAL_ELAPSED_AXIS = (
     "The x axis is real elapsed time: every sample is shifted right by the time "

@@ -44,9 +44,9 @@ from ..quality.detection import (
     detector_description,
 )
 from .collect import DiagnosticSpec, _effective_trace_unit, _Runner, _wanted
-from .segment_event_rates import segment_event_rate_summary
-from .timebase import rescale_time_gaps
-from .traces import select_representative_channels
+from .activity_stats import segment_event_rate_summary
+from .gap_table import rescale_time_gaps
+from .selection import select_representative_channels
 
 logger = logging.getLogger(__name__)
 
@@ -272,7 +272,7 @@ def collect_concat_diagnostics(
     metrics["segment_activity"] = runner.run("activity_summary", "activity summary", _activity)
 
     def _motion():
-        from .motion import estimate_motion_over_recording
+        from .motion_estimate import estimate_motion_over_recording
 
         return estimate_motion_over_recording(recording, well=well, seed=int(seed))
 

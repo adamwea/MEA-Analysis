@@ -64,6 +64,10 @@ from .traces import (
     _resolve_frame_window,
     resolve_plot_quality,
 )
+# computed in .selection (the compute side imports no drawing code); re-exported here
+from .selection import (  # noqa: F401
+    _select_channels,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -80,30 +84,6 @@ _DEFAULT_DURATION_S = 60.0
 
 # Past this many rows individual tick labels are unreadable.
 _MAX_YTICKS = 64
-
-
-def _select_channels(recording, channel_ids, max_channels):
-    """Channel ids to threshold, thinned evenly across the array if needed.
-
-    Thinning takes every k-th channel rather than the first N: channel order
-    tracks position on the array, so a prefix would raster one corner of the
-    chip and report the rest as silent.
-    """
-    import numpy as np
-
-    if channel_ids is None:
-        channel_ids = list(recording.get_channel_ids())
-    channel_ids = list(channel_ids)
-    if max_channels is None or max_channels <= 0 or len(channel_ids) <= int(max_channels):
-        return channel_ids
-
-    keep = np.linspace(0, len(channel_ids) - 1, num=int(max_channels)).astype(int)
-    logger.warning(
-        "rastering %d of %d channels (evenly spaced); raise max_channels to cover all",
-        int(keep.size),
-        len(channel_ids),
-    )
-    return [channel_ids[index] for index in np.unique(keep)]
 
 
 def _channel_labels(channel_ids):

@@ -599,6 +599,15 @@ def read_cache(capsule_out_dir, capsule="the upstream capsule"):
         raise CacheMissing(record_path, capsule)
 
     record = json.loads(record_path.read_text())
+    if not isinstance(record, dict):
+        # It parsed, so it is not a missing cache and not a truncated one: it is
+        # a file in the cache's place that is not a cache. Said here, where the
+        # reader knows what it read, rather than failing later on `.get`.
+        raise CacheVersionMismatch(
+            f"{record_path} is not a diagnostics record ({type(record).__name__}). "
+            f"Re-run the `{capsule}` capsule for this entity -- with resume on it "
+            "recomputes only the diagnostics."
+        )
     version = int(record.get("version", 0))
     if version != CACHE_VERSION:
         raise CacheVersionMismatch(

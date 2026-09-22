@@ -487,3 +487,12 @@ def test_traces_drawn_from_cache_on_the_real_elapsed_axis_are_byte_identical(tmp
                         time_gaps=cached.time_gaps("native"), **kwargs)
     digest = lambda path: hashlib.sha256(path.read_bytes()).hexdigest()  # noqa: E731
     assert digest(live) == digest(drawn)
+
+def test_a_record_that_is_not_a_record_is_refused_by_name(tmp_path):
+    """A file that parses and is not a mapping -- a list, a number, a null --
+    used to fail somewhere inside the reader, as an AttributeError about
+    `.get`. It is the same problem as a missing cache and says so."""
+    folder = cache_dir(tmp_path, create=True)
+    (folder / RECORD_NAME).write_text("[1, 2, 3]", encoding="utf-8")
+    with pytest.raises(CacheVersionMismatch, match="not a diagnostics record"):
+        read_cache(tmp_path, capsule="preprocess_segment")

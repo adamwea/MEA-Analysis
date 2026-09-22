@@ -96,6 +96,7 @@ from .spectra import (
     plot_spectra_panels,
     welch_spectra,
 )
+from .timing import TIMING_NAME, clear_timing, write_timing
 from .timebase import (
     gap_spans,
     real_time_axis,
@@ -117,6 +118,10 @@ from .unit_locations import (
 __all__ = [
     # readable JSON beside a segment's or a concatenated well's cache
     "CONCAT_REPORTS",
+    # what those diagnostics cost, beside the same cache
+    "TIMING_NAME",
+    "clear_timing",
+    "write_timing",
     "SEGMENT_REPORTS",
     "write_concat_reports",
     "write_segment_reports",

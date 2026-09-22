@@ -14,6 +14,7 @@ import pytest
 
 from mea_modules.diagnostics import channel_flags as cf
 from mea_modules.diagnostics import channel_layout as cl
+from mea_modules.diagnostics import flagged_channels as fc
 
 
 def _norm(text):
@@ -58,7 +59,7 @@ def test_flagged_channel_groups_keys_every_rule_even_when_nothing_matched():
     noise = _noise([5.0] * 6)  # nothing dead, nothing noisy, no detector
     flagged = cf.flag_channels(noise, bad_channels=None)
 
-    groups = cf.flagged_channel_groups(flagged)
+    groups = fc.flagged_channel_groups(flagged)
     labels = [label for _ids, label, _color in groups]
     ids_by_label = {label: ids for ids, label, _color in groups}
 
@@ -71,7 +72,7 @@ def test_flagged_channel_groups_names_the_ratio_actually_used():
     noise = _noise([1.0, 5.0, 5.0, 5.0, 5.0, 5.0])
     flagged = cf.flag_channels(noise, dead_noise_ratio=0.3, noisy_noise_ratio=7.0)
 
-    groups = cf.flagged_channel_groups(flagged)
+    groups = fc.flagged_channel_groups(flagged)
     dead_ids, dead_label, _ = groups[0]
     noisy_ids, noisy_label, _ = groups[1]
 
@@ -83,7 +84,7 @@ def test_flagged_channel_groups_names_the_ratio_actually_used():
 
 def test_flagged_channel_groups_colours_are_distinct():
     noise = _noise([5.0] * 4)
-    groups = cf.flagged_channel_groups(cf.flag_channels(noise))
+    groups = fc.flagged_channel_groups(cf.flag_channels(noise))
     colors = [color for _ids, _label, color in groups]
     assert len(set(colors)) == len(colors)
 
@@ -163,12 +164,35 @@ def test_flagged_channel_groups_feeds_plot_channel_layout_end_to_end(capture, tm
 
     cl.plot_channel_layout(
         recording, tmp_path / "flagged.png",
-        groups=cf.flagged_channel_groups(flagged), annotate=False,
+        groups=fc.flagged_channel_groups(flagged), annotate=False,
     )
 
     labels = " || ".join(capture["labels"])
     assert "dead" in labels and "noisy" in labels and "detector" in labels
     assert labels.count("(n=0)") == 3
+
+
+def test_one_renderer_draws_the_flagged_channels_figure(capture, tmp_path):
+    """The figure is one mea_modules call: every rule keyed at its count (zero
+    included) and the span the rules were applied to in the legend title, so a
+    clean array and an unreachable cutoff read differently."""
+    recording = FakeRecording()
+    noise = _noise([5.0, 5.2, 4.8, 5.1, 4.9, 5.0], ids=recording.get_channel_ids())
+    flagged = cf.flag_channels(noise, bad_channels=None)
+
+    out = fc.plot_flagged_channels(recording, flagged, tmp_path / "flagged.png", annotate=False)
+
+    assert out.exists()
+    labels = " || ".join(capture["labels"])
+    assert labels.count("(n=0)") == 3
+    assert "dead" in labels and "noisy" in labels and "detector" in labels
+
+
+def test_the_flag_arithmetic_carries_no_presentation():
+    """Colours and legend wording live with the figure, so editing them never
+    touches the module the diagnostics fingerprint counts."""
+    assert not hasattr(cf, "_RULE_COLORS")
+    assert not hasattr(cf, "flagged_channel_groups")
 
 
 if __name__ == "__main__":

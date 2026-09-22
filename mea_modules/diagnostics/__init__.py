@@ -61,7 +61,8 @@ from .cache import (
     read_cache,
     write_cache,
 )
-from .channel_flags import flag_channels, flagged_channel_groups, flagged_channel_note
+from .channel_flags import flag_channels
+from .flagged_channels import flagged_channel_groups, flagged_channel_note, plot_flagged_channels
 from .channel_layout import (
     cluster_center_channels,
     detect_electrode_clusters,
@@ -152,6 +153,7 @@ __all__ = [
     "flag_channels",
     "flagged_channel_groups",
     "flagged_channel_note",
+    "plot_flagged_channels",
     "clipping_census",
     "artifact_census",
     # the compute-once cache a capsule writes and a plot tool reads

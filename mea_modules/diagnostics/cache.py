@@ -73,6 +73,8 @@ from pathlib import Path
 
 import numpy as np
 
+from .atomic import write_json, write_with
+
 CACHE_DIRNAME = "diagnostics"
 RECORD_NAME = "diagnostics_cache.json"
 ARRAYS_NAME = "diagnostics_cache.npz"
@@ -321,11 +323,11 @@ class CachedTraces:
 # --------------------------------------------------------------------------
 
 
-def _jsonable(value):
+def jsonable(value):
     if isinstance(value, dict):
-        return {str(k): _jsonable(v) for k, v in value.items()}
+        return {str(k): jsonable(v) for k, v in value.items()}
     if isinstance(value, (list, tuple)):
-        return [_jsonable(v) for v in value]
+        return [jsonable(v) for v in value]
     if isinstance(value, np.ndarray):
         return value.tolist()
     if isinstance(value, np.generic):
@@ -382,7 +384,7 @@ def write_cache(
     trace_sources = {}
     for name, block in (traces or {}).items():
         trace_sources[name] = {
-            "channel_ids": _jsonable(list(block["channel_ids"])),
+            "channel_ids": jsonable(list(block["channel_ids"])),
             "unit": block.get("unit"),
             # Frame-faithful: where this block starts in the recording it was
             # read from, so the cached figure decimates and shades exactly where
@@ -408,7 +410,7 @@ def write_cache(
     spectra_sources = {}
     for name, block in (spectra or {}).items():
         spectra_sources[name] = {
-            key: _jsonable(value)
+            key: jsonable(value)
             for key, value in block.items()
             if not isinstance(value, np.ndarray) and key not in SPECTRA_ARRAYS
         }
@@ -431,9 +433,9 @@ def write_cache(
         if hasattr(segment_gaps, "get"):
             segment_gaps = segment_gaps.get("segments") or []
         gap_sources[name] = {
-            "segment_gaps": _jsonable(list(segment_gaps or [])),
+            "segment_gaps": jsonable(list(segment_gaps or [])),
             **{
-                key: _jsonable(value)
+                key: jsonable(value)
                 for key, value in (structure.items() if hasattr(structure, "items") else [])
                 if key not in ("gaps", "segment_gaps", "break_sample_indices", "break_gap_frames")
             },
@@ -442,21 +444,30 @@ def write_cache(
     record = {
         "version": CACHE_VERSION,
         "geometry": {
-            "channel_ids": _jsonable(probe.get_channel_ids()),
+            "channel_ids": jsonable(probe.get_channel_ids()),
             "locations": probe.get_channel_locations().tolist(),
             "sampling_frequency": probe._fs,
             "num_frames": probe._num_frames,
         },
-        "metrics": _jsonable(metrics or {}),
+        "metrics": jsonable(metrics or {}),
         "traces": trace_sources,
         "events": event_sources,
         "spectra": spectra_sources,
         "time_gaps": gap_sources,
-        "meta": _jsonable(meta or {}),
+        "meta": jsonable(meta or {}),
     }
 
-    (out / RECORD_NAME).write_text(json.dumps(record, indent=2))
-    np.savez_compressed(out / ARRAYS_NAME, **arrays)
+    # Both whole or not at all: a suite reading this entity while the capsule
+    # writes must see the previous cache or this one, never a mixture of the
+    # two -- and never a record whose arrays have not landed yet.
+    def _arrays(tmp):
+        # a file object, not a path: savez appends `.npz` to a name that lacks
+        # it, and the temporary name deliberately does not end in `.npz`
+        with open(tmp, "wb") as handle:
+            np.savez_compressed(handle, **arrays)
+
+    write_with(out / ARRAYS_NAME, _arrays)
+    write_json(out / RECORD_NAME, record)
     return out
 
 

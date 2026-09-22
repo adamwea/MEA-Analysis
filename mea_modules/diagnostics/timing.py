@@ -19,7 +19,7 @@ the launch before it.
 import datetime
 import json
 
-from .cache import _jsonable, cache_dir
+from .cache import jsonable, cache_dir
 
 TIMING_NAME = "timing.json"
 
@@ -35,13 +35,13 @@ def write_timing(capsule_out_dir, *, capsule, entity, diagnostics=None, buffer=N
     folder = cache_dir(capsule_out_dir, create=True)
     document = {
         "capsule": capsule,
-        "entity": _jsonable(entity),
+        "entity": jsonable(entity),
         "written_at": datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds"),
-        "diagnostics": _jsonable(diagnostics or {}),
-        "steps": _jsonable(steps or {}),
+        "diagnostics": jsonable(diagnostics or {}),
+        "steps": jsonable(steps or {}),
     }
     if buffer is not None:
-        document["buffer"] = _jsonable(buffer)
+        document["buffer"] = jsonable(buffer)
     path = folder / TIMING_NAME
     path.write_text(json.dumps(document, indent=2, sort_keys=False), encoding="utf-8")
     return path

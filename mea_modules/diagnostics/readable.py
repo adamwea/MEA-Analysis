@@ -16,7 +16,8 @@ trusts the files (and the cache) while that marker stands, never the files alone
 
 import json
 
-from .cache import RECORD_NAME, _jsonable, read_cache
+from .atomic import write_json
+from .cache import RECORD_NAME, jsonable, read_cache
 
 SEGMENT_REPORTS = ("qc_report.json", "bad_channels.json", "clipping.json", "artifacts.json")
 CONCAT_REPORTS = ("segment_activity.json", "gap_table.json", "motion.json")
@@ -78,7 +79,7 @@ def _write(cache, reports, names):
     for name in names:
         path = cache.path / name
         if name in reports:
-            path.write_text(json.dumps(_jsonable(reports[name]), indent=2))
+            write_json(path, jsonable(reports[name]))
             written[name] = path
         else:
             path.unlink(missing_ok=True)

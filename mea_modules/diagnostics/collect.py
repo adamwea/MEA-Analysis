@@ -71,6 +71,7 @@ from .artifacts import artifact_census
 from .buffer import buffered_signal
 from .channel_flags import flag_channels
 from .clipping import clipping_census
+from .electrodes import cluster_center_channels
 from .selection import _select_channels
 from .welch import welch_spectra
 from .selection import _frames_to_seconds, _has_time_vector, select_representative_channels
@@ -625,7 +626,24 @@ def collect_segment_diagnostics(
                 events["raster"], metrics["raster"] = detected
 
         # -------------------------------------------------------- spectra
-        psd_pool = _resolve_channel_pool(qc, psd_channel_ids) or list(rep)
+        # The shared electrode set is the pool to CHOOSE from, not the pool to
+        # estimate. `welch_spectra` has always said so -- one channel per
+        # electrode cluster, drawn from the shared set -- but the shared set
+        # was being handed straight to it, so every routed electrode got its
+        # own curve: 354 of them on an AxonTracking well whose routing is 30
+        # patches of 12. Twelve neighbours a few micrometres apart do not carry
+        # twelve different spectra, and the panel cannot show 354 curves apart
+        # anyway.
+        #
+        # Reducing here rather than at the draw is the point: the estimate is
+        # what costs, and an unused curve costs the same as a drawn one.
+        resolved = _resolve_channel_pool(qc, psd_channel_ids)
+        if resolved is None:
+            psd_pool = list(rep)
+        else:
+            # Falls back to the full resolved set when the probe carries no
+            # usable locations -- fewer curves is a choice, no curves is a loss.
+            psd_pool = cluster_center_channels(qc, resolved) or resolved
         if "spectra" in wanted:
             for name, recording in (("raw", raw_view), ("preprocessed", qc)):
                 if name == "preprocessed" and source != "preprocessed":

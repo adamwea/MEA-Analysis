@@ -33,6 +33,38 @@ _UV_PSD_UNIT = "uV^2/Hz"
 _COUNTS_PSD_UNIT = "adc^2/Hz"
 
 
+# How much transient memory one `welch` call may hold while it works.
+#
+# `scipy.signal.welch` is `csd(x, x)`, which ends in ShortTimeFFT.spectrogram at
+# one line -- `return Sx.real**2 + Sx.imag**2`. `Sx` is a complex128 array of
+# (channels, frequencies, segments) and is still referenced while both squares
+# are built, and the addition allocates its own result before either temporary
+# is freed: four full-size arrays alive at once, 40 bytes per cell.
+#
+# On a 30 s window of a 354-channel AxonTracking segment at 20 kHz that is
+# 8.5 GB of transients to produce a 5.8 MB answer, and it was the peak of the
+# whole segment capsule -- more than the filtered signal it was estimated from
+# (measured 2026-09-22). Every one of those arrays has channels as its leading
+# dimension, so estimating a block of channels at a time divides the transient
+# without touching the arithmetic: the columns are independent under `axis=0`,
+# and the result is identical byte for byte.
+_BLOCK_TARGET_BYTES = 1_000_000_000
+_BYTES_PER_CELL = 40
+
+
+def _channel_block(n_samples, nperseg):
+    """How many channels to estimate at once to stay near the target.
+
+    Derived from the shape rather than fixed, so a longer window or a larger
+    `nperseg` shrinks the block instead of quietly costing more memory.
+    """
+    noverlap = nperseg // 2
+    n_freqs = nperseg // 2 + 1
+    n_segments = max(1, (n_samples - noverlap) // max(1, nperseg - noverlap) + 1)
+    per_channel = n_freqs * n_segments * _BYTES_PER_CELL
+    return max(1, int(_BLOCK_TARGET_BYTES // max(1, per_channel)))
+
+
 def welch_spectra(
     recording,
     channel_ids,
@@ -89,13 +121,35 @@ def welch_spectra(
     channel_ids = list(channel_ids)
     start_frame, end_frame, fs = _resolve_frame_window(recording, start_time_s, duration_s)
     use_uV = _effective_uv(recording, return_in_uV)
-    traces = np.asarray(
-        _read_traces(recording, start_frame, end_frame, channel_ids, use_uV),
-        dtype=np.float64,
-    )
+    traces = np.asarray(_read_traces(recording, start_frame, end_frame, channel_ids, use_uV))
+
+    # A single channel can arrive as a flat vector; the estimate below indexes
+    # columns, and the result is documented as (n_freqs, n_channels).
+    if traces.ndim == 1:
+        traces = traces[:, None]
 
     nperseg = min(int(nperseg), traces.shape[0])
-    freqs, power = welch(traces, fs=fs, nperseg=nperseg, axis=0)
+    # A block of channels at a time (see `_BLOCK_TARGET_BYTES`). The float64
+    # cast moved in here with it: casting the whole read up front held a second
+    # full copy of the signal for the length of the estimate, and only one
+    # block of it is ever in use.
+    block = _channel_block(traces.shape[0], nperseg)
+    freqs, columns = None, []
+    for start in range(0, traces.shape[1], block):
+        chunk = np.asarray(traces[:, start:start + block], dtype=np.float64)
+        freqs, part = welch(chunk, fs=fs, nperseg=nperseg, axis=0)
+        columns.append(part)
+        del chunk
+    if columns:
+        power = columns[0] if len(columns) == 1 else np.concatenate(columns, axis=1)
+    else:
+        # No channels resolved. `welch` of a zero-column array does not return a
+        # usable frequency axis, so estimate one silent channel for the axis and
+        # keep the (n_freqs, 0) shape the caller is promised -- rather than
+        # inventing the axis or handing back an empty one.
+        freqs, one = welch(np.zeros((traces.shape[0], 1)), fs=fs, nperseg=nperseg, axis=0)
+        power = one[:, :0]
+    del columns
     power = np.maximum(power, power_floor)
 
     return {

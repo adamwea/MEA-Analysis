@@ -49,11 +49,3 @@ Yuxin_MEA/
 MEA_stim_analysis
 MEA-Analysis-Plotter
 MaxwellMEA-Toolkit-MATLAB
-
-# Harness / agent artifacts and local tool state: never tracked
-CLAUDE.md
-AGENTS.md
-.claude/
-.claude-plugin/
-harness.toml
-.harness-kit-backup/
